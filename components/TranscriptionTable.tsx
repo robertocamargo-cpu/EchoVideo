@@ -2,7 +2,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Clapperboard, Download, Edit3, FileArchive, FileSpreadsheet, FileText, Image as ImageIcon, Loader2, MapPin, Monitor, Play, PlayCircle, Sparkles, Type, Upload, Users, Video, X, Zap, Ban, Activity, Wallet, Target, Layers, Video as VideoIcon, HelpCircle, Box } from 'lucide-react';
 import { TranscriptionItem, AppSettings, TransitionType, ViralTitle, MasterAsset, MotionEffect } from '../types';
-import { generateImage, generateViralTitles, getApiInfrastructure, TEXT_MODEL_NAME, IMAGEN_MODEL_NAME, IMAGE_MODEL_NAME } from '../services/geminiService';
+import { generateImage, generateViralTitles, getApiInfrastructure, generateText, TEXT_MODEL_NAME, IMAGEN_MODEL_NAME, IMAGE_MODEL_NAME } from '../services/geminiService';
 import { generatePollinationsImage } from '../services/pollinationsService';
 import { logApiCost } from '../services/usageService';
 import { generateTimelineVideo, generatePreviewVideo, generatePresetSRT } from '../services/videoService';
@@ -47,7 +47,7 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
     const [videoUrl, setVideoUrl] = useState<string | null>(null);
     const [showVideoSettings, setShowVideoSettings] = useState(false);
     const [includeSubtitles, setIncludeSubtitles] = useState<boolean>(true);
-    const [viewingImageState, setViewingImageState] = useState<{ imageUrl: string, promptData: any, filename: string } | null>(null);
+    const [viewingImageState, setViewingImageState] = useState<{ imageUrl: string, promptData: any, filename: string, sourceIndex?: number, sourceType?: 'scene' | 'thumbnail' } | null>(null);
     const [globalProvider, setGlobalProvider] = useState<'google-nano' | 'google-imagen' | 'pollinations' | 'pollinations-zimage'>('google-nano');
     const [generatedTitles, setGeneratedTitles] = useState<ViralTitle[]>([]);
     const [isGeneratingTitles, setIsGeneratingTitles] = useState(false);
@@ -93,8 +93,8 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         return data.reduce((acc, item) => acc + (item.imageCost || 0), 0);
     }, [data]);
 
-    const getPromptData = (index: number) => {
-        const item = data[index];
+    const getPromptData = (index: number, overrideItem?: Partial<TranscriptionItem>) => {
+        const item = overrideItem ? { ...data[index], ...overrideItem } : data[index];
         const relevantChars = projectCharacters.filter(c => item.characterIds?.includes(c.id));
         const relevantLocs = projectLocations.filter(l => item.locationIds?.includes(l.id));
         const relevantProps = projectProps.filter(p => item.propIds?.includes(p.id) || (item as any).prop_ids?.includes(p.id));
@@ -133,11 +133,9 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
             .replace(/master cinematic.*$/gi, '')
             .trim();
 
-        // Ensure "Strictly:" is preserved if it existed, or stripped properly if we want it isolated.
-        // If the old code appended it natively, we just extract it.
-        const parts = action.split(', Strictly:');
+        // Ensure legacy strings are removed from the action text
+        const parts = action.split(/,(?:\s*)Strictly:|,(?:\s*)Visual Integrity:/i);
         action = parts[0].trim();
-        const baseStrictly = parts.length > 1 ? `, Strictly: ${parts[1].trim()}` : '';
 
         // (4) CENARIO / LOCATION - Override manual > Locais Vinculados
         let cenario = item.cenario || '';
@@ -156,13 +154,35 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         // (6) CAMERA
         const camera = item.camera || '';
 
-        // (7) NEGATIVE
-        const negative = item.negative || "Strictly: Absolutely no text, no written characters, no alphabet, no letters, no words, no typography. Pure image only.";
+        // NOVO FORMATO DE PROMPT (CONCATENAÇÃO POR BLOCOS COM PONTOS)
+        let finalPrompt = '';
 
-        // (6) CONSTRUÇÃO DO PROMPT FINAL (ORDEM DO INSTRUCTIONS.MD)
-        // [NOME_DO_ESTILO]: [MEDIUM], [SUBJECT], [QUANTITY], [ACTION], [CENARIO]. style: [STYLE_PROMPT], [CAMERA]
-        let finalPrompt = `${styleName}: ${medium}, ${subject}, ${charCountPrompt}, ${action}, ${cenario}. style: ${stylePrompt}, ${camera} ${baseStrictly || negative}`;
+        // Se houver um estilo mestre selecionado na galeria do projeto, USAMOS ELE COM PRIORIDADE.
+        // Omitimos o item.style e item.medium gerados pela IA para evitar contradições e misturas visuais.
+        if (activeStylePrompt) {
+            finalPrompt += `Estilo de imagem: ${styleName} - ${activeStylePrompt}. `;
+        } else if (stylePrompt || medium) {
+            finalPrompt += `Estilo de imagem: ${styleName} - ${stylePrompt} ${medium ? `(${medium})` : ''}. `;
+        }
 
+        // Função para higienizar formatações rudes da inteligência artificial
+        const cleanText = (str: string) => {
+            if (!str) return '';
+            return str
+                .replace(/[\[\]\/]/g, ' ') // Remove brackets and slashes
+                // Separa CamelCase (ex: ExplorerRafael -> Explorer Rafael)
+                .replace(/([a-z])([A-Z])/g, '$1 $2') 
+                .replace(/\s+/g, ' ') // Remove duplo espaço
+                .trim();
+        };
+
+        if (subject) finalPrompt += `Subject: ${cleanText(subject)} ${charCountPrompt}. `;
+        if (action) finalPrompt += `Action: ${cleanText(action)}. `;
+        if (camera) finalPrompt += `Camera: ${cleanText(camera)}. `;
+        if (propsPrompt) finalPrompt += `Object: ${cleanText(propsPrompt)}. `;
+        if (cenario) finalPrompt += `Cenário: ${cleanText(cenario)}. `;
+
+        finalPrompt += `Visual Integrity: "Pure image only: all surfaces are blank and free of any text or letters."`;
 
         const forbiddenWords = ["nude", "naked", "sex", "violence", "blood", "gore", "photorealistic", "realistic"];
         forbiddenWords.forEach(word => {
@@ -173,7 +193,7 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         // Limpeza de espaços extras
         finalPrompt = finalPrompt.replace(/\s+/g, ' ').replace(/\s*\.\s*\./g, '.').replace(/,\s*,/g, ',').replace(/, ,/g, ',').trim();
 
-        return { medium, subject, action, cenario, propsPrompt, style: stylePrompt, camera, negative, finalPrompt };
+        return { medium, subject, action, cenario, propsPrompt, style: stylePrompt, camera, negative: '', finalPrompt };
     };
 
     const getAssetOccurrence = (id: string, type: 'char' | 'loc' | 'prop' = 'char') => {
@@ -235,40 +255,100 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
 
     const handleExportAllImages = async () => {
         const zip = new JSZip();
-        const folder = zip.folder("imagens_projeto");
+
+        // 1. Prompts de Imagem
+        const promptsContent = data.map((_, index) => getPromptData(index).finalPrompt).join('\n\n');
+        zip.file(`${sanitizeFilename(projectName)}_prompts_imagem.txt`, promptsContent);
+
+        // 2. Ideias de Animação
+        const animationContent = data.map(item => item.animation || 'Nenhuma ideia de animação gerada').join('\n\n');
+        zip.file(`${sanitizeFilename(projectName)}_prompts_animacao.txt`, animationContent);
+
+        // 3. Planilha CSV
+        const headers = ["Número da Cena", "Total de Segundos", "Nome da Imagem", "Texto da Legenda"];
+        const rows = data.map((item, index) => [(index + 1).toString(), item.duration.toFixed(3), item.filename, `"${item.text.replace(/"/g, '""')}"`]);
+        const csvContent = [headers, ...rows].map(e => e.join(",")).join("\n");
+        zip.file(`${sanitizeFilename(projectName)}-cenas.csv`, "\ufeff" + csvContent);
+
+        // 4. Arquivo de Áudio Original
+        if (audioFile) {
+            zip.file(audioFile.name || 'audio_original.wav', audioFile);
+        } else if (project?.audioUrl) {
+            try {
+                const audioRes = await fetch(project.audioUrl);
+                if (audioRes.ok) zip.file(`audio_original.wav`, await audioRes.blob());
+            } catch (e) {
+                console.warn("Could not fetch remote audio for zip", e);
+            }
+        }
+
+        const folder = zip.folder("midias_projeto");
         if (!folder) return;
         setIsVideoGenerating(true);
         let addedCount = 0;
-        for (let i = 0; i < data.length; i++) {
-            const url = data[i].imageUrl || data[i].googleImageUrl || data[i].pollinationsImageUrl || data[i].importedImageUrl;
-            if (url && url.startsWith('data:')) {
-                const base64Data = url.split(',')[1];
-                folder.file(`scene_${i + 1}.png`, base64Data, { base64: true });
-                addedCount++;
+        
+        try {
+            for (let i = 0; i < data.length; i++) {
+                const imgUrl = data[i].imageUrl || data[i].googleImageUrl || data[i].pollinationsImageUrl || data[i].importedImageUrl;
+                const videoUrl = data[i].importedVideoUrl;
+                
+                if (videoUrl) {
+                    const response = await fetch(videoUrl);
+                    if (response.ok) {
+                        const blob = await response.blob();
+                        folder.file(`scene_${i + 1}.mp4`, blob);
+                        addedCount++;
+                    }
+                } else if (imgUrl) {
+                    if (imgUrl.startsWith('data:')) {
+                        const base64Data = imgUrl.split(',')[1];
+                        folder.file(`scene_${i + 1}.png`, base64Data, { base64: true });
+                        addedCount++;
+                    } else {
+                        const response = await fetch(imgUrl);
+                        if (response.ok) {
+                            const blob = await response.blob();
+                            folder.file(`scene_${i + 1}.png`, blob);
+                            addedCount++;
+                        }
+                    }
+                }
             }
+            
+            if (addedCount === 0) {
+                alert("Nenhuma imagem ou vídeo disponível para exportar.");
+                setIsVideoGenerating(false);
+                return;
+            }
+
+            const content = (await zip.generateAsync({ type: "blob" })) as Blob;
+            const downloadUrl = URL.createObjectURL(content);
+            const link = document.createElement('a');
+            link.href = downloadUrl;
+            const sanitizedName = sanitizeFilename(projectName);
+            link.download = `${sanitizedName}_midias.zip`;
+            link.click();
+            URL.revokeObjectURL(downloadUrl);
+        } catch (error) {
+            console.error("Erro exportando midias ZIP:", error);
+            alert("Ocorreu um erro baixando os arquivos para o ZIP. Pode haver restrições de CORS nas URLs.");
         }
-        const content = (await zip.generateAsync({ type: "blob" })) as Blob;
-        const downloadUrl = URL.createObjectURL(content);
-        const link = document.createElement('a');
-        link.href = downloadUrl;
-        const sanitizedName = sanitizeFilename(projectName);
-        link.download = `${sanitizedName}_imagens.zip`;
-        link.click();
-        URL.revokeObjectURL(downloadUrl);
         setIsVideoGenerating(false);
     };
 
-    const handleGenerateImage = async (index: number, provider: 'google-nano' | 'google-imagen' | 'pollinations' | 'pollinations-zimage') => {
+    const handleGenerateImage = async (index: number, provider: 'google-nano' | 'google-imagen' | 'pollinations' | 'pollinations-zimage', overrideItem?: Partial<TranscriptionItem>) => {
         // Limpar a imagem anterior para feedback visual de regeneração
         onUpdateItem(index, {
+            ...overrideItem,
             imageUrl: '',
+            importedVideoUrl: '',
             googleImageUrl: '',
             pollinationsImageUrl: '',
             [!provider.startsWith('pollinations') ? 'isGeneratingGoogle' : 'isGeneratingPollinations']: true
         });
 
         try {
-            const pData = getPromptData(index);
+            const pData = getPromptData(index, overrideItem);
             const isPol = provider.startsWith('pollinations');
             const isPollinationsZ = provider === 'pollinations-zimage';
             const isGoogleImagen = provider === 'google-imagen';
@@ -302,7 +382,8 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
                 [!isPol ? 'isGeneratingGoogle' : 'isGeneratingPollinations']: false,
                 selectedProvider: provider,
                 imageUrl: finalImageUrl,
-                importedVideoUrl: undefined, // LIMPAR VÍDEO IMPORTADO AO GERAR IMAGEM
+                importedVideoUrl: '', // LIMPAR VÍDEO IMPORTADO AO GERAR IMAGEM
+                importedImageUrl: '',
                 imageCost: !isPol ? 0.035000 : 0.000000
             });
 
@@ -335,7 +416,7 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         };
         updateList({ [!provider.startsWith('pollinations') ? 'isGeneratingGoogle' : 'isGeneratingPollinations']: true });
         try {
-            const assetPrompt = `${asset.description} style: ${activeStylePrompt}, Strictly: Absolutely no text, no written characters, no alphabet, no letters, no words, no typography. Pure image only.`;
+            const assetPrompt = `${asset.description} style: ${activeStylePrompt}, Visual Integrity: "Pure image only: all surfaces are blank and free of any text or letters."`;
             const isPollinationsZ = provider === 'pollinations-zimage';
             const isGoogleImagen = provider === 'google-imagen';
             const isGoogleNano = provider === 'google-nano';
@@ -369,6 +450,62 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
             if (!data[i].importedVideoUrl) await handleGenerateImage(i, globalProvider as any);
         }
         setIsGeneratingAll(false);
+    };
+
+    const handleGenerateMissing = async () => {
+        if (isGeneratingAll) { bulkAbortRef.current = true; return; }
+        setIsGeneratingAll(true);
+        bulkAbortRef.current = false;
+        for (let i = 0; i < data.length; i++) {
+            if (bulkAbortRef.current) break;
+            const hasMedia = !!(data[i].imageUrl || data[i].importedVideoUrl);
+            if (!hasMedia) await handleGenerateImage(i, globalProvider as any);
+        }
+        setIsGeneratingAll(false);
+    };
+
+    const handleRecreateSceneBroll = async (index: number) => {
+        onUpdateItem(index, { isGeneratingGoogle: true });
+        try {
+            const item = data[index];
+            const systemPrompt = `You are an expert video producer. Rewrite this scene to be a generic B-roll shot without any specific character names. It should describe a cinematic visually stunning establishing shot or abstract concept representation related to the text.
+            
+Original text: "${item.text}"
+Current action: "${item.action}"
+
+Return ONLY a valid JSON object with the following keys, no markdown formatting at all:
+{
+  "medium": "cinematic photography, 3d render, etc",
+  "subject": "generic description, e.g., A lone silhouette, A glowing orb (NO real names)",
+  "action": "what is happening",
+  "cenario": "the environment",
+  "props": "objects in the scene",
+  "symbolism": "visual metaphor",
+  "camera": "camera angle/movement",
+  "animation": "motion prompt for runway/luma"
+}`;
+            
+            const newActionRaw = await generateText(systemPrompt);
+            const cleanedJson = newActionRaw.replace(/```json/gi, '').replace(/```/g, '').trim();
+            const parsed = JSON.parse(cleanedJson);
+            
+            const overrideItem = { 
+                action: parsed.action || item.action,
+                medium: parsed.medium || item.medium,
+                subject: parsed.subject || '',
+                cenario: parsed.cenario || item.cenario,
+                props: parsed.props || item.props,
+                symbolism: parsed.symbolism || item.symbolism,
+                camera: parsed.camera || item.camera,
+                animation: parsed.animation || item.animation,
+                characterIds: [],
+                locationIds: []
+            };
+            await handleGenerateImage(index, globalProvider as any, overrideItem);
+        } catch (e: any) {
+            onUpdateItem(index, { isGeneratingGoogle: false });
+            alert(`Erro ao gerar nova ideia de cena b-roll: ${e.message}`);
+        }
     };
 
     const handleGenerateTitles = async () => {
@@ -472,9 +609,10 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
 
                 if (publicUrl) {
                     const update = {
-                        [isVideo ? 'importedVideoUrl' : 'importedImageUrl']: publicUrl,
+                        importedVideoUrl: isVideo ? publicUrl : '',
+                        importedImageUrl: !isVideo ? publicUrl : '',
                         imageUrl: !isVideo ? publicUrl : updatedItems[targetIdx].imageUrl,
-                        selectedProvider: 'imported',
+                        selectedProvider: 'imported' as any,
                         isGeneratingGoogle: false
                     };
                     updatedItems[targetIdx] = { ...updatedItems[targetIdx], ...update };
@@ -508,7 +646,19 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
     };
 
     const handleFinalRender = async () => {
-        if (!audioFile) return;
+        if (!audioFile) return alert("Áudio global necessário.");
+        
+        // Verifica Cenas Vazias
+        const emptyScenes = data.map((item, index) => {
+            const hasMedia = item.imageUrl || item.importedVideoUrl || item.googleImageUrl || item.pollinationsImageUrl || item.importedImageUrl;
+            return hasMedia ? null : (index + 1);
+        }).filter(val => val !== null);
+
+        if (emptyScenes.length > 0) {
+            const proceed = window.confirm(`Atenção: As cenas a seguir estão vazias:\n[Cenas: ${emptyScenes.join(', ')}]\n\nO vídeo vai conter trechos pretos nestes momentos. Deseja continuar assim mesmo?`);
+            if (!proceed) return;
+        }
+        
         setIsVideoGenerating(true);
         setShowVideoSettings(false);
         setVideoStatus("Sincronizando Master...");
@@ -668,96 +818,93 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
                 )
             }
 
-            <div className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-8 shadow-2xl relative overflow-hidden">
-                <div className="flex flex-col gap-6">
-                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
-                        <div className="flex items-center gap-4">
-                            <h2 className="text-xl font-black text-white uppercase tracking-tighter italic">Painel de <span className="text-brand-400">Direção</span></h2>
+            <div className="bg-slate-900/95 backdrop-blur-xl border border-slate-800 rounded-3xl p-3 shadow-2xl relative z-40 sticky top-4">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                    <div className="bg-slate-950/40 px-4 py-2 rounded-2xl border border-slate-800/50 flex flex-col md:flex-row items-center gap-4 shadow-inner flex-1 shadow-lg">
+                        <div className="flex items-center gap-3 w-full lg:w-auto">
+                            <span className="text-[9px] font-black uppercase text-brand-400 tracking-[0.2em] italic pr-2 border-r border-slate-800">Direção</span>
+                            <select value={settings.aspectRatio} onChange={(e) => onUpdateGlobalSetting('aspectRatio', e.target.value as '16:9' | '9:16')} className="bg-transparent border-none text-[10px] text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white">
+                                <option value="16:9">16:9</option>
+                                <option value="9:16">9:16</option>
+                            </select>
+                            <select value={selectedStyleId} onChange={(e) => onStyleChange(e.target.value)} className="bg-transparent border-none text-[10px] text-slate-200 font-bold uppercase outline-none cursor-pointer max-w-[120px] truncate hover:text-white">
+                                {settings.items.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+                            </select>
+                            <select value={globalProvider} onChange={e => setGlobalProvider(e.target.value as any)} className="bg-transparent border-none text-[10px] text-slate-200 font-bold uppercase outline-none cursor-pointer max-w-[120px] truncate hover:text-white">
+                                <option value="google-nano">GEMINI NANO</option>
+                                <option value="google-imagen">IMAGEN 4</option>
+                                <option value="pollinations">POLLINATIONS FLUX</option>
+                                <option value="pollinations-zimage">POLLINATIONS ZIMAGE</option>
+                            </select>
                         </div>
-                        <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-                            <button
-                                onClick={async () => {
-                                    if (!project) return;
-                                    setIsSaving(true);
-                                    try { await onSave({ ...project, items: data } as any); } catch (e) { }
-                                    finally { setIsSaving(false); }
-                                }}
-                                disabled={isSaving || !project}
-                                className={`text-[10px] font-black uppercase px-4 py-2 rounded-xl border transition-all flex items-center gap-2 ${isSaving ? 'bg-slate-800 text-slate-500 border-slate-700' : 'bg-brand-500/10 text-brand-400 border-brand-500/30 hover:bg-brand-500 hover:text-white'}`}
-                            >
-                                {isSaving ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-                                {isSaving ? 'SALVANDO...' : 'SALVAR PROJETO'}
-                            </button>
-                            <button onClick={handleExportPrompts} className="text-[10px] font-black uppercase text-slate-500 hover:text-brand-400 flex items-center gap-2 transition-all group pr-4 border-r border-slate-800"><FileText size={14} /> PROMPTS</button>
-                            <button onClick={handleExportAnimationPrompts} className="text-[10px] font-black uppercase text-slate-500 hover:text-sky-400 flex items-center gap-2 transition-all group pr-4 border-r border-slate-800"><Video size={14} /> ANIMAÇÃO</button>
-                            <button onClick={handleExportCSV} className="text-[10px] font-black uppercase text-slate-500 hover:text-brand-400 flex items-center gap-2 transition-all group pr-4 border-r border-slate-800"><FileSpreadsheet size={14} /> CSV</button>
-                            <button onClick={handleExportAllImages} className="text-[10px] font-black uppercase text-slate-500 hover:text-brand-400 flex items-center gap-2 transition-all group"><FileArchive size={14} /> ZIP</button>
+                        <div className="flex items-center gap-2 ml-auto w-full md:w-auto">
+                            <button onClick={handleGenerateMissing} className={`px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all border ${isGeneratingAll ? 'bg-red-500/10 border-red-500/20 text-red-500' : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white hover:border-brand-500'}`}>{isGeneratingAll ? <Ban size={10} /> : <Sparkles className="inline text-brand-400 opacity-50 mr-1" size={10} />} Faltantes</button>
+                            <button onClick={handleGenerateAll} className={`px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all border ${isGeneratingAll ? 'bg-red-500/10 border-red-500/20 text-red-500' : 'bg-brand-500 border-brand-400 text-white hover:bg-brand-400'}`}>{isGeneratingAll ? <Ban size={10} /> : <Sparkles className="inline text-white mr-1" size={10} />} {isGeneratingAll ? "Parar" : "Tudo"}</button>
+                            <button onClick={() => importInputRef.current?.click()} className="p-1.5 bg-slate-800 border border-slate-700 rounded-lg text-slate-400 hover:text-white transition-all"><Upload size={14} /></button>
+                            <input type="file" multiple ref={importInputRef} onChange={handleBulkImportImages} className="hidden" accept="image/*,video/*" />
                         </div>
                     </div>
-                    <div className="flex flex-col xl:flex-row items-stretch justify-between gap-6">
-                        <div className="bg-slate-950/40 p-6 rounded-[2rem] border border-slate-800/50 flex-1 flex flex-col md:flex-row items-center gap-6 shadow-inner">
-                            <div className="flex flex-col gap-3 flex-1 w-full">
-                                <span className="text-[9px] font-black uppercase text-slate-600 tracking-[0.2em] px-1 italic">Configuração Visual Ativa</span>
-                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 w-full">
-                                    <select value={settings.aspectRatio} onChange={(e) => onUpdateGlobalSetting('aspectRatio', e.target.value as '16:9' | '9:16')} className="bg-slate-900 border border-slate-800 text-[11px] text-slate-200 font-black uppercase rounded-xl px-4 py-4 outline-none focus:border-brand-500 shadow-md">
-                                        <option value="16:9">Widescreen 16:9</option>
-                                        <option value="9:16">Vertical 9:16</option>
-                                    </select>
-                                    <select value={selectedStyleId} onChange={(e) => onStyleChange(e.target.value)} className="bg-slate-900 border border-slate-800 text-[11px] text-slate-200 font-black uppercase rounded-xl px-4 py-4 outline-none focus:border-brand-500 shadow-md">
-                                        {settings.items.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
-                                    </select>
-                                    <select value={globalProvider} onChange={e => setGlobalProvider(e.target.value as any)} className="bg-slate-900 border border-slate-800 text-[11px] text-slate-200 font-black uppercase rounded-xl px-4 py-4 outline-none focus:border-brand-500 shadow-md">
-                                        <option value="google-nano">GEMINI NANO (ANTERIOR)</option>
-                                        <option value="google-imagen">IMAGEN 4 FAST (GEMINI)</option>
-                                        <option value="pollinations">POLLINATIONS FLUX</option>
-                                        <option value="pollinations-zimage">POLLINATIONS ZIMAGE</option>
-                                    </select>
-                                </div>
-                            </div>
-                            <div className="flex gap-4 w-full md:w-auto h-[60px] md:self-end">
-                                <button onClick={handleGenerateAll} className={`flex-1 md:flex-none flex items-center justify-center gap-3 px-8 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border ${isGeneratingAll ? 'bg-red-500/10 border-red-500/20 text-red-500' : 'bg-slate-800 border-slate-700 text-white hover:border-brand-500 shadow-lg'}`}>{isGeneratingAll ? <Ban size={16} /> : <Sparkles className="text-brand-400" size={16} />} {isGeneratingAll ? "Parar" : "Gerar Tudo"}</button>
-                                <button onClick={() => importInputRef.current?.click()} className="flex items-center justify-center gap-3 px-8 bg-slate-800 border border-slate-700 rounded-xl text-[10px] font-black uppercase text-slate-400 hover:text-white transition-all shadow-lg"><Upload size={16} /> Importar Assets</button>
-                                <input type="file" multiple ref={importInputRef} onChange={handleBulkImportImages} className="hidden" accept="image/*,video/*" />
-                            </div>
-                        </div>
-                        <div className="min-w-[180px] flex items-stretch">
-                            <button onClick={() => setShowVideoSettings(true)} className="w-full flex items-center justify-center gap-3 px-6 bg-brand-500 hover:bg-brand-400 text-white rounded-3xl text-[14px] font-black uppercase tracking-[0.2em] shadow-2xl transition-all active:scale-95 group border-b-4 border-brand-600"><VideoIcon size={20} className="group-hover:rotate-12 transition-transform" /> RENDERIZAR</button>
-                        </div>
+                    <div className="flex items-center min-w-[140px]">
+                        <button onClick={() => setShowVideoSettings(true)} className="w-full flex items-center justify-center gap-2 px-6 py-2 bg-brand-500 hover:bg-brand-400 text-white rounded-xl text-[11px] font-black uppercase tracking-[0.2em] shadow-lg transition-all active:scale-95 group"><VideoIcon size={16} className="group-hover:rotate-12 transition-transform" /> RENDERIZAR</button>
                     </div>
                 </div>
             </div>
 
-            <div className="flex items-center gap-2 border-b border-slate-800 overflow-x-auto whitespace-nowrap scrollbar-hide">
-                {['scenes', 'characters', 'locations', 'props', 'titles'].map(tab => (
-                    <button key={tab} onClick={() => setActiveTab(tab as TabMode)} className={`px-10 py-6 text-[10px] font-black uppercase tracking-widest border-b-2 transition-all ${activeTab === tab ? 'text-brand-400 border-brand-500 bg-brand-500/5' : 'text-slate-500 border-transparent hover:text-slate-300'}`}>
-                        {tab === 'scenes' ? 'Story Board' : tab === 'characters' ? 'Personagens' : tab === 'locations' ? 'Cenários' : tab === 'props' ? 'Objetos' : 'CTR Ninja'}
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between border-b border-slate-800 pb-0 gap-4">
+                <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap scrollbar-hide">
+                    {['scenes', 'characters', 'locations', 'props', 'titles'].map(tab => (
+                        <button key={tab} onClick={() => setActiveTab(tab as TabMode)} className={`px-6 py-4 text-[10px] font-black uppercase tracking-widest border-b-2 transition-all ${activeTab === tab ? 'text-brand-400 border-brand-500 bg-brand-500/5' : 'text-slate-500 border-transparent hover:text-slate-300'}`}>
+                            {tab === 'scenes' ? 'Story Board' : tab === 'characters' ? 'Personagens' : tab === 'locations' ? 'Cenários' : tab === 'props' ? 'Objetos' : 'CTR Ninja'}
+                        </button>
+                    ))}
+                </div>
+                <div className="flex items-center gap-4 px-4 pb-2 lg:pb-0 overflow-x-auto scrollbar-hide">
+                    <button
+                        onClick={async () => {
+                            if (!project) return;
+                            setIsSaving(true);
+                            try { await onSave({ ...project, items: data } as any); } catch (e) { }
+                            finally { setIsSaving(false); }
+                        }}
+                        disabled={isSaving || !project}
+                        className={`text-[9px] font-black uppercase px-3 py-1.5 rounded-lg border transition-all flex items-center gap-1.5 ${isSaving ? 'bg-slate-800 text-slate-500 border-slate-700' : 'bg-brand-500/10 text-brand-400 border-brand-500/30 hover:bg-brand-500 hover:text-white'}`}
+                    >
+                        {isSaving ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+                        {isSaving ? 'SALVANDO...' : 'SALVAR'}
                     </button>
-                ))}
+                    <button onClick={handleExportPrompts} className="text-[9px] font-bold uppercase text-slate-400 hover:text-brand-400 flex items-center gap-1.5 transition-colors pr-3 border-r border-slate-800/50 min-w-max"><FileText size={12} /> Prompts</button>
+                    <button onClick={handleExportAnimationPrompts} className="text-[9px] font-bold uppercase text-slate-400 hover:text-sky-400 flex items-center gap-1.5 transition-colors pr-3 border-r border-slate-800/50 min-w-max"><Video size={12} /> Anim</button>
+                    <button onClick={handleExportCSV} className="text-[9px] font-bold uppercase text-slate-400 hover:text-brand-400 flex items-center gap-1.5 transition-colors pr-3 border-r border-slate-800/50 min-w-max"><FileSpreadsheet size={12} /> CSV</button>
+                    <button onClick={handleExportAllImages} className="text-[9px] font-black uppercase text-slate-400 hover:text-brand-400 flex items-center gap-1.5 transition-colors min-w-max"><FileArchive size={12} /> ZIP MASTER</button>
+                </div>
             </div>
 
             {
                 activeTab === 'scenes' && (
                     <div className="space-y-8 pb-32">
-                        <TimelineVisual items={data} onImageClick={idx => setViewingImageState({ imageUrl: (data[idx].imageUrl || ''), promptData: getPromptData(idx), filename: `cena_${idx + 1}.png` })} audioFile={audioFile} videoUrl={videoUrl} />
+                        <TimelineVisual items={data} onImageClick={idx => setViewingImageState({ imageUrl: (data[idx].imageUrl || data[idx].importedVideoUrl || ''), promptData: getPromptData(idx), filename: `cena_${idx + 1}.png`, sourceIndex: idx, sourceType: 'scene' })} audioFile={audioFile} videoUrl={videoUrl} />
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                             {data.map((item, index) => (
                                 <div key={index} className="flex flex-col gap-2">
-                                    <div className="text-center text-[10px] font-black text-slate-600 uppercase tracking-widest">{item.duration.toFixed(1)}s</div>
+                                    <div className="text-center text-[11px] font-black text-slate-600 uppercase tracking-widest">{item.duration.toFixed(1)}s</div>
                                     <div className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-6 flex flex-col gap-5 shadow-lg group hover:border-brand-500/30 transition-all">
-                                        <div className="flex justify-between items-center text-[10px] font-black uppercase text-brand-400">
+                                        <div className="flex justify-between items-center text-[11px] font-black uppercase text-brand-400">
                                             <div className="flex items-center gap-2">
-                                                <span className="bg-brand-500/10 text-brand-400 px-2 py-1 rounded text-[9px] font-black">CENA {index + 1}</span>
+                                                <span className="bg-brand-500/10 text-brand-400 px-2 py-1 rounded text-[10px] font-black">CENA {index + 1}</span>
                                                 <span className="bg-slate-950 px-3 py-1.5 rounded-full border border-slate-800 font-mono"> {item.startTimestamp} - {item.endTimestamp} </span>
                                             </div>
                                         </div>
                                         <div className={`bg-black rounded-3xl overflow-hidden relative shadow-inner ${settings.aspectRatio === '9:16' ? 'aspect-[9/16]' : 'aspect-video'}`}>
                                             {item.imageUrl || item.importedVideoUrl ? (
                                                 <>
-                                                    {item.importedVideoUrl ? <video src={item.importedVideoUrl} className="w-full h-full object-cover" controls={false} muted autoPlay loop /> : <img src={item.imageUrl} onClick={() => setViewingImageState({ imageUrl: item.imageUrl!, promptData: getPromptData(index), filename: `cena_${index + 1}.png` })} className="w-full h-full object-cover cursor-zoom-in" />}
+                                                    {item.importedVideoUrl ? <video src={item.importedVideoUrl} className="w-full h-full object-cover" controls={false} muted autoPlay loop onClick={() => setViewingImageState({ imageUrl: item.importedVideoUrl!, promptData: getPromptData(index), filename: `cena_${index + 1}.mp4`, sourceIndex: index, sourceType: 'scene'})} /> : <img src={item.imageUrl} onClick={() => setViewingImageState({ imageUrl: item.imageUrl!, promptData: getPromptData(index), filename: `cena_${index + 1}.png`, sourceIndex: index, sourceType: 'scene' })} className="w-full h-full object-cover cursor-zoom-in" />}
                                                 </>
                                             ) : <div className="w-full h-full flex items-center justify-center opacity-20"><ImageIcon size={48} /></div>}
                                             {(item.isGeneratingGoogle || item.isGeneratingPollinations) && <div className="absolute inset-0 bg-slate-950/95 flex flex-col items-center justify-center gap-4"><Loader2 className="animate-spin text-brand-400" size={40} /></div>}
-                                            <button onClick={() => handleGenerateImage(index, globalProvider as any)} className="absolute top-4 right-4 p-2.5 bg-brand-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity shadow-xl"><Zap size={14} /></button>
+                                            <div className="absolute top-4 right-4 flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                <button onClick={() => handleGenerateImage(index, globalProvider as any)} title="Recriar Imagem (Manter Prompt)" className="p-2.5 bg-brand-500 hover:bg-brand-400 text-white rounded-full shadow-xl transition-colors"><Zap size={14} /></button>
+                                                <button onClick={() => handleRecreateSceneBroll(index)} title="Transformar em B-Roll Genérico" className="p-2.5 bg-indigo-500 hover:bg-indigo-400 text-white rounded-full shadow-xl transition-colors"><VideoIcon size={14} /></button>
+                                            </div>
                                         </div>
 
                                         {/* Assets Presentes na Cena */}
@@ -894,9 +1041,10 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
                                 <div className="space-y-4">
                                     <div className="flex flex-col gap-1 px-1">
                                         <div className="flex flex-col gap-1">
-                                            <label className="text-[8px] font-black text-slate-600 uppercase tracking-widest">Nome no Prompt (Fictício)</label>
+                                            <label className="text-[8px] font-black text-brand-400 uppercase tracking-widest">Apelido (Vai pro Prompt)</label>
                                             <input
                                                 value={asset.name}
+                                                placeholder="Ex: ExplorerRafael"
                                                 onChange={e => {
                                                     const list = activeTab === 'characters' ? [...projectCharacters] : [...projectLocations];
                                                     onUpdateProjectInfo(activeTab as any, list.map(a => a.id === asset.id ? { ...a, name: e.target.value } : a));
@@ -905,10 +1053,10 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
                                             />
                                         </div>
                                         <div className="flex flex-col gap-0.5 mt-1">
-                                            <label className="text-[8px] font-black text-slate-600 uppercase tracking-widest">Identidade Real (Busca)</label>
+                                            <label className="text-[8px] font-black text-slate-600 uppercase tracking-widest">Nome Real (Apenas Interno)</label>
                                             <input
                                                 value={asset.realName || ''}
-                                                placeholder="Nome Real para Referência..."
+                                                placeholder="Ex: Rafael"
                                                 onChange={e => {
                                                     const list = activeTab === 'characters' ? [...projectCharacters] : [...projectLocations];
                                                     onUpdateProjectInfo(activeTab as any, list.map(a => a.id === asset.id ? { ...a, realName: e.target.value } : a));
@@ -1099,7 +1247,36 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
                     </div>
                 )
             }
-            {viewingImageState && <ImageViewer imageUrl={viewingImageState.imageUrl} promptData={viewingImageState.promptData} filename={viewingImageState.filename} onClose={() => setViewingImageState(null)} />}
+            {viewingImageState && (
+                <ImageViewer 
+                    imageUrl={viewingImageState.imageUrl} 
+                    promptData={viewingImageState.promptData} 
+                    filename={viewingImageState.filename} 
+                    onClose={() => setViewingImageState(null)} 
+                    onNext={() => {
+                        let nextIdx = viewingImageState.sourceIndex! + 1;
+                        if (nextIdx >= data.length) nextIdx = 0;
+                        setViewingImageState({
+                            ...viewingImageState,
+                            imageUrl: data[nextIdx].imageUrl || data[nextIdx].importedVideoUrl || data[nextIdx].pollinationsImageUrl || data[nextIdx].googleImageUrl || '',
+                            promptData: getPromptData(nextIdx),
+                            filename: `CENA_${nextIdx + 1}.${data[nextIdx].importedVideoUrl ? 'MP4' : 'PNG'}`,
+                            sourceIndex: nextIdx
+                        });
+                    }}
+                    onPrev={() => {
+                        let prevIdx = viewingImageState.sourceIndex! - 1;
+                        if (prevIdx < 0) prevIdx = data.length - 1;
+                        setViewingImageState({
+                            ...viewingImageState,
+                            imageUrl: data[prevIdx].imageUrl || data[prevIdx].importedVideoUrl || data[prevIdx].pollinationsImageUrl || data[prevIdx].googleImageUrl || '',
+                            promptData: getPromptData(prevIdx),
+                            filename: `CENA_${prevIdx + 1}.${data[prevIdx].importedVideoUrl ? 'MP4' : 'PNG'}`,
+                            sourceIndex: prevIdx
+                        });
+                    }}
+                />
+            )}
         </div >
     );
 };

@@ -23,6 +23,7 @@ interface ColoredPromptProps {
 
 export const ColoredPrompt: React.FC<ColoredPromptProps> = ({ promptData, className = "" }) => {
     const [copied, setCopied] = React.useState(false);
+    const [isExpanded, setIsExpanded] = React.useState(false);
 
     const handleCopy = () => {
         if (promptData?.finalPrompt) {
@@ -34,79 +35,118 @@ export const ColoredPrompt: React.FC<ColoredPromptProps> = ({ promptData, classN
 
     if (!promptData) return <span className="text-slate-500 italic">Sem prompt disponível.</span>;
 
+    if (!isExpanded) {
+        return (
+            <div className={`flex items-center gap-2 relative ${className} text-[10px] w-full max-w-full overflow-hidden`}>
+                <div 
+                   onClick={() => setIsExpanded(true)} 
+                   className="flex-1 bg-slate-900/50 border border-slate-800 rounded-lg p-3 text-slate-400 font-mono truncate cursor-pointer hover:bg-slate-800 transition-colors opacity-80 hover:opacity-100"
+                   title="Clique para ver os blocos detalhados"
+                >
+                    {promptData.finalPrompt || "Prompt não gerado..."}
+                </div>
+                {promptData.finalPrompt && (
+                    <button
+                        onClick={handleCopy}
+                        className="p-3 bg-brand-500/10 text-brand-400 border border-brand-500/20 rounded-lg hover:bg-brand-500 hover:text-white transition-all flex-shrink-0"
+                        title="Copiar prompt completo"
+                    >
+                        {copied ? <Check size={14} /> : <Copy size={14} />}
+                    </button>
+                )}
+            </div>
+        );
+    }
+
     return (
-        <div className={`leading-relaxed whitespace-pre-wrap flex flex-wrap gap-x-1.5 gap-y-1 relative ${className}`}>
-            {/* MEDIUM - Estilo Base */}
-            {(promptData.medium) && (
-                <span className="text-amber-400 font-black uppercase tracking-tighter" title="Meio/Técnica">
-                    {promptData.medium}
-                </span>
+        <div className={`flex flex-col gap-y-1.5 relative ${className} text-[10px]`}>
+            {/* ESTILO + MEDIUM */}
+            {(promptData.style || promptData.medium) && (
+                <div className="bg-slate-900/50 rounded px-3 py-2 text-left leading-relaxed">
+                    <span className="font-black uppercase tracking-widest text-slate-500 mr-2">Estilo de Imagem:</span>
+                    <span className="text-sky-400 font-bold">
+                        {promptData.style} {promptData.medium ? `(${promptData.medium})` : ''}
+                    </span>
+                </div>
             )}
 
             {/* SUBJECT / CHARACTER */}
             {(promptData.subject || promptData.characterDescription) && (
-                <span className="text-fuchsia-400 font-bold" title="Sujeito/Personagem">
-                    {promptData.subject || promptData.characterDescription}
-                </span>
+                <div className="bg-slate-900/50 rounded px-3 py-2 text-left leading-relaxed">
+                    <span className="font-black uppercase tracking-widest text-slate-500 mr-2">Subject:</span>
+                    <span className="text-fuchsia-400 font-bold">
+                        {promptData.subject || promptData.characterDescription}
+                    </span>
+                </div>
             )}
 
             {/* ACTION */}
             {promptData.action && (
-                <span className="text-white font-black bg-white/10 px-1 rounded shadow-sm" title="Ação da Cena">
-                    {promptData.action}
-                </span>
-            )}
-
-            {/* CENARIO / LOCATION */}
-            {(promptData.cenario || promptData.locationDescription) && (
-                <span className="text-emerald-400 font-bold" title="Cenário">
-                    {promptData.cenario || promptData.locationDescription}
-                </span>
-            )}
-
-            {/* STYLE */}
-            {promptData.style && (
-                <span className="text-sky-400 font-bold" title="Estilo Visual">
-                    {promptData.style}
-                </span>
+                <div className="bg-slate-900/50 rounded px-3 py-2 text-left leading-relaxed">
+                    <span className="font-black uppercase tracking-widest text-slate-500 mr-2">Action:</span>
+                    <span className="text-white font-black">
+                        {promptData.action}
+                    </span>
+                </div>
             )}
 
             {/* CAMERA */}
             {promptData.camera && (
-                <span className="text-purple-400 font-black italic" title="Câmera/Lente">
-                    {promptData.camera}
-                </span>
+                <div className="bg-slate-900/50 rounded px-3 py-2 text-left leading-relaxed">
+                    <span className="font-black uppercase tracking-widest text-slate-500 mr-2">Camera:</span>
+                    <span className="text-purple-400 font-black italic">
+                        {promptData.camera}
+                    </span>
+                </div>
             )}
 
             {/* PROPS / OBJETOS */}
             {promptData.propsPrompt && (
-                <span className="text-amber-500 font-bold bg-amber-500/10 px-2 rounded border border-amber-500/20" title="Objetos Adicionais">
-                    {promptData.propsPrompt}
-                </span>
+                <div className="bg-amber-500/10 rounded px-3 py-2 border border-amber-500/20 text-left leading-relaxed">
+                    <span className="font-black uppercase tracking-widest text-amber-500/70 mr-2">Object:</span>
+                    <span className="text-amber-500 font-bold">
+                        {promptData.propsPrompt}
+                    </span>
+                </div>
             )}
+
+            {/* CENARIO / LOCATION */}
+            {(promptData.cenario || promptData.locationDescription) && (
+                <div className="bg-slate-900/50 rounded px-3 py-2 text-left leading-relaxed">
+                    <span className="font-black uppercase tracking-widest text-slate-500 mr-2">Cenário:</span>
+                    <span className="text-emerald-400 font-bold">
+                        {promptData.cenario || promptData.locationDescription}
+                    </span>
+                </div>
+            )}
+
+             {/* VISUAL INTEGRITY (Fallback if negative is raw text, otherwise hardcoded to visual check) */}
+             <div className="bg-slate-900/50 rounded px-3 py-2 text-left leading-relaxed border-t border-slate-800/50 mt-1">
+                 <span className="font-black uppercase tracking-widest text-slate-500 mr-2">Visual Integrity:</span>
+                 <span className="text-rose-400 font-bold italic">
+                     "Pure image only: all surfaces are blank and free of any text or letters."
+                 </span>
+             </div>
 
             {/* RAW FULL PROMPT FALLBACK (Visualizar a string completa montada) */}
             {promptData.finalPrompt && (
-                <div className="w-full mt-2 pt-2 border-t border-white/5 relative group/prompt">
-                    <span className="text-slate-300 font-mono text-[11px] block pr-10 break-words leading-relaxed" title="Payload Completo enviado à API">
+                <div className="w-full mt-3 pt-3 border-t border-white/5 relative group/prompt bg-black/20 p-2 rounded-lg">
+                    <span className="text-slate-400 font-mono text-[9px] block pr-10 break-words leading-relaxed" title="Payload Completo enviado à API">
                         {promptData.finalPrompt}
                     </span>
                     <button
                         onClick={handleCopy}
-                        className="absolute right-0 top-2 p-1.5 bg-brand-500/10 text-brand-400 rounded-md opacity-0 group-hover/prompt:opacity-100 transition-opacity hover:bg-brand-500 hover:text-white"
+                        className="absolute right-2 top-3 p-1.5 bg-brand-500/10 text-brand-400 rounded-md opacity-0 group-hover/prompt:opacity-100 transition-opacity hover:bg-brand-500 hover:text-white"
                         title="Copiar prompt completo"
                     >
                         {copied ? <Check size={14} /> : <Copy size={14} />}
                     </button>
                 </div>
             )}
-
-            {/* NEGATIVE */}
-            {promptData.negative && (
-                <span className="hidden text-rose-500 italic font-bold w-full mt-1 pt-1 border-t border-white/5 text-[9px]" title="Filtro Negativo">
-                    NEGATIVO: {promptData.negative}
-                </span>
-            )}
+            
+            <button onClick={() => setIsExpanded(false)} className="mt-2 text-[9px] font-black uppercase text-slate-500 hover:text-white transition-colors text-center py-2 bg-slate-900/50 rounded-lg flex items-center justify-center gap-1 border border-slate-800">
+                Ocultar Blocos Detalhados
+            </button>
         </div>
     );
 };

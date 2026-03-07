@@ -290,6 +290,9 @@ export const saveProject = async (
             });
             if (uploadError) {
                 console.error("[Storage] Failed to upload audio:", uploadError);
+                if (uploadError.message.includes("size") || uploadError.message.includes("limit")) {
+                    alert(`Falha ao salvar o áudio na nuvem (${(audioFile.size / 1024 / 1024).toFixed(1)}MB). Provavelmente excede o limite do Supabase Free (50MB). O projeto foi salvo, mas o áudio original será perdido se fechar a página. Reduza o áudio gravando em .mp3.`);
+                }
             } else {
                 const { data: urlData } = supabase.storage.from('project-audio').getPublicUrl(`${projectId}.wav`);
                 if (urlData?.publicUrl) {
@@ -310,12 +313,37 @@ export const saveProject = async (
 
 export const deleteProject = async (id: string): Promise<boolean> => {
     try {
-        await supabase.storage.from('project-audio').remove([`${id}.wav`]);
+        console.log(`[Storage] Iniciando exclusão em cascata do projeto: ${id}`);
+
+        // 1. Limpar Banco de Dados (Filhos Primários via SQL)
+        await supabase.from('transcription_items').delete().eq('project_id', id);
+        await supabase.from('master_assets').delete().eq('project_id', id);
+
+        // 2. Limpar Bucket de Áudio (project-audio)
+        await supabase.storage.from('project-audio').remove([`${id}.wav`, `${id}`]);
+        console.log(`[Storage] Áudio removido.`);
+
+        // 3. Limpar Bucket de Imagens (project-images/[ID_DO_PROJETO]/*)
+        // O Supabase precisa que listemos os arquivos da pasta antes de apagar
+        const { data: files } = await supabase.storage.from('project-images').list(id);
+        if (files && files.length > 0) {
+            const filePaths = files.map(x => `${id}/${x.name}`);
+            const { error: storageErr } = await supabase.storage.from('project-images').remove(filePaths);
+            if (storageErr) {
+                console.error("[Storage] Falha ao esvaziar a pasta de imagens do projeto:", storageErr);
+            } else {
+                console.log(`[Storage] Imagens removidas: ${filePaths.length} arquivos deletados.`);
+            }
+        }
+
+        // 4. Limpar Projeto Mestre
         const { error } = await supabase.from('projects').delete().eq('id', id);
         if (error) throw error;
+        
+        console.log(`[Storage] Projeto ${id} erradicado com sucesso.`);
         return true;
     } catch (error) {
-        console.error("Error deleting project", error);
+        console.error("Error deleting project in cascade:", error);
         return false;
     }
 };

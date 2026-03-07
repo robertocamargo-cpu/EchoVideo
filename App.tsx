@@ -36,11 +36,19 @@ const App: React.FC = () => {
   const [transcriptionElapsed, setTranscriptionElapsed] = useState(0);
   const [transcriptionDuration, setTranscriptionDuration] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+  const [editingProjectName, setEditingProjectName] = useState<string>('');
   const transcriptionTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     const initSettings = async () => {
       console.log("[App] initSettings started");
+      
+      const fallbackTimer = setTimeout(() => {
+        console.warn("[App] Initialization timeout reached. Forcing app to load.");
+        setSettingsLoaded(true);
+      }, 7000);
+
       try {
         console.log("[App] Fetching settings from DB...");
         const dbSettings = await getSettingsFromDB();
@@ -74,6 +82,7 @@ const App: React.FC = () => {
         console.error("[App] Initialization ERROR:", e);
         setSettings(DEFAULT_SETTINGS);
       } finally {
+        clearTimeout(fallbackTimer);
         setSettingsLoaded(true);
       }
     };
@@ -354,7 +363,7 @@ const App: React.FC = () => {
             <div className="w-10 h-10 bg-gradient-to-br from-brand-600 to-brand-400 rounded-xl flex items-center justify-center shadow-lg shadow-brand-500/20">
               <Zap className="w-6 h-6 text-white fill-white" />
             </div>
-            <h1 className="text-xl font-bold tracking-tight text-white uppercase italic">echo<span className="text-brand-400">VID</span> <span className="ml-2 text-[10px] font-mono bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full border border-slate-700 align-middle not-italic">v1.9.86</span></h1>
+            <h1 className="text-xl font-bold tracking-tight text-white uppercase italic">echo<span className="text-brand-400">VID</span> <span className="ml-2 text-[10px] font-mono bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full border border-slate-700 align-middle not-italic">v1.9.89</span></h1>
           </div>
 
           <nav className="flex items-center bg-slate-950/50 p-1 rounded-xl border border-slate-800">
@@ -577,23 +586,81 @@ const App: React.FC = () => {
                   <p>Nenhum projeto encontrado</p>
                 </div>
               ) : (
-                projects.map((proj) => (
-                  <div key={proj.id} className="group p-4 bg-slate-800/50 rounded-2xl border border-slate-700/50 hover:border-brand-500/30 hover:bg-slate-800 transition-all cursor-pointer relative">
-                    <div onClick={() => handleLoadProject(proj.id)}>
-                      <h4 className="font-bold text-slate-200 group-hover:text-brand-400 transition-colors mb-1 truncate pr-8">{proj.name}</h4>
-                      <div className="flex items-center text-xs text-slate-500 space-x-3">
-                        <span className="flex items-center"><Clock className="w-3 h-3 mr-1" /> {proj.date}</span>
-                        <span className="flex items-center"><Layout className="w-3 h-3 mr-1" /> {proj.itemsCount ?? proj.items.length} cenas</span>
+                projects.map((proj) => {
+                  const isEditingName = editingProjectId === proj.id;
+
+                  const submitRename = async (e?: React.MouseEvent | React.KeyboardEvent) => {
+                      if (e) e.stopPropagation();
+                      if (editingProjectName.trim() === '' || editingProjectName === proj.name) {
+                          setEditingProjectId(null);
+                          return;
+                      }
+                      try {
+                          // Busca projeto completo se não for o aberto, ou usa o local se for
+                          let fullProject: Project | null = null;
+                          if (currentProject?.id === proj.id) {
+                              fullProject = currentProject;
+                          } else {
+                              fullProject = await getProjectById(proj.id);
+                          }
+                          
+                          if (fullProject) {
+                              const updated = { ...fullProject, name: editingProjectName.trim() };
+                              await saveProject(updated);
+                              if (currentProject?.id === proj.id) setCurrentProject(updated);
+                              
+                              // Atualiza visualmente na lista rápida
+                              setProjects(prev => prev.map(p => p.id === proj.id ? { ...p, name: editingProjectName.trim() } : p));
+                          }
+                      } catch (err) {
+                          console.error("Falha ao renomear:", err);
+                      }
+                      setEditingProjectId(null);
+                  };
+
+                  return (
+                    <div key={proj.id} className="group p-4 bg-slate-800/50 rounded-2xl border border-slate-700/50 hover:border-brand-500/30 hover:bg-slate-800 transition-all cursor-pointer relative" onClick={() => !isEditingName && handleLoadProject(proj.id)}>
+                      <div>
+                        {isEditingName ? (
+                            <div className="flex items-center gap-2 mb-1 pr-14" onClick={e => e.stopPropagation()}>
+                                <input 
+                                    type="text" 
+                                    autoFocus
+                                    value={editingProjectName} 
+                                    onChange={e => setEditingProjectName(e.target.value)} 
+                                    onKeyDown={e => e.key === 'Enter' && submitRename(e)}
+                                    className="bg-slate-950 border border-brand-500/50 text-white text-sm px-2 py-1 rounded w-full outline-none focus:border-brand-500" 
+                                />
+                                <button onClick={submitRename} className="p-1.5 bg-brand-500 hover:bg-brand-400 text-white rounded"><Check size={14}/></button>
+                            </div>
+                        ) : (
+                            <h4 className="font-bold text-slate-200 group-hover:text-brand-400 transition-colors mb-1 truncate pr-16">{proj.name}</h4>
+                        )}
+                        <div className="flex items-center text-xs text-slate-500 space-x-3">
+                          <span className="flex items-center"><Clock className="w-3 h-3 mr-1" /> {proj.date}</span>
+                          <span className="flex items-center"><Layout className="w-3 h-3 mr-1" /> {proj.itemsCount ?? proj.items.length} cenas</span>
+                        </div>
                       </div>
+                      
+                      {!isEditingName && (
+                        <div className="absolute top-4 right-4 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                            onClick={(e) => { e.stopPropagation(); setEditingProjectName(proj.name); setEditingProjectId(proj.id); }}
+                            className="p-1.5 rounded-lg hover:bg-brand-500/20 hover:text-brand-400 text-slate-500 transition-colors"
+                            >
+                            <Edit3 className="w-4 h-4" />
+                            </button>
+                            <button
+                            onClick={(e) => { e.stopPropagation(); handleDeleteProject(proj.id); }}
+                            className="p-1.5 rounded-lg hover:bg-red-500/20 hover:text-red-400 text-slate-500 transition-colors"
+                            >
+                            <Trash2 className="w-4 h-4" />
+                            </button>
+                        </div>
+                      )}
                     </div>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleDeleteProject(proj.id); }}
-                      className="absolute top-4 right-4 p-1.5 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-red-500/20 hover:text-red-400 transition-all text-slate-500"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           </div>
@@ -607,7 +674,7 @@ const App: React.FC = () => {
           <span className="flex items-center"><Activity className="w-3 h-3 mr-1.5 text-brand-400" /> API Latency: 42ms</span>
         </div>
         <div className="flex items-center space-x-4">
-          <button onClick={() => setIsChangelogOpen(true)} className="hover:text-brand-400 transition-colors cursor-pointer">v1.9.86 Build 2026.03.04</button>
+          <button onClick={() => setIsChangelogOpen(true)} className="hover:text-brand-400 transition-colors cursor-pointer">v1.9.89 Build 2026.03.07</button>
         </div>
       </footer>
     </div>

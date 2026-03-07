@@ -31,10 +31,10 @@ Produce frame-accurate scene segmentation (5-10s each).
 
 📸 IMAGE PROMPT STRUCTURE (REQUIRED FOR EACH SCENE - CONTENT ONLY, NO TITLES)
 - medium: Technical description of the medium (e.g., "Disney Pixar 3D animation").
-- subject: Physical description of ALL characters present. If there are multiple people, describe each one. DO NOT use names.
+- subject: Physical description of ALL characters present. YOU MUST STRICTLY USE DEFINED ANATOMY ALWAYS: Subject/Archetype, Hair, Face Shape/Eyes, Upper/Lower Clothing, Shoes. NEVER USE PROPER NAMES (e.g. use "Middle-aged bearded man" instead of "Jesus"). Describe each character if multiple are present using natural English phrases. DO NOT use brackets [ ], slashes /, or CamelCase.
 - action: Spacial/Physical interaction/gestures, especially between characters if multiple are present.
-- cenario: Physical description of environment. DO NOT use names.
-- style: Specific artistic style or lighting.
+- cenario: Physical description of environment. YOU MUST STRICTLY USE DEFINED ANATOMY ALWAYS: Structure/Limits, 2-3 Anchor Fixed Objects w/ Exact Positions, Dominant Materials/Textures, Lighting/Colors. NEVER USE PROPER NAMES. Be literal. No emotional metaphors. DO NOT use brackets.
+- style: DO NOT generate style phrases (like Disney, Cinematic, etc) unless absolutely specific to the scene narrative. Keep it empty normally.
 - camera: Camera angle (REQUIRED: close-up, wide shot, etc).
 - negative: Elements to exclude.
 - animation: Technical motion prompt for video generation (e.g. "Slow pan right, cinematic movement").

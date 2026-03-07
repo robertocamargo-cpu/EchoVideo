@@ -367,7 +367,9 @@ export const generateTimelineVideo = async (
                         const img = new Image(); img.crossOrigin = "anonymous";
                         img.onload = () => { loadedAssets.set(idx, img); res(); };
                         img.onerror = () => res();
-                        img.src = url;
+                        // Importante: Adiciona timestamp à URL para quebrar cache local, senão imagens geradas de novo que sobem com mesmo nome não atualizam o Canvas
+                        const cacheBustedUrl = url.includes('data:') ? url : `${url}${url.includes('?') ? '&' : '?'}cb=${Date.now()}_${idx}`;
+                        img.src = cacheBustedUrl;
                     }
                 });
             }));

@@ -38,7 +38,18 @@ const fileToBase64 = (file: File | Blob): Promise<string> => {
  * Checks API infrastructure status by verifying if a paid API key has been selected.
  */
 export const getApiInfrastructure = async () => {
-  const hasAiStudioKey = await window.aistudio?.hasSelectedApiKey();
+  let hasAiStudioKey = false;
+  try {
+    if (window.aistudio?.hasSelectedApiKey) {
+      hasAiStudioKey = await Promise.race([
+        window.aistudio.hasSelectedApiKey(),
+        new Promise<boolean>(resolve => setTimeout(() => resolve(false), 2000))
+      ]);
+    }
+  } catch (e) {
+    console.warn("AI Studio info check failed:", e);
+  }
+  
   const hasLocalKey = process.env.API_KEY && process.env.API_KEY !== 'PLACEHOLDER_API_KEY';
   const isPremium = hasAiStudioKey || hasLocalKey;
 
@@ -75,6 +86,17 @@ export const generateImage = async (prompt: string, aspectRatio: '1:1' | '3:4' |
   if (!base64Image) throw new Error("A IA não retornou uma imagem válida.");
   return { image: base64Image, prompt };
 };
+
+export const generateText = async (prompt: string, modelName: string = TEXT_MODEL_NAME): Promise<string> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const response = await ai.models.generateContent({
+    model: modelName,
+    contents: prompt
+  });
+  return response.text || '';
+};
+
+
 
 /**
  * Generates viral titles based on a script and context.

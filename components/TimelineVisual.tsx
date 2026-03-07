@@ -143,18 +143,20 @@ export const TimelineVisual: React.FC<TimelineVisualProps> = ({ items, onImageCl
                         const totalTime = items[items.length - 1].endSeconds || 1;
                         const widthPercent = (item.duration / totalTime) * 100;
                         const isPlaying = playingIndex === index;
-                        const imageUrl = item.imageUrl || item.googleImageUrl || item.pollinationsImageUrl || item.importedImageUrl;
+                        const imageUrl = item.imageUrl || item.googleImageUrl || item.pollinationsImageUrl || item.importedImageUrl || item.importedVideoUrl;
+                        const isEmpty = !imageUrl;
 
                         return (
-                            <div key={index} style={{ width: `${widthPercent}%` }} onClick={() => onImageClick(index)} className={`h-full relative border-r border-slate-950/20 transition-all ${isPlaying ? 'ring-2 ring-brand-500 z-10' : 'opacity-80 hover:opacity-100'}`}>
+                            <div key={index} style={{ width: `${widthPercent}%` }} onClick={() => onImageClick(index)} className={`h-full relative border-r border-slate-950/20 transition-all cursor-pointer group ${isPlaying ? 'ring-2 ring-brand-500 z-10' : 'opacity-80 hover:opacity-100'}`}>
                                 {imageUrl ? (
                                     <img src={imageUrl} className="w-full h-full object-cover" />
                                 ) : (
-                                    <div className="w-full h-full bg-slate-950 flex items-center justify-center">
-                                        <div className="w-2 h-2 rounded-full bg-slate-800 animate-pulse"></div>
+                                    <div className="w-full h-full bg-[#b026ff]/20 flex items-center justify-center border-b-2 border-[#b026ff]">
+                                        <div className="w-2 h-2 rounded-full bg-[#b026ff] animate-pulse"></div>
                                     </div>
                                 )}
-                                <div className={`absolute inset-0 flex items-center justify-center transition-opacity ${isPlaying ? 'bg-brand-500/20' : 'opacity-0 hover:opacity-100 bg-black/40'}`}>
+                                <div className={`absolute inset-0 flex flex-col items-center justify-center transition-opacity ${isPlaying ? 'bg-brand-500/20' : 'opacity-0 group-hover:opacity-100 bg-black/60'}`}>
+                                    <span className="text-white font-black text-xs md:text-sm lg:text-lg tracking-widest mb-1 drop-shadow-md">CENA {index + 1}</span>
                                     <button onClick={(e) => handlePlayPreview(e, index, item.startSeconds, item.endSeconds)} className="p-2 bg-brand-600 text-white rounded-full shadow-xl">
                                         {isPlaying ? <Square size={12} fill="currentColor" /> : <Play size={12} fill="currentColor" />}
                                     </button>

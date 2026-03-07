@@ -24,9 +24,40 @@ const getCurrentDateTime = () => {
 
 const LOGS: LogEntry[] = [
     {
-        version: "v1.40",
+        version: "v1.9.89",
         date: getCurrentDateTime().date,
         time: getCurrentDateTime().time,
+        changes: [
+            "UI/UX: Otimização extrema da altura do painel flutuante de direção e botões reposicionados junto às abas de navegação principal, liberando mais espaço visual na tela.",
+            "Prompt AI: Diretriz rigorosa estabelecida para IAs contornarem os bloqueios de copyright utilizando apelidos de disfarces totalmente fonéticos (ex: 'REED' vira 'RIDI', 'MARC' vira 'MARQUI')."
+        ]
+    },
+    {
+        version: "v1.9.88",
+        date: getCurrentDateTime().date,
+        time: getCurrentDateTime().time,
+        changes: [
+            "UI/UX: Menu de direção e renderização agora é flutuante (sticky) para acompanhar projetos longos.",
+            "Exportação em Massa ZIP: Geração de arquivo CSV, Prompts de Imagem (TXT), Ideias de Animação (TXT) e Áudio Original agora integrados dentro do mesmo ZIP das imagens.",
+            "Proteção de Prompts (Personagens): Implementação do sistema de 'Apelidos', ocultando nomes reais durante a criação em inglês para evitar bloqueios de Copyright.",
+            "Navegação Rápida: Adição das setas de avanço/retorno no ImageViewer para ler e navegar entre cenas facilmente."
+        ]
+    },
+    {
+        version: "v1.9.87",
+        date: getCurrentDateTime().date,
+        time: getCurrentDateTime().time,
+        changes: [
+            "Arquitetura de Prompt: Nova exportação em formato de Blocos ('Estilo de Imagem:', 'Subject:', 'Action:', etc) separados por pontos finais.",
+            "Consistência Absoluta: Trava rígida implementada no Prompt Mestre exigindo a anatomia literal obrigatória de Personagens (Character Tokens) e Cenários (Scenario Blocks).",
+            "Visual Integrity: Adição de tag protetora contra letras/alfabetos no motor final de prompt para polir a geração de imagens puras.",
+            "Exportação TXT: Prompt organizado em parágrafos segmentados e limpos."
+        ]
+    },
+    {
+        version: "v1.9.86",
+        date: "04/03/2026",
+        time: "15:00",
         changes: [
             "Correção de Bug: Botão de redesenhar personagens agora funcional.",
             "Character Tokens: Nova lógica de geração focada puramente em descrição física para consistência absoluta.",
@@ -36,7 +67,7 @@ const LOGS: LogEntry[] = [
         ]
     },
     {
-        version: "v1.39",
+        version: "v1.9.39",
         date: "28/03/2024",
         time: "10:00",
         changes: [

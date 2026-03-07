@@ -1,6 +1,6 @@
 
-import React from 'react';
-import { X, Download, FileText, Info } from 'lucide-react';
+import React, { useEffect } from 'react';
+import { X, Download, FileText, Info, ChevronLeft, ChevronRight } from 'lucide-react';
 import { ColoredPrompt } from './ColoredPrompt';
 
 interface ImageViewerProps {
@@ -8,9 +8,20 @@ interface ImageViewerProps {
   promptData: any;
   onClose: () => void;
   filename: string;
+  onNext?: () => void;
+  onPrev?: () => void;
 }
 
-export const ImageViewer: React.FC<ImageViewerProps> = ({ imageUrl, promptData, onClose, filename }) => {
+export const ImageViewer: React.FC<ImageViewerProps> = ({ imageUrl, promptData, onClose, filename, onNext, onPrev }) => {
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+        if (e.key === 'ArrowRight' && onNext) onNext();
+        if (e.key === 'ArrowLeft' && onPrev) onPrev();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onNext, onPrev]);
+
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/98 backdrop-blur-xl p-4 animate-in fade-in duration-300">
       <div className="relative bg-slate-950 rounded-[2.5rem] shadow-2xl border border-slate-800 max-w-7xl w-full h-[90vh] flex overflow-hidden flex-col md:flex-row border-brand-500/10">
@@ -26,12 +37,24 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({ imageUrl, promptData, 
                   className="max-w-full max-h-full object-contain rounded-2xl shadow-[0_0_100px_rgba(0,0,0,0.8)] relative z-10 transition-transform duration-500 group-hover:scale-[1.01]"
                 />
             ) : (
-                <div className="text-slate-800 flex flex-col items-center gap-4 uppercase font-black tracking-widest opacity-20">
+                <div className="text-slate-800 flex flex-col items-center gap-4 uppercase font-black tracking-widest opacity-20 relative z-10">
                     <Info size={120}/>
                     <span>Sem Preview Disponível</span>
                 </div>
             )}
             
+            {onPrev && (
+                <button onClick={(e) => { e.stopPropagation(); onPrev(); }} className="absolute left-6 top-1/2 -translate-y-1/2 p-4 bg-slate-900/80 hover:bg-brand-500 text-white rounded-full z-20 backdrop-blur-lg border border-white/10 transition-colors shadow-2xl">
+                    <ChevronLeft size={32} />
+                </button>
+            )}
+            
+            {onNext && (
+                <button onClick={(e) => { e.stopPropagation(); onNext(); }} className="absolute right-6 top-1/2 -translate-y-1/2 p-4 bg-slate-900/80 hover:bg-brand-500 text-white rounded-full z-20 backdrop-blur-lg border border-white/10 transition-colors shadow-2xl">
+                    <ChevronRight size={32} />
+                </button>
+            )}
+
             <button 
                 onClick={onClose}
                 className="md:hidden absolute top-6 right-6 p-3 bg-slate-900/80 text-white rounded-full z-20 backdrop-blur-lg border border-white/10"
