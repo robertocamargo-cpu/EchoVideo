@@ -38,27 +38,31 @@ const App: React.FC = () => {
   const [audioDuration, setAudioDuration] = useState(0);
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
   const [editingProjectName, setEditingProjectName] = useState<string>('');
+  const [supabaseStatus, setSupabaseStatus] = useState<'connecting' | 'stable' | 'error'>('connecting');
   const transcriptionTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    const initSettings = async () => {
-      console.log("[App] initSettings started");
+    const initApp = async () => {
+      console.log("[App] initApp started — carregamento sequencial para reduzir Disk I/O");
       
       const fallbackTimer = setTimeout(() => {
         console.warn("[App] Initialization timeout reached. Forcing app to load.");
         setSettingsLoaded(true);
-      }, 7000);
+        setSupabaseStatus('error');
+      }, 10000);
 
       try {
-        console.log("[App] Fetching settings from DB...");
+        // 1. Settings (mais crítico — bloqueia a UI)
+        console.log("[App] [1/5] Fetching settings...");
         const dbSettings = await getSettingsFromDB();
-        console.log("[App] Settings received:", !!dbSettings);
 
-        console.log("[App] Fetching styles and subtitles...");
+        // 2. Estilos de imagem
+        console.log("[App] [2/5] Fetching image styles...");
         const styles = await getImageStylePrompts();
-        console.log("[App] Styles received:", styles.length);
+
+        // 3. Presets de legenda
+        console.log("[App] [3/5] Fetching subtitle presets...");
         const subtitles = await getSubtitlePresets();
-        console.log("[App] Subtitles received:", subtitles.length);
 
         const mergedSettings = {
           ...DEFAULT_SETTINGS,
@@ -66,38 +70,35 @@ const App: React.FC = () => {
           items: styles.length > 0 ? styles : DEFAULT_SETTINGS.items,
           subtitleStyles: subtitles.length > 0 ? subtitles : DEFAULT_SETTINGS.subtitleStyles
         };
-
-        console.log("[App] Setting state with merged settings");
         setSettings(mergedSettings);
         if (!dbSettings) {
           console.log("[App] No settings found, creating default...");
           await saveSettingsToDB(DEFAULT_SETTINGS);
         }
 
-        console.log("[App] Refreshing API info and usage...");
-        await refreshApiInfo();
+        // 4. Lista de projetos
+        console.log("[App] [4/5] Fetching projects...");
+        const list = await getProjects();
+        setProjects(list);
+
+        // 5. Uso e API info (não críticos — carregam por último)
+        console.log("[App] [5/5] Fetching usage and API info...");
         await refreshUsage();
+        await refreshApiInfo();
+
+        setSupabaseStatus('stable');
         console.log("[App] Initialization complete");
       } catch (e) {
         console.error("[App] Initialization ERROR:", e);
         setSettings(DEFAULT_SETTINGS);
+        setSupabaseStatus('error');
       } finally {
         clearTimeout(fallbackTimer);
         setSettingsLoaded(true);
       }
     };
 
-    const refreshProjects = async () => {
-      try {
-        const list = await getProjects();
-        setProjects(list);
-      } catch (e) {
-        console.error("Failed to load projects:", e);
-      }
-    };
-
-    initSettings();
-    refreshProjects();
+    initApp();
   }, []);
 
   const refreshUsage = async () => {
@@ -670,7 +671,9 @@ const App: React.FC = () => {
       {/* Footer Info */}
       <footer className="h-10 bg-slate-900/80 border-t border-slate-800 px-6 flex items-center justify-between text-[10px] font-medium tracking-widest text-slate-500 uppercase">
         <div className="flex items-center space-x-6">
-          <span className="flex items-center"><ShieldCheck className="w-3 h-3 mr-1.5 text-emerald-500" /> Supabase Connection Stable</span>
+          {supabaseStatus === 'stable' && <span className="flex items-center"><ShieldCheck className="w-3 h-3 mr-1.5 text-emerald-500" /> Supabase Connected</span>}
+          {supabaseStatus === 'connecting' && <span className="flex items-center"><Loader2 className="w-3 h-3 mr-1.5 text-yellow-400 animate-spin" /> Conectando ao Supabase...</span>}
+          {supabaseStatus === 'error' && <span className="flex items-center"><AlertCircle className="w-3 h-3 mr-1.5 text-red-400" /> Supabase Offline</span>}
           <span className="flex items-center"><Activity className="w-3 h-3 mr-1.5 text-brand-400" /> API Latency: 42ms</span>
         </div>
         <div className="flex items-center space-x-4">
