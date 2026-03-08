@@ -326,7 +326,6 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
     - Conceptual Surrealism: Juxtapose unexpected elements to create thought-provoking imagery.
     - Magic Realism: Infuse everyday scenes with subtle, dreamlike, or impossible details.
     - Visual Symbolism: Use objects, colors, and metaphors to represent emotions or themes.
-    ⚠️ 🚫 NO TEXT IN IMAGES (ABSOLUTE): Never suggest writing words, letters, numbers, signs, banners, books with visible text, screens with readable content, or any readable character in any visual field. All surfaces are blank.
     
     ⚠️ CRITICAL TIMING RULES:
     1. SCENE DURATION: Every scene MUST be between 5.0 and 10.0 seconds. MAXIMUM 10.0 SECONDS.
@@ -351,10 +350,10 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
     📸 VISUAL PROMPT FIELDS (REQUIRED FOR EACH SCENE):
     - medium: (LEAVE EMPTY or short art form descriptor like "Cinematic photography")
     - subject: (STRICT CONSISTENCY: Literal physical descriptions from assets + poetic details. JOIN MULTIPLE CHARACTERS WITH " AND ". ONLY INCLUDE CHARACTERS ACTIVELY IN THE SCENE!)
-    - action: (MAGIC ACTION: Poetic reactions/movements. NEVER suggest writing or displaying text. E.g. "melting into shadows", "floating slightly", "eyes radiating soft starlight".)
-    - cenario: (SURREAL SPACE: Structural description + impossible architectural details or dreamlike proportions. NO signs, NO written text on walls or surfaces.)
-    - props: (SYMBOLIC OBJECTS: Key items with unusual textures, glowing properties or symbolic placement. NO books open with readable text, NO screens with words.)
-    - symbolism: (MANDATORY METAPHORS: Create scenes inspired by: 1. Surrealismo Conceitual, 2. Realismo Mágico, 3. Simbolismo Visual. E.g., "clock dissolving like honey", "butterflies emerging from a book". NEVER describe floating letters or words as a visual element.)
+    - action: (MAGIC ACTION: Poetic reactions/movements. E.g. "melting into shadows", "floating slightly", "eyes radiating soft starlight".)
+    - cenario: (SURREAL SPACE: Structural description + impossible architectural details or dreamlike proportions.)
+    - props: (SYMBOLIC OBJECTS: Key items with unusual textures, glowing properties or symbolic placement.)
+    - symbolism: (MANDATORY METAPHORS: Create scenes inspired by: 1. Surrealismo Conceitual, 2. Realismo Mágico, 3. Simbolismo Visual. E.g., "clock dissolving like honey", "butterflies emerging from a book".)
     - camera: (CINEMATIC DYNAMICS: Vary shots radically. Wide -> Close-up -> POV.)
     - animation: (Motion description)
     - style: (LEAVE EMPTY "")
