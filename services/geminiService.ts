@@ -319,13 +319,13 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
       const chunkAudioPart = { inlineData: { mimeType: chunk.file.type || 'audio/wav', data: chunkAudioBase64 } };
 
       const chunkPrompt = `MASTER PROMPT — AUDIO-TEXT SYNCHRONIZATION ENGINE
-    ROLE: Oneiric Visionary — painter of dreamscapes and suspended moments
-    OBJECTIVE: Analyze the audio clip. Produce frame-accurate scene segmentation with deep dreamlike artistry.
+    ROLE: Surrealist Visionary & Visual Poet
+    OBJECTIVE: Analyze the audio clip. Produce frame-accurate scene segmentation with high artistic depth.
     
-    🎨 CREATIVE MANDATE — ONEIRIC SURREALISM: Compose every scene as if it exists inside a lucid dream. Beauty is melancholic, time is suspended, and reality bends gently. Scenes feel emotionally true even when physically impossible.
-    - Dreamlike Physics: Gravity is soft. Objects float, drift, or dissolve slowly. Light sources glow from within.
-    - Ethereal Atmosphere: Mist, refracted light, mirror-still waters, skies in impossible hues (deep amber, violet dusk, silver dawn).
-    - Emotional Symbolism: Every visual element echoes an inner emotional state. The world outside reflects the world within.
+    🎨 CREATIVE MANDATE: Avoid mundane or literal representations. Elevate the narrative using Conceptual Surrealism, Magic Realism, and Deep Visual Symbolism.
+    - Conceptual Surrealism: Juxtapose unexpected elements to create thought-provoking imagery.
+    - Magic Realism: Infuse everyday scenes with subtle, dreamlike, or impossible details.
+    - Visual Symbolism: Use objects, colors, and metaphors to represent emotions or themes.
     
     ⚠️ CRITICAL TIMING RULES:
     1. SCENE DURATION: Every scene MUST be between 5.0 and 10.0 seconds. MAXIMUM 10.0 SECONDS.
@@ -350,10 +350,10 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
     📸 VISUAL PROMPT FIELDS (REQUIRED FOR EACH SCENE):
     - medium: (LEAVE EMPTY or short art form descriptor like "Cinematic photography")
     - subject: (STRICT CONSISTENCY: Literal physical descriptions from assets + poetic details. JOIN MULTIPLE CHARACTERS WITH " AND ". ONLY INCLUDE CHARACTERS ACTIVELY IN THE SCENE!)
-    - action: (DREAM ACTION: Suspended, slow, weightless movements. E.g. "drifting upward through luminous fog", "turning slowly as light bends around them", "reaching out as petals dissolve into light".)
-    - cenario: (DREAMSCAPE: An impossible but emotionally resonant space. E.g. "a vast mirror-still ocean under a violet sky with two moons", "an ancient library where books float open and pages turn by themselves".)
-    - props: (ONEIRIC OBJECTS: Familiar objects in dreamlike states. E.g. "a candle whose flame burns upward in slow spirals", "an hourglass filled with golden light instead of sand".)
-    - symbolism: (DREAM METAPHOR: The scene's emotional core expressed visually. E.g. "soft golden light seeping through cracks in a dark ceiling", "shadows that move independently of their owners".)
+    - action: (MAGIC ACTION: Poetic reactions/movements. E.g. "melting into shadows", "floating slightly", "eyes radiating soft starlight".)
+    - cenario: (SURREAL SPACE: Structural description + impossible architectural details or dreamlike proportions.)
+    - props: (SYMBOLIC OBJECTS: Key items with unusual textures, glowing properties or symbolic placement.)
+    - symbolism: (MANDATORY METAPHORS: Create scenes inspired by: 1. Surrealismo Conceitual, 2. Realismo Mágico, 3. Simbolismo Visual. E.g., "clock dissolving like honey", "butterflies emerging from a book".)
     - camera: (CINEMATIC DYNAMICS: Vary shots radically. Wide -> Close-up -> POV.)
     - animation: (Motion description)
     - style: (LEAVE EMPTY "")
