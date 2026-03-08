@@ -360,12 +360,21 @@ const App: React.FC = () => {
       {/* Header */}
       <header className="h-16 border-b border-slate-800 bg-slate-900/50 backdrop-blur-xl flex items-center justify-between px-6 sticky top-0 z-40">
         <div className="flex items-center space-x-4">
-          <div className="flex items-center space-x-2 mr-6">
-            <div className="w-10 h-10 bg-gradient-to-br from-brand-600 to-brand-400 rounded-xl flex items-center justify-center shadow-lg shadow-brand-500/20">
+          <button
+            onClick={() => { setStatus(ProcessingStatus.IDLE); setCurrentProject(null); setItems([]); setFile(null); setViewMode('transcription'); }}
+            className="flex items-center space-x-2 mr-6 hover:opacity-80 transition-opacity cursor-pointer group"
+          >
+            <div className="w-10 h-10 bg-gradient-to-br from-brand-600 to-brand-400 rounded-xl flex items-center justify-center shadow-lg shadow-brand-500/20 group-hover:shadow-brand-500/40 transition-all">
               <Zap className="w-6 h-6 text-white fill-white" />
             </div>
             <h1 className="text-xl font-bold tracking-tight text-white uppercase italic">echo<span className="text-brand-400">VID</span> <span className="ml-2 text-[10px] font-mono bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full border border-slate-700 align-middle not-italic">v1.9.89</span></h1>
-          </div>
+          </button>
+          {currentProject && (
+            <div className="flex items-center gap-2 mr-4 max-w-[280px]">
+              <span className="text-[9px] font-black uppercase text-slate-600 tracking-widest">|</span>
+              <span className="text-sm font-black text-brand-400 uppercase tracking-tight truncate">{currentProject.name}</span>
+            </div>
+          )}
 
           <nav className="flex items-center bg-slate-950/50 p-1 rounded-xl border border-slate-800">
             <button
@@ -408,7 +417,7 @@ const App: React.FC = () => {
       </header>
 
       {/* Main Content */}
-      <main className="flex-1 flex flex-col min-h-0 container mx-auto px-4 py-6 max-w-7xl">
+      <main className="flex-1 flex flex-col min-h-0 container mx-auto px-4 py-3 max-w-7xl">
         {viewMode === 'transcription' ? (
           status === ProcessingStatus.IDLE || status === ProcessingStatus.READING_FILE ? (
             <div className="flex-1 flex flex-col items-center justify-center -mt-12">

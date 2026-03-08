@@ -690,8 +690,8 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
     };
 
     return (
-        <div className="w-full max-w-[1600px] mx-auto mt-8 flex flex-col gap-6 relative">
-            <div className="bg-slate-900/60 backdrop-blur-md border border-slate-800 rounded-2xl p-4 flex items-center justify-between shadow-2xl">
+        <div className="w-full max-w-[1600px] mx-auto mt-3 flex flex-col gap-3 relative">
+            <div className="bg-slate-900/60 backdrop-blur-md border border-slate-800 rounded-xl p-3 flex items-center justify-between shadow-2xl">
                 <div className="flex items-center gap-4">
                     <div className="bg-brand-500/20 p-2.5 rounded-xl border border-brand-500/20 text-brand-400"><Wallet size={20} /></div>
                     <div className="flex flex-col">
@@ -709,11 +709,11 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                 </div>
                 <div className="flex gap-6 pr-4">
                     <div className="flex flex-col items-end">
-                        <span className="text-[9px] font-black uppercase text-fuchsia-600/60">Chars</span>
+                        <span className="text-[9px] font-black uppercase text-fuchsia-600/60">Perso.</span>
                         <span className="text-[12px] font-bold text-slate-300">{projectCharacters.length}</span>
                     </div>
                     <div className="flex flex-col items-end">
-                        <span className="text-[9px] font-black uppercase text-emerald-600/60">Locs</span>
+                        <span className="text-[9px] font-black uppercase text-emerald-600/60">Cens.</span>
                         <span className="text-[12px] font-bold text-slate-300">{projectLocations.length}</span>
                     </div>
                     <div className="flex flex-col items-end border-l border-slate-800 pl-6">
@@ -721,7 +721,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                         <span className="text-[12px] font-bold text-slate-300">{projectProps.length}</span>
                     </div>
                     <div className="flex flex-col items-end border-l border-slate-800 pl-6">
-                        <span className="text-[9px] font-black uppercase text-slate-600 tracking-widest italic">Assets</span>
+                        <span className="text-[9px] font-black uppercase text-slate-600 tracking-widest italic">Cenas</span>
                         <span className="text-[12px] font-bold text-slate-300">{data.filter(i => i.imageUrl || i.importedVideoUrl).length} / {data.length}</span>
                     </div>
                 </div>
@@ -818,7 +818,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                 )
             }
 
-            <div className="bg-slate-900/95 backdrop-blur-xl border border-slate-800 rounded-3xl p-3 shadow-2xl relative z-40 sticky top-4">
+            <div className="bg-slate-900/95 backdrop-blur-xl border border-slate-800 rounded-2xl p-2.5 shadow-2xl relative z-40 sticky top-4">
                 <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                     <div className="bg-slate-950/40 px-4 py-2 rounded-2xl border border-slate-800/50 flex flex-col md:flex-row items-center gap-4 shadow-inner flex-1 shadow-lg">
                         <div className="flex items-center gap-3 w-full lg:w-auto">
@@ -850,7 +850,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                 </div>
             </div>
 
-            <div className="flex flex-col lg:flex-row lg:items-center justify-between border-b border-slate-800 pb-0 gap-4">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between border-b border-slate-800 pb-0 gap-2">
                 <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap scrollbar-hide">
                     {['scenes', 'characters', 'locations', 'props', 'titles'].map(tab => (
                         <button key={tab} onClick={() => setActiveTab(tab as TabMode)} className={`px-6 py-4 text-[10px] font-black uppercase tracking-widest border-b-2 transition-all ${activeTab === tab ? 'text-brand-400 border-brand-500 bg-brand-500/5' : 'text-slate-500 border-transparent hover:text-slate-300'}`}>
