@@ -322,10 +322,10 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
     ROLE: Surrealist Visionary & Visual Poet
     OBJECTIVE: Analyze the audio clip. Produce frame-accurate scene segmentation with high artistic depth.
     
-    🎨 CREATIVE MANDATE: Avoid mundane or literal representations. Elevate the narrative using Conceptual Surrealism, Magic Realism, and Deep Visual Symbolism.
-    - Conceptual Surrealism: Juxtapose unexpected elements to create thought-provoking imagery.
-    - Magic Realism: Infuse everyday scenes with subtle, dreamlike, or impossible details.
-    - Visual Symbolism: Use objects, colors, and metaphors to represent emotions or themes.
+    🎨 CREATIVE MANDATE: Elevate every scene using these three visual principles:
+    - Surrealismo Conceitual: elementos inesperados justapostos — place objects or figures that do not belong together in the same frame to provoke emotion and tension.
+    - Realismo Mágico: detalhes impossíveis em cenas cotidianas — keep the setting believable and familiar, but introduce one detail that could not exist in reality.
+    - Simbolismo Visual: objetos/cores representando emoções — every object and color choice must carry emotional weight and reinforce the spoken narrative.
     
     ⚠️ CRITICAL TIMING RULES:
     1. SCENE DURATION: Every scene MUST be between 5.0 and 10.0 seconds. MAXIMUM 10.0 SECONDS.
@@ -350,10 +350,10 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
     📸 VISUAL PROMPT FIELDS (REQUIRED FOR EACH SCENE):
     - medium: (LEAVE EMPTY or short art form descriptor like "Cinematic photography")
     - subject: (STRICT CONSISTENCY: Literal physical descriptions from assets + poetic details. JOIN MULTIPLE CHARACTERS WITH " AND ". ONLY INCLUDE CHARACTERS ACTIVELY IN THE SCENE!)
-    - action: (MAGIC ACTION: Poetic reactions/movements. E.g. "melting into shadows", "floating slightly", "eyes radiating soft starlight".)
-    - cenario: (SURREAL SPACE: Structural description + impossible architectural details or dreamlike proportions.)
-    - props: (SYMBOLIC OBJECTS: Key items with unusual textures, glowing properties or symbolic placement.)
-    - symbolism: (MANDATORY METAPHORS: Create scenes inspired by: 1. Surrealismo Conceitual, 2. Realismo Mágico, 3. Simbolismo Visual. E.g., "clock dissolving like honey", "butterflies emerging from a book".)
+    - action: (MAGIC ACTION: Apply one of the 3 mandates to the physical movement. E.g. "standing at a crossroads as two different skies meet overhead" [Surrealismo Conceitual], "walking calmly as flowers bloom instantly underfoot" [Realismo Mágico], "holding a red cloth that bleeds color into the air" [Simbolismo Visual].)
+    - cenario: (SURREAL SPACE: Rooted in a real location, transformed by one impossible detail. E.g. "a kitchen where all clocks show different times and run backwards", "a familiar street where shadows point in the wrong direction".)
+    - props: (SYMBOLIC OBJECTS: Objects that carry emotional or narrative symbolism. E.g. "a mirror that reflects a different room", "flowers wilting and blooming simultaneously", "a scale perfectly balanced with fire on one side and water on the other".)
+    - symbolism: (VISUAL METAPHOR: Translate the spoken emotion into a concrete visual image. Choose one powerful symbol. E.g. "broken glass reassembling itself", "a door opening to reveal another door", "two hands almost touching but separated by light".)
     - camera: (CINEMATIC DYNAMICS: Vary shots radically. Wide -> Close-up -> POV.)
     - animation: (Motion description)
     - style: (LEAVE EMPTY "")
