@@ -498,6 +498,8 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
           if (item.symbolism) vp += `Symbolic detail: ${item.symbolism}. `;
 
           vp = vp.trim();
+          // REGRA ANTI-TEXTO: nunca pedir texto escrito na imagem
+          vp += " Pure image only: absolutely NO text, NO letters, NO words, NO numbers, NO signs, NO banners, NO captions written anywhere in the image.";
 
           const totalDuration = gEnd - gStart;
           const scenesToCreate: any[] = [];
@@ -555,6 +557,8 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
               if (item.props) partVp += `Main objects: ${item.props}. `;
               if (item.symbolism) partVp += `Symbolic detail: ${item.symbolism}. `;
               partVp += `Camera: ${partCamera}. `;
+              // REGRA ANTI-TEXTO: nunca pedir texto escrito na imagem
+              partVp += "Pure image only: absolutely NO text, NO letters, NO words, NO numbers, NO signs, NO banners, NO captions written anywhere in the image.";
 
               scenesToCreate.push({
                 filename: audioFile.name,
