@@ -318,13 +318,20 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
       const chunkAudioBase64 = await fileToBase64(chunk.file);
       const chunkAudioPart = { inlineData: { mimeType: chunk.file.type || 'audio/wav', data: chunkAudioBase64 } };
 
+      /* SURREAL_v1 (original — 100% surreal):
+      ROLE: Surrealist Visionary & Visual Poet
+      🎨 CREATIVE MANDATE: Avoid mundane or literal representations. Elevate the narrative using Conceptual Surrealism, Magic Realism, and Deep Visual Symbolism.
+      - Conceptual Surrealism: Juxtapose unexpected elements to create thought-provoking imagery.
+      - Magic Realism: Infuse everyday scenes with subtle, dreamlike, or impossible details.
+      - Visual Symbolism: Use objects, colors, and metaphors to represent emotions or themes.
+      */
       const chunkPrompt = `MASTER PROMPT — AUDIO-TEXT SYNCHRONIZATION ENGINE
-    ROLE: Surrealist Visionary & Visual Poet
+    ROLE: Creative Visual Director with a surrealist sensibility
     OBJECTIVE: Analyze the audio clip. Produce frame-accurate scene segmentation with high artistic depth.
     
-    🎨 CREATIVE MANDATE: Avoid mundane or literal representations. Elevate the narrative using Conceptual Surrealism, Magic Realism, and Deep Visual Symbolism.
-    - Conceptual Surrealism: Juxtapose unexpected elements to create thought-provoking imagery.
-    - Magic Realism: Infuse everyday scenes with subtle, dreamlike, or impossible details.
+    🎨 CREATIVE DIRECTION: Prefer elevated visual representations over the purely literal. Use Conceptual Surrealism, Magic Realism and Visual Symbolism when the scene's content allows — but ground the scene in reality first when it produces stronger imagery.
+    - Conceptual Surrealism: Juxtapose unexpected elements when it enhances the narrative.
+    - Magic Realism: Infuse scenes with subtle, dreamlike details when contextually meaningful.
     - Visual Symbolism: Use objects, colors, and metaphors to represent emotions or themes.
     
     ⚠️ CRITICAL TIMING RULES:
@@ -350,7 +357,8 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
     📸 VISUAL PROMPT FIELDS (REQUIRED FOR EACH SCENE):
     - medium: (LEAVE EMPTY or short art form descriptor like "Cinematic photography")
     - subject: (STRICT CONSISTENCY: Literal physical descriptions from assets + poetic details. JOIN MULTIPLE CHARACTERS WITH " AND ". ONLY INCLUDE CHARACTERS ACTIVELY IN THE SCENE!)
-    - action: (MAGIC ACTION: Poetic reactions/movements. E.g. "melting into shadows", "floating slightly", "eyes radiating soft starlight".)
+    /* SURREAL_v1: - action: (MAGIC ACTION: Poetic reactions/movements. E.g. "melting into shadows", "floating slightly", "eyes radiating soft starlight".) */
+    - action: (CINEMATIC ACTION: Physical actions first, elevated when meaningful. E.g. "walking with quiet determination", "melting into shadows", "gazing towards a distant light".)
     - cenario: (SURREAL SPACE: Structural description + impossible architectural details or dreamlike proportions.)
     - props: (SYMBOLIC OBJECTS: Key items with unusual textures, glowing properties or symbolic placement.)
     - symbolism: (MANDATORY METAPHORS: Create scenes inspired by: 1. Surrealismo Conceitual, 2. Realismo Mágico, 3. Simbolismo Visual. E.g., "clock dissolving like honey", "butterflies emerging from a book".)
