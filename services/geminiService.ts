@@ -318,14 +318,18 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
       const chunkAudioBase64 = await fileToBase64(chunk.file);
       const chunkAudioPart = { inlineData: { mimeType: chunk.file.type || 'audio/wav', data: chunkAudioBase64 } };
 
+      /* === SURREAL_v1 (restaurar quando quiser) ===
+      ROLE: Surrealist Visionary & Visual Poet
+      🎨 CREATIVE MANDATE: Avoid mundane or literal representations. Elevate the narrative using Conceptual Surrealism, Magic Realism, and Deep Visual Symbolism.
+      - Conceptual Surrealism: Juxtapose unexpected elements to create thought-provoking imagery.
+      - Magic Realism: Infuse everyday scenes with subtle, dreamlike, or impossible details.
+      - Visual Symbolism: Use objects, colors, and metaphors to represent emotions or themes.
+      === FIM SURREAL_v1 === */
       const chunkPrompt = `MASTER PROMPT — AUDIO-TEXT SYNCHRONIZATION ENGINE
-    ROLE: Surrealist Visionary & Visual Poet
-    OBJECTIVE: Analyze the audio clip. Produce frame-accurate scene segmentation with high artistic depth.
+    ROLE: Cinematic Director & Visual Storyteller
+    OBJECTIVE: Analyze the audio clip. Produce frame-accurate scene segmentation with realistic, photographic visual descriptions.
     
-    🎨 CREATIVE MANDATE: Avoid mundane or literal representations. Elevate the narrative using Conceptual Surrealism, Magic Realism, and Deep Visual Symbolism.
-    - Conceptual Surrealism: Juxtapose unexpected elements to create thought-provoking imagery.
-    - Magic Realism: Infuse everyday scenes with subtle, dreamlike, or impossible details.
-    - Visual Symbolism: Use objects, colors, and metaphors to represent emotions or themes.
+    🎨 VISUAL APPROACH: Prioritize realistic, cinematic photography. Describe scenes as a professional photographer or film director would compose them: natural lighting, real environments, genuine human expressions and actions.
     
     ⚠️ CRITICAL TIMING RULES:
     1. SCENE DURATION: Every scene MUST be between 5.0 and 10.0 seconds. MAXIMUM 10.0 SECONDS.
@@ -350,10 +354,15 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
     📸 VISUAL PROMPT FIELDS (REQUIRED FOR EACH SCENE):
     - medium: (LEAVE EMPTY or short art form descriptor like "Cinematic photography")
     - subject: (STRICT CONSISTENCY: Literal physical descriptions from assets + poetic details. JOIN MULTIPLE CHARACTERS WITH " AND ". ONLY INCLUDE CHARACTERS ACTIVELY IN THE SCENE!)
+    /* SURREAL_v1 fields (restaurar quando quiser):
     - action: (MAGIC ACTION: Poetic reactions/movements. E.g. "melting into shadows", "floating slightly", "eyes radiating soft starlight".)
     - cenario: (SURREAL SPACE: Structural description + impossible architectural details or dreamlike proportions.)
     - props: (SYMBOLIC OBJECTS: Key items with unusual textures, glowing properties or symbolic placement.)
-    - symbolism: (MANDATORY METAPHORS: Create scenes inspired by: 1. Surrealismo Conceitual, 2. Realismo Mágico, 3. Simbolismo Visual. E.g., "clock dissolving like honey", "butterflies emerging from a book".)
+    - symbolism: (MANDATORY METAPHORS: Create scenes inspired by: 1. Surrealismo Conceitual, 2. Realismo Mágico, 3. Simbolismo Visual. E.g., "clock dissolving like honey", "butterflies emerging from a book".) */
+    - action: (REALISTIC ACTION: What the subject is physically doing. E.g. "speaking to the camera", "walking down a corridor", "looking at the horizon".)
+    - cenario: (REAL ENVIRONMENT: Literal description of the place. E.g. "modern office with floor-to-ceiling windows", "busy city street at golden hour".)
+    - props: (PHYSICAL OBJECTS: Real objects present in the scene. E.g. "a wooden desk with papers", "a microphone stand".) 
+    - symbolism: (LEAVE EMPTY or use a subtle cinematic mood. E.g. "warm backlight creating an aura of confidence".)
     - camera: (CINEMATIC DYNAMICS: Vary shots radically. Wide -> Close-up -> POV.)
     - animation: (Motion description)
     - style: (LEAVE EMPTY "")
