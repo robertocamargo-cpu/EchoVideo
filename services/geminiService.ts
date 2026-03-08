@@ -318,18 +318,14 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
       const chunkAudioBase64 = await fileToBase64(chunk.file);
       const chunkAudioPart = { inlineData: { mimeType: chunk.file.type || 'audio/wav', data: chunkAudioBase64 } };
 
-      /* === SURREAL_v1 (restaurar quando quiser) ===
-      ROLE: Surrealist Visionary & Visual Poet
-      🎨 CREATIVE MANDATE: Avoid mundane or literal representations. Elevate the narrative using Conceptual Surrealism, Magic Realism, and Deep Visual Symbolism.
-      - Conceptual Surrealism: Juxtapose unexpected elements to create thought-provoking imagery.
-      - Magic Realism: Infuse everyday scenes with subtle, dreamlike, or impossible details.
-      - Visual Symbolism: Use objects, colors, and metaphors to represent emotions or themes.
-      === FIM SURREAL_v1 === */
       const chunkPrompt = `MASTER PROMPT — AUDIO-TEXT SYNCHRONIZATION ENGINE
-    ROLE: Cinematic Director & Visual Storyteller
-    OBJECTIVE: Analyze the audio clip. Produce frame-accurate scene segmentation with realistic, photographic visual descriptions.
+    ROLE: Cinematic Surrealist — grounded in reality, elevated by imagination
+    OBJECTIVE: Analyze the audio clip. Produce frame-accurate scene segmentation with cinematic depth.
     
-    🎨 VISUAL APPROACH: Prioritize realistic, cinematic photography. Describe scenes as a professional photographer or film director would compose them: natural lighting, real environments, genuine human expressions and actions.
+    🎨 CREATIVE APPROACH — SURREALISM LIGHT: Start from a believable, cinematic reality. Then elevate with ONE subtle surreal or symbolic detail that enhances the mood without breaking immersion. Think: a slightly impossible lighting, an unexpected texture, a poetic element that feels almost real.
+    - Ground first: The scene must feel physically plausible and cinematic.
+    - Then elevate: Add one small surreal touch — a mood-enhancing impossibility or visual metaphor.
+    - Avoid: Fully abstract or chaotic surrealism. Avoid scenes that look like a dream sequence.
     
     ⚠️ CRITICAL TIMING RULES:
     1. SCENE DURATION: Every scene MUST be between 5.0 and 10.0 seconds. MAXIMUM 10.0 SECONDS.
@@ -354,15 +350,10 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
     📸 VISUAL PROMPT FIELDS (REQUIRED FOR EACH SCENE):
     - medium: (LEAVE EMPTY or short art form descriptor like "Cinematic photography")
     - subject: (STRICT CONSISTENCY: Literal physical descriptions from assets + poetic details. JOIN MULTIPLE CHARACTERS WITH " AND ". ONLY INCLUDE CHARACTERS ACTIVELY IN THE SCENE!)
-    /* SURREAL_v1 fields (restaurar quando quiser):
-    - action: (MAGIC ACTION: Poetic reactions/movements. E.g. "melting into shadows", "floating slightly", "eyes radiating soft starlight".)
-    - cenario: (SURREAL SPACE: Structural description + impossible architectural details or dreamlike proportions.)
-    - props: (SYMBOLIC OBJECTS: Key items with unusual textures, glowing properties or symbolic placement.)
-    - symbolism: (MANDATORY METAPHORS: Create scenes inspired by: 1. Surrealismo Conceitual, 2. Realismo Mágico, 3. Simbolismo Visual. E.g., "clock dissolving like honey", "butterflies emerging from a book".) */
-    - action: (REALISTIC ACTION: What the subject is physically doing. E.g. "speaking to the camera", "walking down a corridor", "looking at the horizon".)
-    - cenario: (REAL ENVIRONMENT: Literal description of the place. E.g. "modern office with floor-to-ceiling windows", "busy city street at golden hour".)
-    - props: (PHYSICAL OBJECTS: Real objects present in the scene. E.g. "a wooden desk with papers", "a microphone stand".) 
-    - symbolism: (LEAVE EMPTY or use a subtle cinematic mood. E.g. "warm backlight creating an aura of confidence".)
+    - action: (CINEMATIC ACTION: Real physical action first, optionally enhanced. E.g. "standing still as golden dust slowly swirls around them", "walking forward, shadow stretching impossibly long", "looking up as petals fall in slow motion".)
+    - cenario: (GROUNDED SPACE: Real environment with one surreal atmospheric detail. E.g. "empty cathedral with soft mist creeping along the floor", "rooftop at sunset, sky slightly too vivid to be real".)
+    - props: (PHYSICAL OBJECTS: Real objects, optionally with one symbolic quality. E.g. "an old book glowing faintly at the edges", "a clock on the wall with no hands".)
+    - symbolism: (OPTIONAL LIGHT METAPHOR: One subtle visual symbol that reinforces the mood. E.g. "candle flickering in windless air", "reflection showing a younger face". Can be left simple.)
     - camera: (CINEMATIC DYNAMICS: Vary shots radically. Wide -> Close-up -> POV.)
     - animation: (Motion description)
     - style: (LEAVE EMPTY "")
