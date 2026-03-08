@@ -476,26 +476,29 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
             return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(2, '0')}`;
           };
 
-          // Combine prompt components including PROPS and SYMBOLISM
-          // CONSTRUCT IMAGE PROMPT FOLLOWING instructions.md (Physical Assets Focus)
-          // Rules: 
-          // 1. NO camera/style words in the final text (handled by user presets later).
-          // 2. Combine Subject, Action, Cenario, and Props for a complete physical world.
+          // CONSTRUCT IMAGE PROMPT — padrão instructions.md
+          // Estrutura: Subject (desc. física) | Action | Camera | Object | Environment | Visual Integrity
+
+          // Resolve descrição física real dos personagens a partir dos globalAssets (nunca confiar só no item.subject)
+          let resolvedSubject = "";
+          if (item.characterIds && item.characterIds.length > 0 && globalAssets.detectedCharacters?.length > 0) {
+            const charDescs = item.characterIds
+              .map((id: string) => globalAssets.detectedCharacters.find((c: any) => c.id === id))
+              .filter(Boolean)
+              .map((c: any) => c.description)
+              .filter(Boolean);
+            if (charDescs.length > 0) resolvedSubject = charDescs.join(" AND ");
+          }
+          // Fallback: usa o subject gerado pela IA se não houver characterIds
+          if (!resolvedSubject && item.subject) resolvedSubject = item.subject;
+
           let vp = "";
-
-          // Start with the physical description of characters (Subject)
-          if (item.subject) vp += `${item.subject}. `;
-
-          // High-symbolism action
-          if (item.action) vp += `Performing: ${item.action}. `;
-
-          // The surreal landscape (Cenario)
+          if (resolvedSubject) vp += `Subject: ${resolvedSubject}. `;
+          if (item.characterIds?.length > 0) vp += `Quantity: ${item.characterIds.length} character${item.characterIds.length > 1 ? 's' : ''}. `;
+          if (item.action) vp += `Action: ${item.action}. `;
+          if (item.camera) vp += `Camera: ${item.camera}. `;
+          if (item.props) vp += `Object: ${item.props}. `;
           if (item.cenario) vp += `Environment: ${item.cenario}. `;
-
-          // Symbolic objects (Props)
-          if (item.props) vp += `Main objects: ${item.props}. `;
-
-          // Visual metaphors (Symbolism) - adds the "wow" factor
           if (item.symbolism) vp += `Symbolic detail: ${item.symbolism}. `;
 
           vp = vp.trim();
@@ -551,13 +554,26 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
                 }
               }
 
+              // Resolve descrição física dos personagens para o partVp
+              let resolvedSubjectPart = "";
+              if (item.characterIds && item.characterIds.length > 0 && globalAssets.detectedCharacters?.length > 0) {
+                const charDescs = item.characterIds
+                  .map((id: string) => globalAssets.detectedCharacters.find((c: any) => c.id === id))
+                  .filter(Boolean)
+                  .map((c: any) => c.description)
+                  .filter(Boolean);
+                if (charDescs.length > 0) resolvedSubjectPart = charDescs.join(" AND ");
+              }
+              if (!resolvedSubjectPart && item.subject) resolvedSubjectPart = item.subject;
+
               let partVp = "";
-              if (item.subject) partVp += `${item.subject}. `;
-              partVp += `Performing: ${partAction}. `;
-              if (item.cenario) partVp += `Environment: ${item.cenario}. `;
-              if (item.props) partVp += `Main objects: ${item.props}. `;
-              if (item.symbolism) partVp += `Symbolic detail: ${item.symbolism}. `;
+              if (resolvedSubjectPart) partVp += `Subject: ${resolvedSubjectPart}. `;
+              if (item.characterIds?.length > 0) partVp += `Quantity: ${item.characterIds.length} character${item.characterIds.length > 1 ? 's' : ''}. `;
+              partVp += `Action: ${partAction}. `;
               partVp += `Camera: ${partCamera}. `;
+              if (item.props) partVp += `Object: ${item.props}. `;
+              if (item.cenario) partVp += `Environment: ${item.cenario}. `;
+              if (item.symbolism) partVp += `Symbolic detail: ${item.symbolism}. `;
               // REGRA ANTI-TEXTO: nunca pedir texto escrito na imagem
               partVp += "Pure image only: absolutely NO text, NO letters, NO words, NO numbers, NO signs, NO banners, NO captions written anywhere in the image.";
 
