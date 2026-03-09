@@ -369,8 +369,10 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
                     const byteArray = new Uint8Array(byteString.length);
                     for (let j = 0; j < byteString.length; j++) byteArray[j] = byteString.charCodeAt(j);
                     const blob = new Blob([byteArray], { type: mimeType });
-                    const filename = data[index].filename || `scene_${index + 1}.png`;
-                    const publicUrl = await uploadProjectFile(projectId, blob, 'image', filename);
+                    // Filename único por cena: scene_001.png, scene_002.png...
+                    // NÃO usar data[index].filename pois pode ser o nome do áudio (igual para todas as cenas)
+                    const sceneFilename = `scene_${String(index + 1).padStart(3, '0')}.png`;
+                    const publicUrl = await uploadProjectFile(projectId, blob, 'image', sceneFilename);
                     // Adiciona o cache buster ?v=timestamp para forçar a atualização visual da UI
                     if (publicUrl) finalImageUrl = `${publicUrl}?v=${Date.now()}`;
                 } catch (uploadErr) {
@@ -837,7 +839,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                 <option value="pollinations-zimage">POLLINATIONS ZIMAGE</option>
                             </select>
                         </div>
-                        <div className="flex items-center gap-2 ml-auto w-full md:w-auto">
+                        <div className="flex items-center gap-2 ml-auto w-full md:w-auto overflow-x-auto scrollbar-hide shrink-0">
                             <button onClick={handleGenerateMissing} className={`px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all border ${isGeneratingAll ? 'bg-red-500/10 border-red-500/20 text-red-500' : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white hover:border-brand-500'}`}>{isGeneratingAll ? <Ban size={10} /> : <Sparkles className="inline text-brand-400 opacity-50 mr-1" size={10} />} Faltantes</button>
                             <button onClick={handleGenerateAll} className={`px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all border ${isGeneratingAll ? 'bg-red-500/10 border-red-500/20 text-red-500' : 'bg-brand-500 border-brand-400 text-white hover:bg-brand-400'}`}>{isGeneratingAll ? <Ban size={10} /> : <Sparkles className="inline text-white mr-1" size={10} />} {isGeneratingAll ? "Parar" : "Tudo"}</button>
                             <button onClick={() => importInputRef.current?.click()} className="p-1.5 bg-slate-800 border border-slate-700 rounded-lg text-slate-400 hover:text-white transition-all"><Upload size={14} /></button>

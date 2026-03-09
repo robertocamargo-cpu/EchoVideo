@@ -364,12 +364,38 @@ export const generateTimelineVideo = async (
                         v.onerror = () => res();
                         v.load();
                     } else {
-                        const img = new Image(); img.crossOrigin = "anonymous";
+                        const img = new Image();
                         img.onload = () => { loadedAssets.set(idx, img); res(); };
-                        img.onerror = () => res();
-                        // Importante: Adiciona timestamp à URL para quebrar cache local, senão imagens geradas de novo que sobem com mesmo nome não atualizam o Canvas
-                        const cacheBustedUrl = url.includes('data:') ? url : `${url}${url.includes('?') ? '&' : '?'}cb=${Date.now()}_${idx}`;
-                        img.src = cacheBustedUrl;
+                        img.onerror = () => { console.warn(`[VideoService] Falha ao carregar imagem da cena ${idx + 1}`); res(); };
+
+                        if (url.includes('data:')) {
+                            // data: URLs (base64): usar diretamente, não suportam query strings
+                            img.src = url;
+                        } else {
+                            // URLs externas (Supabase Storage): carregar via fetch → blob URL
+                            // Isso resolve dois problemas:
+                            // 1. Canvas taint: blob:// é same-origin, não tainta o canvas nem quebra captureStream()
+                            // 2. CORS cache: imagens carregadas no <img> da UI sem crossOrigin ficam cacheadas
+                            //    sem headers CORS — o fetch faz uma requisição fresca e independente
+                            const cleanUrl = `${url.split('?')[0]}?cb=${Date.now()}_${idx}`;
+                            fetch(cleanUrl)
+                                .then(r => {
+                                    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                                    return r.blob();
+                                })
+                                .then(blob => {
+                                    const blobUrl = URL.createObjectURL(blob);
+                                    const origOnload = img.onload;
+                                    img.onload = (e) => { URL.revokeObjectURL(blobUrl); if(origOnload) (origOnload as any)(e); };
+                                    img.src = blobUrl;
+                                })
+                                .catch(() => {
+                                    // Fallback: tentativa direta com crossOrigin e cache-busting
+                                    console.warn(`[VideoService] fetch falhou para cena ${idx + 1}, tentando carregamento direto...`);
+                                    img.crossOrigin = "anonymous";
+                                    img.src = cleanUrl;
+                                });
+                        }
                     }
                 });
             }));
@@ -461,7 +487,9 @@ export const generateTimelineVideo = async (
                     }
 
                     if (subtitleStyle) {
-                        const currentChunk = allSubtitleChunks.find(c => elapsed >= c.startSeconds && elapsed < c.endSeconds);
+                        // Offset de +0.5s para compensar o delay de inicialização do AudioContext/pipeline
+                        const subtitleElapsed = elapsed + 0.5;
+                        const currentChunk = allSubtitleChunks.find(c => subtitleElapsed >= c.startSeconds && subtitleElapsed < c.endSeconds);
                         if (currentChunk) {
                             drawSubtitle(ctx, currentChunk.text, width, height, subtitleStyle);
                         }

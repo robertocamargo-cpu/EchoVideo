@@ -40,6 +40,7 @@ const App: React.FC = () => {
   const [editingProjectName, setEditingProjectName] = useState<string>('');
   const [supabaseStatus, setSupabaseStatus] = useState<'connecting' | 'stable' | 'error'>('connecting');
   const transcriptionTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isSavingRef = useRef<boolean>(false); // Mutex: previne race condition de saves concorrentes
 
   useEffect(() => {
     const initApp = async () => {
@@ -241,6 +242,16 @@ const App: React.FC = () => {
   };
 
   const handleSaveProject = async (updatedProject: Project) => {
+    // Mutex: aguarda save anterior terminar para evitar race condition de duplicação
+    if (isSavingRef.current) {
+      console.warn('[App] Save em andamento, aguardando...');
+      let waited = 0;
+      while (isSavingRef.current && waited < 5000) {
+        await new Promise(r => setTimeout(r, 100));
+        waited += 100;
+      }
+    }
+    isSavingRef.current = true;
     try {
       console.log("[App] Saving project to DB:", updatedProject.id);
       await saveProject(updatedProject, file ?? undefined);
@@ -254,6 +265,8 @@ const App: React.FC = () => {
       setProjects(list);
     } catch (e) {
       console.error("Failed to save project:", e);
+    } finally {
+      isSavingRef.current = false;
     }
   };
 

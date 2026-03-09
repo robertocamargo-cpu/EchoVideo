@@ -96,6 +96,7 @@ Objetivo: criar um "Bloco de Descrição Física" em **INGLÊS** para manter con
 ### REGRA DE OURO — ANATOMIA ESTRITA E SEM ESTILO:
 1. **Sem Estilo**: NÃO inclua palavras sobre estilo artístico, iluminação, câmera ou qualidade (nada de "4k", "cinematic", "cartoon").
 2. **Forçar Anatomia**: O campo `subject` na etapa de criação JSON do Gemini **DEVE SEMPRE** gerar o formato físico estrito: `[Sujeito/Arquétipo], [Cabelo], [Detalhes do Rosto/Olhos], [Vestuário Cima e Baixo], [Calçados]`.
+3. **🚫 SEPARAÇÃO OBRIGATÓRIA**: `subject` contém **EXCLUSIVAMENTE** a descrição física dos personagens (aparência, roupas, traços). O que os personagens fazem, como interagem e a composição da cena pertencem ao campo `action`. NUNCA misture criação de cena em `subject`.
 
 > **⚠️ PROGRAMAÇÃO**: Os campos `style` e `camera` gerados pelo Gemini são armazenados como dados de referência interna, mas **NUNCA entram no `imagePrompt` final** enviado à IA de imagem. O estilo artístico que entra no prompt é exclusivamente o definido pelo usuário na galeria de estilos (`image_style_prompts`).
 
@@ -145,6 +146,8 @@ Objetivo: criar um "Bloco Mestre de Cenário Universal" em **INGLÊS** para mant
 
 ### Estrutura Universal (Anatomia Estrita):
 O campo `cenario` na etapa de criação JSON do Gemini **DEVE SEMPRE** gerar o formato físico estrito: `[Estrutura/Limites], [2-3 Objetos Fixos de Ancoragem], [Materiais/Texturas], [Iluminação/Cores]`. Use inglês.
+
+> **🚫 SEPARAÇÃO OBRIGATÓRIA**: `cenario` contém **EXCLUSIVAMENTE** a descrição estática do ambiente (paredes, móveis, iluminação, materiais). O que acontece dentro do cenário (ações, interações, movimento) pertence ao campo `action`. NUNCA inclua criação de cena ou ação em `cenario`.
 
 1. **Estrutura e Limites (O Esqueleto)**:
    - Se Interno: paredes, teto, tipo de arquitetura e janelas/portas.
@@ -229,7 +232,8 @@ Formato Base:
 ### Regras de Ouro do Prompt:
 1. **Exportação**: O prompt de imagem exportado deve conter puramente a string gerada (um prompt completo de blocos por linha), sem prefixos de cena (ex: Scene 1:), metadata adicional, com uma linha em branco separando os prompts, para importação otimizada em lote (MidJourney/Pollinations).
 2. **[NOME DO ESTILO GLOBAL]**: Definido na UI. Se a cena tiver um estilo ativo customizado, o estilo sugerido pela IA Transcription é totalmente descartado para não haver conflitos (ex. Disney Pixar misturado com Cinematic).
-3. **Subject**: Descrição 100% inglesa sem nomes próprios, focada em anatomia pura (ex: "a young adult male, short black hair, grey t-shirt..."). Se houver mais de um, separe por colchetes literais apenas no log interno visual, mas a String da Payload API é toda formatada em inglês fluente orgânico sem pontuações robóticas.
-4. **Action e Cenário**: Regras estritas sem nome de personagens. No recarregamento por 'B-Roll' todo o Subject é apagado e substituído pela descrição da ação de forma genérica.
+3. **Subject**: Descrição 100% inglesa sem nomes próprios, focada **somente na anatomia física** do personagem (ex: "a young adult male, short black hair, grey t-shirt..."). Se houver mais de um, separe por colchetes literais apenas no log interno visual, mas a String da Payload API é toda formatada em inglês fluente orgânico sem pontuações robóticas. **NUNCA inclua ações, poses ou composição de cena aqui.**
+4. **Action**: Descreve o que acontece na cena — postura, interação entre personagens, movimento, composição visual. Regras estritas sem nome de personagens. No recarregamento por 'B-Roll' todo o Subject é apagado e substituído pela descrição da ação de forma genérica.
+5. **Cenário**: Descreve **somente** o ambiente físico estático (arquitetura, objetos, iluminação, materiais). A dinâmica e eventos da cena pertencem ao `action`.
 5. Não preencha descrições qualitativas redundantes ("high quality, 4k") artificialmente fora do bloco Estilo.
 6. **🚫 REGRA ANTI-TEXTO (ABSOLUTA)**: **NUNCA** peça para escrever texto, palavras, frases, letras, números, placas, cartazes, banners ou legendas NA imagem gerada. A IA de imagem não deve renderizar nenhum caractere visível na cena. Todo prompt deve terminar com: `"Pure image only: absolutely NO text, NO letters, NO words, NO numbers, NO signs, NO banners, NO captions written anywhere in the image."`
