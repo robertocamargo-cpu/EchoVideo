@@ -174,33 +174,31 @@ export const selectEffectForScene = async (
         throw new Error("Nenhum efeito disponível para seleção");
     }
 
-    // 1. Filtrar efeito anterior para evitar repetição
-    const candidates = previousEffect
+    // 1. Filtrar efeito anterior para evitar repetição ABSOLUTA
+    // Se tivermos mais de um efeito disponível, os candidatos NUNCA podem incluir o anterior.
+    let candidates = previousEffect && availableEffects.length > 1
         ? availableEffects.filter(e => e.id !== previousEffect.id)
         : availableEffects;
 
-    // Se só sobrou um efeito ou nenhum, usar todos
-    const effectsToConsider = candidates.length > 0 ? candidates : availableEffects;
-
     // 2. Tentar seleção por IA (se habilitado)
     if (useAI) {
-        const aiSelectedId = await selectEffectWithAI(scene, effectsToConsider);
+        const aiSelectedId = await selectEffectWithAI(scene, candidates);
         if (aiSelectedId) {
-            const aiEffect = effectsToConsider.find(e => e.id === aiSelectedId);
+            const aiEffect = candidates.find(e => e.id === aiSelectedId);
             if (aiEffect) return aiEffect;
         }
     }
 
     // 3. Tentar match contextual
-    const bestMatch = matchEffectToScene(scene, effectsToConsider);
+    const bestMatch = matchEffectToScene(scene, candidates);
     if (bestMatch) {
-        console.log(`Efeito selecionado por contexto: ${bestMatch.name} para cena: "${scene.text.substring(0, 50)}..."`);
+        console.log(`✨ Efeito selecionado por contexto: ${bestMatch.name} para cena: "${scene.text.substring(0, 50)}..."`);
         return bestMatch;
     }
 
-    // 4. Fallback aleatório
-    const randomEffect = getRandomEffect(effectsToConsider);
-    console.log(`Efeito selecionado aleatoriamente: ${randomEffect.name} para cena: "${scene.text.substring(0, 50)}..."`);
+    // 4. Fallback aleatório (garantindo não repetir se possível)
+    const randomEffect = getRandomEffect(candidates);
+    console.log(`🎲 Efeito selecionado aleatoriamente: ${randomEffect.name} para cena: "${scene.text.substring(0, 50)}..."`);
     return randomEffect;
 };
 
@@ -226,63 +224,85 @@ export const parseEffectInstruction = (instruction: string): EffectParams => {
     if (!instruction) return defaultParams;
 
     try {
-        const parts = instruction.toLowerCase().split(/[,;]/);
+        const text = instruction.toLowerCase();
         const params: Partial<EffectParams> = {};
 
+        // 1. Extrair Escalas (Ex: "from 1.12 to 1.22")
+        const scaleMatch = text.match(/scale\s+from\s+([\d.]+)\s+to\s+([\d.]+)/i);
+        if (scaleMatch) {
+            params.scaleStart = parseFloat(scaleMatch[1]);
+            params.scaleEnd = parseFloat(scaleMatch[2]);
+        }
+
+        // 2. Detectar Tags de Movimento (Ex: "move:right", "move:left-up")
         let moveTag = 'none';
-        let xRange = 0;
-        let yRange = 0;
+        const tagMatch = text.match(/move:([a-z-]+)/i);
+        if (tagMatch) {
+            moveTag = tagMatch[1];
+        }
 
-        parts.forEach(part => {
-            const cleanPart = part.trim();
-            if (!cleanPart || !cleanPart.includes(':')) return;
+        // 3. Extrair Shifts/Ranges (Ex: "shift from -3% to +3%")
+        // Pegamos todos os matches de porcentagem na string
+        const shiftMatches = [...text.matchAll(/from\s+([+-]?\d+)%\s+to\s+([+-]?\d+)%/g)];
+        
+        let hStart = 0, hEnd = 0, vStart = 0, vEnd = 0;
 
-            const [key, value] = cleanPart.split(':').map(s => s.trim());
-
-            if (key === 'zoom') {
-                const [start, end] = value.split('-').map(parseFloat);
-                if (!isNaN(start)) params.scaleStart = start;
-                if (!isNaN(end)) params.scaleEnd = end;
-            } else if (key === 'move') {
-                moveTag = value;
-            } else if (key === 'xrange') {
-                xRange = parseFloat(value) / 100;
-            } else if (key === 'yrange') {
-                yRange = parseFloat(value) / 100;
-            } else if (key === 'rotation') {
-                const rotation = parseFloat(value);
-                if (!isNaN(rotation)) params.rotation = rotation;
+        if (shiftMatches.length > 0) {
+            // Lógica refinada: Procuramos o range específico que vem logo após a tag de movimento detectada
+            // Ex: "for move:right shift from -3% to +3%"
+            const specificHMatch = text.match(new RegExp(`move:${moveTag}.*?from\\s+([+-]?\\d+)%\\s+to\\s+([+-]?\\d+)%`, 'i'));
+            
+            if (specificHMatch) {
+                const start = parseFloat(specificHMatch[1]) / 100;
+                const end = parseFloat(specificHMatch[2]) / 100;
+                
+                // Atribuir ao eixo correto baseado no contexto da frase
+                // Se a frase próxima ao match fala em "horizontal" ou se moveTag é apenas left/right
+                const contextFragment = text.substring(Math.max(0, specificHMatch.index! - 100), specificHMatch.index!);
+                
+                if (contextFragment.includes('horizontal') || ['left', 'right'].includes(moveTag)) {
+                    hStart = start;
+                    hEnd = end;
+                } else if (contextFragment.includes('vertical') || ['up', 'down'].includes(moveTag)) {
+                    vStart = start;
+                    vEnd = end;
+                } else if (moveTag.includes('-')) {
+                    // Diagonais (ex: right-up): o range costuma ser aplicado a ambos ou houveram múltiplos matches
+                    // No instructions.md atual, diagonais tendem a ter uma instrução simplificada ou eixos explícitos
+                    hStart = start; hEnd = end;
+                    vStart = start; vEnd = end;
+                }
+            } else {
+                // Fallback para mapeamento genérico por eixo se não encontrar o match específico da tag
+                if (text.includes('horizontal axis')) {
+                    const hMatch = text.match(/horizontal axis.*?from\s+([+-]?\d+)%\s+to\s+([+-]?\d+)%/i);
+                    if (hMatch) { hStart = parseFloat(hMatch[1]) / 100; hEnd = parseFloat(hMatch[2]) / 100; }
+                }
+                if (text.includes('vertical axis')) {
+                    const vMatch = text.match(/vertical axis.*?from\s+([+-]?\d+)%\s+to\s+([+-]?\d+)%/i);
+                    if (vMatch) { vStart = parseFloat(vMatch[1]) / 100; vEnd = parseFloat(vMatch[2]) / 100; }
+                }
             }
-        });
+        }
 
-        // Aplicar lógica de direção baseada nas tags do instructions.md
         const finalParams = { ...defaultParams, ...params };
 
-        // Horizontal
-        if (moveTag === 'right') {
-            finalParams.moveXStart = -xRange;
-            finalParams.moveXEnd = xRange;
-        } else if (moveTag === 'left') {
-            finalParams.moveXStart = xRange;
-            finalParams.moveXEnd = -xRange;
-        }
+        // Aplicar os offsets detectados
+        finalParams.moveXStart = hStart;
+        finalParams.moveXEnd = hEnd;
+        finalParams.moveYStart = vStart;
+        finalParams.moveYEnd = vEnd;
 
-        // Vertical / Diagonal
-        if (moveTag.includes('up')) {
-            finalParams.moveYStart = yRange; // Inicia embaixo (+ em canvas)
-            finalParams.moveYEnd = -yRange;  // Vai para cima (- em canvas)
-        } else if (moveTag.includes('down')) {
-            finalParams.moveYStart = -yRange;
-            finalParams.moveYEnd = yRange;
-        }
+        // Fallback Legado se o parser de linguagem natural falhar em detectar eixos mas encontrar moveTag
+        if (hStart === 0 && hEnd === 0 && vStart === 0 && vEnd === 0 && moveTag !== 'none') {
+            const xRange = 0.05; // 5% default
+            const yRange = 0.05;
 
-        // Movimento Horizontal Complementar em Diagonais
-        if (moveTag === 'right-up' || moveTag === 'right-down') {
-            finalParams.moveXStart = -xRange;
-            finalParams.moveXEnd = xRange;
-        } else if (moveTag === 'left-up' || moveTag === 'left-down') {
-            finalParams.moveXStart = xRange;
-            finalParams.moveXEnd = -xRange;
+            if (moveTag === 'right') { finalParams.moveXStart = -xRange; finalParams.moveXEnd = xRange; }
+            else if (moveTag === 'left') { finalParams.moveXStart = xRange; finalParams.moveXEnd = -xRange; }
+            
+            if (moveTag.includes('up')) { finalParams.moveYStart = yRange; finalParams.moveYEnd = -yRange; }
+            else if (moveTag.includes('down')) { finalParams.moveYStart = -yRange; finalParams.moveYEnd = yRange; }
         }
 
         return finalParams;

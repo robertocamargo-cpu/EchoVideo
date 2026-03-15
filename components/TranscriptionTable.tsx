@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Clapperboard, Download, Edit3, FileArchive, FileSpreadsheet, FileText, Image as ImageIcon, Loader2, MapPin, Monitor, Play, PlayCircle, Sparkles, Type, Upload, Users, Video, X, Zap, Ban, Activity, Wallet, Target, Layers, Video as VideoIcon, HelpCircle, Box } from 'lucide-react';
+import { Clapperboard, Download, Edit3, FileArchive, FileSpreadsheet, FileText, Image as ImageIcon, Loader2, MapPin, Monitor, Play, PlayCircle, Sparkles, Type, Upload, Users, Video, X, Zap, Ban, Activity, Wallet, Target, Layers, Video as VideoIcon, HelpCircle, Box, Plus, Trash2 } from 'lucide-react';
 import { TranscriptionItem, AppSettings, TransitionType, ViralTitle, MasterAsset, MotionEffect } from '../types';
 import { generateImage, generateViralTitles, getApiInfrastructure, generateText, TEXT_MODEL_NAME, IMAGEN_MODEL_NAME, IMAGE_MODEL_NAME } from '../services/geminiService';
 import { generatePollinationsImage } from '../services/pollinationsService';
@@ -147,6 +147,47 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         // Quantidade de personagens explícita (para imagem)
         const charCountPrompt = relevantChars.length > 1 ? `Quantity: ${relevantChars.length} characters` : '';
 
+        // --- SISTEMA ANTI-NOMES REAIS (AGRESSIVO v2.1.1) ---
+        const allAssets = [...projectCharacters, ...projectLocations, ...projectProps];
+        
+        const cleanRealNames = (text: string) => {
+            if (!text) return '';
+            let sanitized = text;
+
+            // 1. Limpeza de Nomes Reais Cadastrados
+            allAssets.forEach(asset => {
+                if (asset.realName && asset.realName.trim().length > 2) {
+                    const escaped = asset.realName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    const regex = new RegExp(`\\b${escaped}\\b`, 'gi');
+                    // Substitui o nome real pela descrição física (se houver) ou pelo apelido
+                    const replacement = asset.description ? asset.description.split('.')[0] : asset.name;
+                    sanitized = sanitized.replace(regex, replacement);
+                }
+                
+                // 2. Limpeza de Apelidos que parecem nomes (ex: "Elon Musk" como apelido)
+                if (asset.name && asset.name.includes(' ') && asset.name.length > 5) {
+                    const escapedName = asset.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    const regexName = new RegExp(`\\b${escapedName}\\b`, 'gi');
+                    const replacement = asset.description ? asset.description.split('.')[0] : 'a person';
+                    sanitized = sanitized.replace(regexName, replacement);
+                }
+            });
+
+            // 3. Heurística de Nomes Próprios (Palavras capitalizadas consecutivas)
+            // Tenta capturar "Nomes" que não foram cadastrados
+            sanitized = sanitized.replace(/\b([A-Z][a-z]+)\s([A-Z][a-z]+)\b/g, (match) => {
+                // Se o match for um apelido válido cadastrado (sem espaços), não tocamos. 
+                // Mas aqui o regex já pegou com espaço.
+                return "someone";
+            });
+
+            return sanitized;
+        };
+
+        subject = cleanRealNames(subject);
+        action = cleanRealNames(action);
+        cenario = cleanRealNames(cenario);
+
         // (5) STYLE
         const styleName = project?.image_style_name || 'Generic';
         const stylePrompt = activeStylePrompt || item.style || '';
@@ -160,9 +201,9 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         // Se houver um estilo mestre selecionado na galeria do projeto, USAMOS ELE COM PRIORIDADE.
         // Omitimos o item.style e item.medium gerados pela IA para evitar contradições e misturas visuais.
         if (activeStylePrompt) {
-            finalPrompt += `Estilo de imagem: ${styleName} - ${activeStylePrompt}. `;
+            finalPrompt += `${styleName} - ${activeStylePrompt}. `;
         } else if (stylePrompt || medium) {
-            finalPrompt += `Estilo de imagem: ${styleName} - ${stylePrompt} ${medium ? `(${medium})` : ''}. `;
+            finalPrompt += `${styleName} - ${stylePrompt} ${medium ? `(${medium})` : ''}. `;
         }
 
         // Função para higienizar formatações rudes da inteligência artificial
@@ -177,10 +218,10 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         };
 
         if (subject) finalPrompt += `Subject: ${cleanText(subject)} ${charCountPrompt}. `;
-        if (action) finalPrompt += `Action: ${cleanText(action)}. `;
+        if (action) finalPrompt += `${cleanText(action)}. `;
         if (camera) finalPrompt += `Camera: ${cleanText(camera)}. `;
-        if (propsPrompt) finalPrompt += `Object: ${cleanText(propsPrompt)}. `;
-        if (cenario) finalPrompt += `Cenário: ${cleanText(cenario)}. `;
+        if (propsPrompt) finalPrompt += `Props: ${cleanText(propsPrompt)}. `;
+        if (cenario) finalPrompt += `${cleanText(cenario)}. `;
 
         finalPrompt += `Visual Integrity: "Pure image only: all surfaces are blank and free of any text or letters."`;
 
@@ -227,7 +268,9 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
 
     const handleExportAnimationPrompts = () => {
         const exportedContent = data.map((item, index) => {
-            return item.animation || 'Nenhuma ideia de animação gerada';
+            const promptData = getPromptData(index);
+            const animationIdea = item.animation || 'Nenhuma ideia de animação gerada';
+            return `${promptData.finalPrompt}\nMovement Instruction: ${animationIdea}`;
         }).join('\n\n');
         const blob = new Blob([exportedContent], { type: 'text/plain' });
         const url = URL.createObjectURL(blob);
@@ -260,8 +303,12 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         const promptsContent = data.map((_, index) => getPromptData(index).finalPrompt).join('\n\n');
         zip.file(`${sanitizeFilename(projectName)}_prompts_imagem.txt`, promptsContent);
 
-        // 2. Ideias de Animação
-        const animationContent = data.map(item => item.animation || 'Nenhuma ideia de animação gerada').join('\n\n');
+        // 2. Ideias de Animação (Combinadas com Prompt de Imagem)
+        const animationContent = data.map((item, index) => {
+            const promptData = getPromptData(index);
+            const animationIdea = item.animation || 'Nenhuma ideia de animação gerada';
+            return `${promptData.finalPrompt}\nMovement Instruction: ${animationIdea}`;
+        }).join('\n\n');
         zip.file(`${sanitizeFilename(projectName)}_prompts_animacao.txt`, animationContent);
 
         // 3. Planilha CSV
@@ -380,11 +427,12 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
                 }
             }
             onUpdateItem(index, {
-                [!isPol ? 'googleImageUrl' : 'pollinationsImageUrl']: result.image,
+                googleImageUrl: (!isPol && finalImageUrl.startsWith('data:')) ? result.image : '',
+                pollinationsImageUrl: (isPol && finalImageUrl.startsWith('data:')) ? result.image : '',
                 [!isPol ? 'isGeneratingGoogle' : 'isGeneratingPollinations']: false,
                 selectedProvider: provider,
                 imageUrl: finalImageUrl,
-                importedVideoUrl: '', // LIMPAR VÍDEO IMPORTADO AO GERAR IMAGEM
+                importedVideoUrl: '', 
                 importedImageUrl: '',
                 imageCost: !isPol ? 0.035000 : 0.000000
             });
@@ -407,6 +455,23 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
             onUpdateItem(index, { [!isPol ? 'isGeneratingGoogle' : 'isGeneratingPollinations']: false });
             alert(error.message);
         }
+    };
+    const handleAddAsset = (type: 'characters' | 'locations' | 'props') => {
+        const list = type === 'characters' ? [...projectCharacters] : type === 'locations' ? [...projectLocations] : [...projectProps];
+        const newAsset: MasterAsset = {
+            id: `asset_${Date.now()}`,
+            name: type === 'characters' ? 'Novo Personagem' : type === 'locations' ? 'Novo Cenário' : 'Novo Objeto',
+            realName: '',
+            description: '',
+            imageUrl: ''
+        };
+        onUpdateProjectInfo(type, [...list, newAsset]);
+    };
+
+    const handleDeleteAsset = (id: string, type: 'characters' | 'locations' | 'props') => {
+        if (!confirm('Tem certeza que deseja excluir este item?')) return;
+        const list = type === 'characters' ? [...projectCharacters] : type === 'locations' ? [...projectLocations] : [...projectProps];
+        onUpdateProjectInfo(type, list.filter(a => a.id !== id));
     };
 
     const handleGenerateAssetImage = async (asset: MasterAsset, type: 'characters' | 'locations' | 'props') => {
@@ -698,10 +763,10 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                     <div className="bg-brand-500/20 p-2.5 rounded-xl border border-brand-500/20 text-brand-400"><Wallet size={20} /></div>
                     <div className="flex flex-col">
                         <div className="flex items-center gap-1.5">
-                            <span className="text-[10px] font-black uppercase text-slate-500 tracking-[0.2em]">Investimento Total do Projeto</span>
+                            <span className="text-sm font-black uppercase text-slate-500 tracking-[0.2em]">Investimento Total do Projeto</span>
                             <div className="group relative">
                                 <HelpCircle size={10} className="text-slate-600 cursor-help" />
-                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-950 border border-slate-800 rounded-lg text-[9px] text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 shadow-2xl">
+                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 shadow-2xl">
                                     Soma dos custos de todas as cenas geradas neste projeto específico.
                                 </div>
                             </div>
@@ -711,20 +776,20 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                 </div>
                 <div className="flex gap-6 pr-4">
                     <div className="flex flex-col items-end">
-                        <span className="text-[9px] font-black uppercase text-fuchsia-600/60">Perso.</span>
-                        <span className="text-[12px] font-bold text-slate-300">{projectCharacters.length}</span>
+                        <span className="text-xs font-black uppercase text-fuchsia-600/60">Perso.</span>
+                        <span className="text-sm font-bold text-slate-300">{projectCharacters.length}</span>
                     </div>
                     <div className="flex flex-col items-end">
-                        <span className="text-[9px] font-black uppercase text-emerald-600/60">Cens.</span>
-                        <span className="text-[12px] font-bold text-slate-300">{projectLocations.length}</span>
+                        <span className="text-xs font-black uppercase text-emerald-600/60">Cens.</span>
+                        <span className="text-sm font-bold text-slate-300">{projectLocations.length}</span>
                     </div>
                     <div className="flex flex-col items-end border-l border-slate-800 pl-6">
-                        <span className="text-[9px] font-black uppercase text-amber-600/60">Props</span>
-                        <span className="text-[12px] font-bold text-slate-300">{projectProps.length}</span>
+                        <span className="text-xs font-black uppercase text-amber-600/60">Props</span>
+                        <span className="text-sm font-bold text-slate-300">{projectProps.length}</span>
                     </div>
                     <div className="flex flex-col items-end border-l border-slate-800 pl-6">
-                        <span className="text-[9px] font-black uppercase text-slate-600 tracking-widest italic">Cenas</span>
-                        <span className="text-[12px] font-bold text-slate-300">{data.filter(i => i.imageUrl || i.importedVideoUrl).length} / {data.length}</span>
+                        <span className="text-xs font-black uppercase text-slate-600 tracking-widest italic">Cenas</span>
+                        <span className="text-sm font-bold text-slate-300">{data.filter(i => i.imageUrl || i.importedVideoUrl).length} / {data.length}</span>
                     </div>
                 </div>
             </div>
@@ -736,12 +801,12 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                         <div className="flex-1 space-y-2">
                             <div className="flex justify-between items-end">
                                 <div className="flex flex-col">
-                                    <span className="text-[9px] font-black uppercase text-brand-400 tracking-[0.3em] mb-0.5">Renderizador Master</span>
+                                    <span className="text-xs font-black uppercase text-brand-400 tracking-[0.3em] mb-0.5">Renderizador Master</span>
                                     <span className="text-sm font-bold text-white uppercase">{videoStatus}</span>
                                 </div>
                                 <div className="flex flex-col items-end">
                                     <span className="text-3xl font-black text-brand-400">{videoProgress}%</span>
-                                    <span className="text-[10px] font-mono text-slate-600">
+                                    <span className="text-sm font-mono text-slate-600">
                                         {(() => {
                                             const e = Math.floor(renderElapsed);
                                             const mm = String(Math.floor(e / 60)).padStart(2, '0');
@@ -782,14 +847,14 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                             </div>
                             <div className="flex-1 overflow-y-auto p-8 space-y-8 custom-scrollbar">
                                 <div className="flex flex-col gap-4 bg-slate-950/40 p-6 rounded-3xl border border-slate-800">
-                                    <label className="text-[10px] font-black uppercase text-brand-400 tracking-widest flex items-center gap-2"><Type size={14} /> Incluir Legendas Sincronizadas?</label>
+                                    <label className="text-sm font-black uppercase text-brand-400 tracking-widest flex items-center gap-2"><Type size={14} /> Incluir Legendas Sincronizadas?</label>
                                     <div className="flex gap-4">
-                                        <button onClick={() => setIncludeSubtitles(true)} className={`flex-1 py-4 rounded-xl font-black uppercase text-[10px] tracking-widest transition-all border ${includeSubtitles ? 'bg-brand-500 text-white border-brand-400 shadow-lg shadow-brand-500/20' : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-300'}`}> Sim </button>
-                                        <button onClick={() => setIncludeSubtitles(false)} className={`flex-1 py-4 rounded-xl font-black uppercase text-[10px] tracking-widest transition-all border ${!includeSubtitles ? 'bg-red-500 text-white border-red-400 shadow-lg shadow-red-500/20' : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-300'}`}> Não </button>
+                                        <button onClick={() => setIncludeSubtitles(true)} className={`flex-1 py-4 rounded-xl font-black uppercase text-sm tracking-widest transition-all border ${includeSubtitles ? 'bg-brand-500 text-white border-brand-400 shadow-lg shadow-brand-500/20' : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-300'}`}> Sim </button>
+                                        <button onClick={() => setIncludeSubtitles(false)} className={`flex-1 py-4 rounded-xl font-black uppercase text-sm tracking-widest transition-all border ${!includeSubtitles ? 'bg-red-500 text-white border-red-400 shadow-lg shadow-red-500/20' : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-300'}`}> Não </button>
                                     </div>
                                     {includeSubtitles && (
                                         <div className="mt-4 space-y-2">
-                                            <label className="text-[9px] font-black uppercase text-slate-500 tracking-widest">Preset de Legenda</label>
+                                            <label className="text-xs font-black uppercase text-slate-500 tracking-widest">Preset de Legenda</label>
                                             <select
                                                 value={selectedSubtitlePresetId || (settings.aspectRatio === '16:9' ? 'horizontal-16-9' : 'vertical-9-16')}
                                                 onChange={(e) => setSelectedSubtitlePresetId(e.target.value)}
@@ -804,11 +869,11 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                 </div>
                                 <div className="space-y-4">
                                     <div className="flex justify-between items-center">
-                                        <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex items-center gap-2"><Monitor size={14} /> Preview de Produção (Amostra)</label>
-                                        <button onClick={handlePreview} disabled={isPreviewing} className="bg-slate-800 hover:bg-slate-700 text-brand-400 px-4 py-2 rounded-xl text-[9px] font-black uppercase flex items-center gap-2 border border-slate-700">{isPreviewing ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />} Gerar Amostra</button>
+                                        <label className="text-sm font-black uppercase text-slate-500 tracking-widest flex items-center gap-2"><Monitor size={14} /> Preview de Produção (Amostra)</label>
+                                        <button onClick={handlePreview} disabled={isPreviewing} className="bg-slate-800 hover:bg-slate-700 text-brand-400 px-4 py-2 rounded-xl text-xs font-black uppercase flex items-center gap-2 border border-slate-700">{isPreviewing ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />} Gerar Amostra</button>
                                     </div>
                                     <div className={`bg-black rounded-3xl border border-slate-800 overflow-hidden relative shadow-inner mx-auto ${settings.aspectRatio === '9:16' ? 'aspect-[9/16] w-64' : 'aspect-video w-full'}`}>
-                                        {previewVideoUrl ? <video key={previewVideoUrl} src={previewVideoUrl} controls autoPlay className="w-full h-full object-contain" /> : <div className="w-full h-full flex flex-col items-center justify-center opacity-20 gap-4"><PlayCircle size={64} /><span className="text-[10px] font-black uppercase tracking-[0.2em]">Clique em Gerar Amostra</span></div>}
+                                        {previewVideoUrl ? <video key={previewVideoUrl} src={previewVideoUrl} controls autoPlay className="w-full h-full object-contain" /> : <div className="w-full h-full flex flex-col items-center justify-center opacity-20 gap-4"><PlayCircle size={64} /><span className="text-sm font-black uppercase tracking-[0.2em]">Clique em Gerar Amostra</span></div>}
                                     </div>
                                 </div>
                             </div>
@@ -824,15 +889,15 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                 <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                     <div className="bg-slate-950/40 px-4 py-2 rounded-2xl border border-slate-800/50 flex flex-col md:flex-row items-center gap-4 shadow-inner flex-1 shadow-lg">
                         <div className="flex items-center gap-3 w-full lg:w-auto">
-                            <span className="text-[9px] font-black uppercase text-brand-400 tracking-[0.2em] italic pr-2 border-r border-slate-800">Direção</span>
-                            <select value={settings.aspectRatio} onChange={(e) => onUpdateGlobalSetting('aspectRatio', e.target.value as '16:9' | '9:16')} className="bg-transparent border-none text-[10px] text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white">
+                            <span className="text-xs font-black uppercase text-brand-400 tracking-[0.2em] italic pr-2 border-r border-slate-800">Direção</span>
+                            <select value={settings.aspectRatio} onChange={(e) => onUpdateGlobalSetting('aspectRatio', e.target.value as '16:9' | '9:16')} className="bg-transparent border-none text-sm text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white">
                                 <option value="16:9">16:9</option>
                                 <option value="9:16">9:16</option>
                             </select>
-                            <select value={selectedStyleId} onChange={(e) => onStyleChange(e.target.value)} className="bg-transparent border-none text-[10px] text-slate-200 font-bold uppercase outline-none cursor-pointer max-w-[120px] truncate hover:text-white">
+                            <select value={selectedStyleId} onChange={(e) => onStyleChange(e.target.value)} className="bg-transparent border-none text-sm text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white transition-colors min-w-[140px]">
                                 {settings.items.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
                             </select>
-                            <select value={globalProvider} onChange={e => setGlobalProvider(e.target.value as any)} className="bg-transparent border-none text-[10px] text-slate-200 font-bold uppercase outline-none cursor-pointer max-w-[120px] truncate hover:text-white">
+                            <select value={globalProvider} onChange={e => setGlobalProvider(e.target.value as any)} className="bg-transparent border-none text-sm text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white transition-colors min-w-[160px]">
                                 <option value="google-nano">GEMINI NANO</option>
                                 <option value="google-imagen">IMAGEN 4</option>
                                 <option value="pollinations">POLLINATIONS FLUX</option>
@@ -840,14 +905,14 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                             </select>
                         </div>
                         <div className="flex items-center gap-2 ml-auto w-full md:w-auto overflow-x-auto scrollbar-hide shrink-0">
-                            <button onClick={handleGenerateMissing} className={`px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all border ${isGeneratingAll ? 'bg-red-500/10 border-red-500/20 text-red-500' : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white hover:border-brand-500'}`}>{isGeneratingAll ? <Ban size={10} /> : <Sparkles className="inline text-brand-400 opacity-50 mr-1" size={10} />} Faltantes</button>
-                            <button onClick={handleGenerateAll} className={`px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all border ${isGeneratingAll ? 'bg-red-500/10 border-red-500/20 text-red-500' : 'bg-brand-500 border-brand-400 text-white hover:bg-brand-400'}`}>{isGeneratingAll ? <Ban size={10} /> : <Sparkles className="inline text-white mr-1" size={10} />} {isGeneratingAll ? "Parar" : "Tudo"}</button>
+                            <button onClick={handleGenerateMissing} className={`px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all border ${isGeneratingAll ? 'bg-red-500/10 border-red-500/20 text-red-500' : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white hover:border-brand-500'}`}>{isGeneratingAll ? <Ban size={10} /> : <Sparkles className="inline text-brand-400 opacity-50 mr-1" size={10} />} Faltantes</button>
+                            <button onClick={handleGenerateAll} className={`px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all border ${isGeneratingAll ? 'bg-red-500/10 border-red-500/20 text-red-500' : 'bg-brand-500 border-brand-400 text-white hover:bg-brand-400'}`}>{isGeneratingAll ? <Ban size={10} /> : <Sparkles className="inline text-white mr-1" size={10} />} {isGeneratingAll ? "Parar" : "Tudo"}</button>
                             <button onClick={() => importInputRef.current?.click()} className="p-1.5 bg-slate-800 border border-slate-700 rounded-lg text-slate-400 hover:text-white transition-all"><Upload size={14} /></button>
                             <input type="file" multiple ref={importInputRef} onChange={handleBulkImportImages} className="hidden" accept="image/*,video/*" />
                         </div>
                     </div>
                     <div className="flex items-center min-w-[140px]">
-                        <button onClick={() => setShowVideoSettings(true)} className="w-full flex items-center justify-center gap-2 px-6 py-2 bg-brand-500 hover:bg-brand-400 text-white rounded-xl text-[11px] font-black uppercase tracking-[0.2em] shadow-lg transition-all active:scale-95 group"><VideoIcon size={16} className="group-hover:rotate-12 transition-transform" /> RENDERIZAR</button>
+                        <button onClick={() => setShowVideoSettings(true)} className="w-full flex items-center justify-center gap-2 px-6 py-2 bg-brand-500 hover:bg-brand-400 text-white rounded-xl text-base font-black uppercase tracking-[0.2em] shadow-lg transition-all active:scale-95 group"><VideoIcon size={16} className="group-hover:rotate-12 transition-transform" /> RENDERIZAR</button>
                     </div>
                 </div>
             </div>
@@ -855,7 +920,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
             <div className="flex flex-col lg:flex-row lg:items-center justify-between border-b border-slate-800 pb-0 gap-2">
                 <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap scrollbar-hide">
                     {['scenes', 'characters', 'locations', 'props', 'titles'].map(tab => (
-                        <button key={tab} onClick={() => setActiveTab(tab as TabMode)} className={`px-6 py-4 text-[10px] font-black uppercase tracking-widest border-b-2 transition-all ${activeTab === tab ? 'text-brand-400 border-brand-500 bg-brand-500/5' : 'text-slate-500 border-transparent hover:text-slate-300'}`}>
+                        <button key={tab} onClick={() => setActiveTab(tab as TabMode)} className={`px-6 py-4 text-xs font-black uppercase tracking-widest border-b-2 transition-all ${activeTab === tab ? 'text-brand-400 border-brand-500 bg-brand-500/5' : 'text-slate-500 border-transparent hover:text-slate-300'}`}>
                             {tab === 'scenes' ? 'Story Board' : tab === 'characters' ? 'Personagens' : tab === 'locations' ? 'Cenários' : tab === 'props' ? 'Objetos' : 'CTR Ninja'}
                         </button>
                     ))}
@@ -869,15 +934,15 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                             finally { setIsSaving(false); }
                         }}
                         disabled={isSaving || !project}
-                        className={`text-[9px] font-black uppercase px-3 py-1.5 rounded-lg border transition-all flex items-center gap-1.5 ${isSaving ? 'bg-slate-800 text-slate-500 border-slate-700' : 'bg-brand-500/10 text-brand-400 border-brand-500/30 hover:bg-brand-500 hover:text-white'}`}
+                        className={`text-xs font-black uppercase px-3 py-1.5 rounded-lg border transition-all flex items-center gap-1.5 ${isSaving ? 'bg-slate-800 text-slate-500 border-slate-700' : 'bg-brand-500/10 text-brand-400 border-brand-500/30 hover:bg-brand-500 hover:text-white'}`}
                     >
                         {isSaving ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
                         {isSaving ? 'SALVANDO...' : 'SALVAR'}
                     </button>
-                    <button onClick={handleExportPrompts} className="text-[9px] font-bold uppercase text-slate-400 hover:text-brand-400 flex items-center gap-1.5 transition-colors pr-3 border-r border-slate-800/50 min-w-max"><FileText size={12} /> Prompts</button>
-                    <button onClick={handleExportAnimationPrompts} className="text-[9px] font-bold uppercase text-slate-400 hover:text-sky-400 flex items-center gap-1.5 transition-colors pr-3 border-r border-slate-800/50 min-w-max"><Video size={12} /> Anim</button>
-                    <button onClick={handleExportCSV} className="text-[9px] font-bold uppercase text-slate-400 hover:text-brand-400 flex items-center gap-1.5 transition-colors pr-3 border-r border-slate-800/50 min-w-max"><FileSpreadsheet size={12} /> CSV</button>
-                    <button onClick={handleExportAllImages} className="text-[9px] font-black uppercase text-slate-400 hover:text-brand-400 flex items-center gap-1.5 transition-colors min-w-max"><FileArchive size={12} /> ZIP MASTER</button>
+                    <button onClick={handleExportPrompts} className="text-xs font-black uppercase text-slate-400 hover:text-brand-400 flex items-center gap-1.5 transition-colors pr-3 border-r border-slate-800/50 min-w-max"><FileText size={12} /> Prompts</button>
+                    <button onClick={handleExportAnimationPrompts} className="text-xs font-black uppercase text-slate-400 hover:text-sky-400 flex items-center gap-1.5 transition-colors pr-3 border-r border-slate-800/50 min-w-max"><Video size={12} /> Anim</button>
+                    <button onClick={handleExportCSV} className="text-xs font-black uppercase text-slate-400 hover:text-brand-400 flex items-center gap-1.5 transition-colors pr-3 border-r border-slate-800/50 min-w-max"><FileSpreadsheet size={12} /> CSV</button>
+                    <button onClick={handleExportAllImages} className="text-xs font-black uppercase text-slate-400 hover:text-brand-400 flex items-center gap-1.5 transition-colors min-w-max"><FileArchive size={12} /> ZIP MASTER</button>
                 </div>
             </div>
 
@@ -888,11 +953,11 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                             {data.map((item, index) => (
                                 <div key={index} className="flex flex-col gap-2">
-                                    <div className="text-center text-[11px] font-black text-slate-600 uppercase tracking-widest">{item.duration.toFixed(1)}s</div>
+                                    <div className="text-center text-base font-black text-slate-600 uppercase tracking-widest">{item.duration.toFixed(1)}s</div>
                                     <div className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-6 flex flex-col gap-5 shadow-lg group hover:border-brand-500/30 transition-all">
-                                        <div className="flex justify-between items-center text-[11px] font-black uppercase text-brand-400">
+                                        <div className="flex justify-between items-center text-base font-black uppercase text-brand-400">
                                             <div className="flex items-center gap-2">
-                                                <span className="bg-brand-500/10 text-brand-400 px-2 py-1 rounded text-[10px] font-black">CENA {index + 1}</span>
+                                                <span className="bg-brand-500/10 text-brand-400 px-2 py-1 rounded text-sm font-black">CENA {index + 1}</span>
                                                 <span className="bg-slate-950 px-3 py-1.5 rounded-full border border-slate-800 font-mono"> {item.startTimestamp} - {item.endTimestamp} </span>
                                             </div>
                                         </div>
@@ -915,7 +980,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                 const char = projectCharacters.find(c => c.id === charId);
                                                 if (!char) return null;
                                                 return (
-                                                    <div key={charId} className="bg-fuchsia-500/10 border border-fuchsia-500/30 px-2.5 py-1 rounded-lg flex items-center gap-1.5 text-[9px] font-black text-fuchsia-400 uppercase tracking-widest">
+                                                    <div key={charId} className="bg-fuchsia-500/10 border border-fuchsia-500/30 px-2.5 py-1 rounded-lg flex items-center gap-1.5 text-xs font-black text-fuchsia-400 uppercase tracking-widest">
                                                         <Users size={10} /> {char.name}
                                                     </div>
                                                 );
@@ -924,7 +989,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                 const loc = projectLocations.find(l => l.id === locId);
                                                 if (!loc) return null;
                                                 return (
-                                                    <div key={locId} className="bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg flex items-center gap-1.5 text-[9px] font-black text-emerald-400 uppercase tracking-widest">
+                                                    <div key={locId} className="bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg flex items-center gap-1.5 text-xs font-black text-emerald-400 uppercase tracking-widest">
                                                         <MapPin size={10} /> {loc.name}
                                                     </div>
                                                 );
@@ -932,32 +997,32 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                         </div>
 
                                         <div className="space-y-4">
-                                            <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 text-[11px] text-slate-400 line-clamp-3 leading-relaxed">"{item.text}"</div>
+                                            <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 text-base text-slate-400 line-clamp-3 leading-relaxed">"{item.text}"</div>
                                             <div className="space-y-3">
                                                 <div className="flex items-center justify-between px-1">
-                                                    <div className="flex items-center gap-2"><Edit3 size={10} className="text-brand-400" /><label className="text-[9px] font-black text-slate-600 uppercase tracking-widest">Editor de Prompt</label></div>
+                                                    <div className="flex items-center gap-2"><Edit3 size={10} className="text-brand-400" /><label className="text-xs font-black text-slate-600 uppercase tracking-widest">Editor de Prompt</label></div>
                                                 </div>
 
                                                 <div className="grid grid-cols-2 gap-2">
                                                     <div className="space-y-1">
-                                                        <span className="text-[8px] font-bold text-amber-500/60 uppercase px-1">Medium</span>
+                                                        <span className="text-[0.7rem] font-bold text-amber-500/60 uppercase px-1">Medium</span>
                                                         <input
                                                             value={item.medium || ''}
                                                             placeholder={activeStylePrompt ? activeStylePrompt.split(',')[0].trim() : "Ex: Cinematic, 3D..."}
                                                             onChange={e => onUpdateItem(index, { medium: e.target.value })}
-                                                            className={`w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-[9px] outline-none focus:border-amber-500/50 transition-colors ${!item.medium && activeStylePrompt ? 'text-slate-500 italic' : 'text-slate-300'}`}
+                                                            className={`w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs outline-none focus:border-amber-500/50 transition-colors ${!item.medium && activeStylePrompt ? 'text-slate-500 italic' : 'text-slate-300'}`}
                                                         />
                                                     </div>
                                                     <div className="space-y-1">
-                                                        <span className="text-[8px] font-bold text-purple-500/60 uppercase px-1">Camera</span>
-                                                        <input value={item.camera || ''} onChange={e => onUpdateItem(index, { camera: e.target.value })} className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-[9px] text-slate-300 outline-none focus:border-purple-500/50" placeholder="Ex: Close-up, Wide..." />
+                                                        <span className="text-[0.7rem] font-bold text-purple-500/60 uppercase px-1">Camera</span>
+                                                        <input value={item.camera || ''} onChange={e => onUpdateItem(index, { camera: e.target.value })} className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-300 outline-none focus:border-purple-500/50" placeholder="Ex: Close-up, Wide..." />
                                                     </div>
                                                 </div>
 
                                                 <div className="space-y-1">
                                                     <div className="flex justify-between items-center px-1">
-                                                        <span className="text-[8px] font-bold text-fuchsia-500/60 uppercase">Subject</span>
-                                                        {!item.subject && projectCharacters.some(c => item.characterIds?.includes(c.id)) && <span className="text-[7px] text-fuchsia-500/40 italic uppercase tracking-tighter">Auto-Link Ativo</span>}
+                                                        <span className="text-[0.7rem] font-bold text-fuchsia-500/60 uppercase">Subject</span>
+                                                        {!item.subject && projectCharacters.some(c => item.characterIds?.includes(c.id)) && <span className="text-[0.55rem] text-fuchsia-500/40 italic uppercase tracking-tighter">Auto-Link Ativo</span>}
                                                     </div>
                                                     <input
                                                         value={item.subject || ''}
@@ -966,19 +1031,19 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                             return relevantChars.length > 0 ? relevantChars.map(c => c.name).join(", ") : "Personagem ou Assunto Principal...";
                                                         })()}
                                                         onChange={e => onUpdateItem(index, { subject: e.target.value })}
-                                                        className={`w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-[9px] outline-none focus:border-fuchsia-500/50 transition-colors ${!item.subject && projectCharacters.some(c => item.characterIds?.includes(c.id)) ? 'text-slate-500 italic' : 'text-slate-300'}`}
+                                                        className={`w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs outline-none focus:border-fuchsia-500/50 transition-colors ${!item.subject && projectCharacters.some(c => item.characterIds?.includes(c.id)) ? 'text-slate-500 italic' : 'text-slate-300'}`}
                                                     />
                                                 </div>
 
                                                 <div className="space-y-1">
-                                                    <span className="text-[8px] font-bold text-white/40 uppercase px-1">Action</span>
-                                                    <textarea value={item.action || ''} onChange={e => onUpdateItem(index, { action: e.target.value })} className="w-full h-12 bg-slate-950 border border-slate-800 rounded-lg p-2 text-[9px] text-slate-300 outline-none focus:border-white/20 resize-none custom-scrollbar" placeholder="Ação descritiva da cena..." />
+                                                    <span className="text-[0.7rem] font-bold text-white/40 uppercase px-1">Action</span>
+                                                    <textarea value={item.action || ''} onChange={e => onUpdateItem(index, { action: e.target.value })} className="w-full h-12 bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-300 outline-none focus:border-white/20 resize-none custom-scrollbar" placeholder="Ação descritiva da cena..." />
                                                 </div>
 
                                                 <div className="space-y-1">
                                                     <div className="flex justify-between items-center px-1">
-                                                        <span className="text-[8px] font-bold text-emerald-500/60 uppercase">Scenario</span>
-                                                        {!item.cenario && projectLocations.some(l => item.locationIds?.includes(l.id)) && <span className="text-[7px] text-emerald-500/40 italic uppercase tracking-tighter">Auto-Link Ativo</span>}
+                                                        <span className="text-[0.7rem] font-bold text-emerald-500/60 uppercase">Scenario</span>
+                                                        {!item.cenario && projectLocations.some(l => item.locationIds?.includes(l.id)) && <span className="text-[0.55rem] text-emerald-500/40 italic uppercase tracking-tighter">Auto-Link Ativo</span>}
                                                     </div>
                                                     <input
                                                         value={item.cenario || ''}
@@ -987,18 +1052,18 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                             return relevantLocs.length > 0 ? relevantLocs.map(l => l.name).join(", ") : "Cenário ou Ambiente...";
                                                         })()}
                                                         onChange={e => onUpdateItem(index, { cenario: e.target.value })}
-                                                        className={`w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-[9px] outline-none focus:border-emerald-500/50 transition-colors ${!item.cenario && projectLocations.some(l => item.locationIds?.includes(l.id)) ? 'text-slate-500 italic' : 'text-slate-300'}`}
+                                                        className={`w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs outline-none focus:border-emerald-500/50 transition-colors ${!item.cenario && projectLocations.some(l => item.locationIds?.includes(l.id)) ? 'text-slate-500 italic' : 'text-slate-300'}`}
                                                     />
                                                 </div>
 
                                                 <div className="space-y-1">
-                                                    <span className="text-[8px] font-bold text-sky-500/60 uppercase px-1">Animation (Motion)</span>
-                                                    <textarea value={item.animation || ''} onChange={e => onUpdateItem(index, { animation: e.target.value })} className="w-full h-10 bg-slate-950 border border-slate-800 rounded-lg p-2 text-[9px] text-slate-300 outline-none focus:border-sky-500/50 resize-none custom-scrollbar" placeholder="Motion prompt for Runway/Luma..." />
+                                                    <span className="text-[0.7rem] font-bold text-sky-500/60 uppercase px-1">Animation (Motion)</span>
+                                                    <textarea value={item.animation || ''} onChange={e => onUpdateItem(index, { animation: e.target.value })} className="w-full h-10 bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-300 outline-none focus:border-sky-500/50 resize-none custom-scrollbar" placeholder="Motion prompt for Runway/Luma..." />
                                                 </div>
 
                                                 <div className="space-y-2 pt-2 border-t border-white/5">
-                                                    <label className="text-[9px] font-black text-slate-600 uppercase tracking-widest px-1">Preview Visual (Cores)</label>
-                                                    <ColoredPrompt promptData={getPromptData(index)} className="w-full h-auto min-h-16 bg-slate-950/50 border border-slate-800 rounded-2xl p-4 text-[10px] font-mono shadow-inner" />
+                                                    <label className="text-xs font-black text-slate-600 uppercase tracking-widest px-1">Preview Visual (Cores)</label>
+                                                    <ColoredPrompt promptData={getPromptData(index)} className="w-full h-auto min-h-16 bg-slate-950/50 border border-slate-800 rounded-2xl p-4 text-sm font-mono shadow-inner" />
                                                 </div>
                                             </div>
                                         </div>
@@ -1012,14 +1077,35 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
 
             {
                 (activeTab === 'characters' || activeTab === 'locations') && (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8 pb-32">
+                    <div className="flex flex-col gap-6 pb-32">
+                        <div className="flex justify-between items-center">
+                            <h2 className="text-xl font-bold text-white uppercase tracking-tight">
+                                {activeTab === 'characters' ? 'Gerenciar Personagens' : 'Gerenciar Cenários'}
+                            </h2>
+                            <button 
+                                onClick={() => handleAddAsset(activeTab as any)}
+                                className="px-4 py-2 bg-brand-500 hover:bg-brand-400 text-white rounded-xl text-sm font-black uppercase flex items-center gap-2 shadow-lg transition-all active:scale-95"
+                            >
+                                <Plus size={16} /> Adicionar {activeTab === 'characters' ? 'Personagem' : 'Cenário'}
+                            </button>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
                         {(activeTab === 'characters' ? projectCharacters : projectLocations).map((asset, index) => (
                             <div key={asset.id} className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-6 flex flex-col gap-5 shadow-lg group hover:border-brand-500/30 transition-all">
-                                <div className="flex justify-between items-center text-[10px] font-black uppercase text-brand-400">
-                                    <span className={`px-2 py-1 rounded text-[9px] font-black ${activeTab === 'characters' ? 'bg-fuchsia-500/10 text-fuchsia-400' : 'bg-emerald-500/10 text-emerald-400'}`}>
+                                <div className="flex justify-between items-center text-sm font-black uppercase text-brand-400">
+                                    <span className={`px-2 py-1 rounded text-xs font-black ${activeTab === 'characters' ? 'bg-fuchsia-500/10 text-fuchsia-400' : 'bg-emerald-500/10 text-emerald-400'}`}>
                                         {activeTab === 'characters' ? 'PERSONAGEM' : 'CENÁRIO'} #{index + 1}
                                     </span>
-                                    <span className="text-[9px] font-black text-slate-600 tracking-widest">Aparece em {getAssetOccurrence(asset.id, activeTab === 'characters' ? 'char' : 'loc')} cenas</span>
+                                    <div className="flex items-center gap-3">
+                                        <span className="text-xs font-black text-slate-600 tracking-widest">{getAssetOccurrence(asset.id, activeTab === 'characters' ? 'char' : 'loc')} CENAS</span>
+                                        <button 
+                                            onClick={() => handleDeleteAsset(asset.id, activeTab as any)}
+                                            className="text-slate-600 hover:text-red-500 transition-colors"
+                                            title="Excluir"
+                                        >
+                                            <Trash2 size={14} />
+                                        </button>
+                                    </div>
                                 </div>
                                 <div className="aspect-square bg-black rounded-3xl overflow-hidden relative shadow-inner cursor-zoom-in">
                                     {asset.imageUrl ? (
@@ -1043,7 +1129,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                 <div className="space-y-4">
                                     <div className="flex flex-col gap-1 px-1">
                                         <div className="flex flex-col gap-1">
-                                            <label className="text-[8px] font-black text-brand-400 uppercase tracking-widest">Apelido (Vai pro Prompt)</label>
+                                            <label className="text-[0.7rem] font-black text-brand-400 uppercase tracking-widest">Apelido (Vai pro Prompt)</label>
                                             <input
                                                 value={asset.name}
                                                 placeholder="Ex: ExplorerRafael"
@@ -1055,7 +1141,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                             />
                                         </div>
                                         <div className="flex flex-col gap-0.5 mt-1">
-                                            <label className="text-[8px] font-black text-slate-600 uppercase tracking-widest">Nome Real (Apenas Interno)</label>
+                                            <label className="text-[0.7rem] font-black text-slate-600 uppercase tracking-widest">Nome Real (Apenas Interno)</label>
                                             <input
                                                 value={asset.realName || ''}
                                                 placeholder="Ex: Rafael"
@@ -1063,14 +1149,14 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                     const list = activeTab === 'characters' ? [...projectCharacters] : [...projectLocations];
                                                     onUpdateProjectInfo(activeTab as any, list.map(a => a.id === asset.id ? { ...a, realName: e.target.value } : a));
                                                 }}
-                                                className="bg-transparent text-[10px] font-bold text-slate-400 uppercase tracking-widest outline-none border-b border-transparent focus:border-brand-500/30"
+                                                className="bg-transparent text-sm font-bold text-slate-400 uppercase tracking-widest outline-none border-b border-transparent focus:border-brand-500/30"
                                             />
                                         </div>
                                     </div>
                                     <div className="space-y-2">
                                         <div className="flex flex-col gap-1 px-1">
-                                            <label className="text-[9px] font-black text-slate-600 uppercase tracking-widest">Token Estético (Editável)</label>
-                                            <p className="text-[8px] text-slate-500 italic leading-tight">
+                                            <label className="text-xs font-black text-slate-600 uppercase tracking-widest">Token Estético (Editável)</label>
+                                            <p className="text-[0.7rem] text-slate-500 italic leading-tight">
                                                 {activeTab === 'characters'
                                                     ? "REGRA DE OURO: Descreva apenas matéria física (pele, cabelo, roupa). Sem nomes reais ou termos de estilo."
                                                     : "MASTER BLOCK: Estrutura, Ancoragem, Materiais e Iluminação."}
@@ -1079,11 +1165,11 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                         <textarea value={asset.description} onChange={e => {
                                             const list = activeTab === 'characters' ? [...projectCharacters] : [...projectLocations];
                                             onUpdateProjectInfo(activeTab as any, list.map(a => a.id === asset.id ? { ...a, description: e.target.value } : a));
-                                        }} className="w-full h-24 bg-slate-950 border border-slate-800 rounded-2xl p-4 text-[10px] font-mono text-slate-300 outline-none focus:border-brand-500 shadow-inner resize-none custom-scrollbar" />
+                                        }} className="w-full h-24 bg-slate-950 border border-slate-800 rounded-2xl p-4 text-sm font-mono text-slate-300 outline-none focus:border-brand-500 shadow-inner resize-none custom-scrollbar" />
                                     </div>
                                     <div className="space-y-2">
-                                        <label className="text-[9px] font-black text-slate-600 uppercase tracking-widest px-1">Visualização do Motor</label>
-                                        <div className="w-full h-24 bg-slate-950/50 border border-slate-800 rounded-2xl p-4 text-[10px] font-mono overflow-y-auto scrollbar-hide shadow-inner">
+                                        <label className="text-xs font-black text-slate-600 uppercase tracking-widest px-1">Visualização do Motor</label>
+                                        <div className="w-full h-24 bg-slate-950/50 border border-slate-800 rounded-2xl p-4 text-sm font-mono overflow-y-auto scrollbar-hide shadow-inner">
                                             <span className={activeTab === 'characters' ? "text-fuchsia-400 font-bold" : "text-emerald-400 font-bold"}>
                                                 {asset.description}
                                             </span>
@@ -1092,21 +1178,31 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                 </div>
                             </div>
                         ))}
+                        </div>
                     </div>
                 )
             }
 
             {
                 activeTab === 'props' && (
-                    <div className="pb-32">
+                    <div className="flex flex-col gap-6 pb-32">
+                        <div className="flex justify-between items-center">
+                            <h2 className="text-xl font-bold text-white uppercase tracking-tight">Gerenciar Objetos (Props)</h2>
+                            <button 
+                                onClick={() => handleAddAsset('props')}
+                                className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-white rounded-xl text-sm font-black uppercase flex items-center gap-2 shadow-lg transition-all active:scale-95"
+                            >
+                                <Plus size={16} /> Adicionar Objeto
+                            </button>
+                        </div>
                         {projectProps.length === 0 ? (
                             <div className="flex flex-col items-center justify-center py-32 text-slate-600 gap-6">
                                 <div className="w-24 h-24 rounded-3xl bg-amber-500/5 border border-amber-500/20 flex items-center justify-center">
                                     <Box size={40} className="text-amber-500/30" />
                                 </div>
                                 <div className="text-center space-y-2">
-                                    <p className="text-[11px] font-black uppercase tracking-widest text-slate-500">Nenhum Objeto Detectado</p>
-                                    <p className="text-[10px] text-slate-600 max-w-sm">
+                                    <p className="text-base font-black uppercase tracking-widest text-slate-500">Nenhum Objeto Detectado</p>
+                                    <p className="text-sm text-slate-600 max-w-sm">
                                         Objetos/itens com destaque narrativo (armas, relíquias, etc.) são detectados automaticamente na próxima geração de cenas.
                                     </p>
                                 </div>
@@ -1115,11 +1211,20 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
                                 {projectProps.map((prop, index) => (
                                     <div key={prop.id} className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-6 flex flex-col gap-5 shadow-lg group hover:border-amber-500/30 transition-all">
-                                        <div className="flex justify-between items-center text-[10px] font-black uppercase">
-                                            <span className="bg-amber-500/10 text-amber-400 px-2 py-1 rounded text-[9px] font-black">
+                                        <div className="flex justify-between items-center text-sm font-black uppercase">
+                                            <span className="bg-amber-500/10 text-amber-400 px-2 py-1 rounded text-xs font-black">
                                                 OBJETO #{index + 1}
                                             </span>
-                                            <span className="text-[9px] font-black text-slate-600 tracking-widest">Aparece em {getAssetOccurrence(prop.id, 'prop')} cenas</span>
+                                            <div className="flex items-center gap-3">
+                                                <span className="text-xs font-black text-slate-600 tracking-widest">Aparece em {getAssetOccurrence(prop.id, 'prop')} cenas</span>
+                                                <button 
+                                                    onClick={() => handleDeleteAsset(prop.id, 'props')}
+                                                    className="text-slate-600 hover:text-red-500 transition-colors"
+                                                    title="Excluir"
+                                                >
+                                                    <Trash2 size={14} />
+                                                </button>
+                                            </div>
                                         </div>
                                         <div className="aspect-square bg-black rounded-3xl overflow-hidden relative shadow-inner cursor-zoom-in">
                                             {prop.imageUrl ? (
@@ -1142,19 +1247,32 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                         </div>
                                         <div className="space-y-4">
                                             <div className="flex flex-col gap-1 px-1">
-                                                <label className="text-[8px] font-black text-slate-600 uppercase tracking-widest">Nome do Objeto</label>
-                                                <input
-                                                    value={prop.name}
-                                                    onChange={e => {
-                                                        onUpdateProjectInfo('props', projectProps.map(p => p.id === prop.id ? { ...p, name: e.target.value } : p));
-                                                    }}
-                                                    className="bg-transparent text-sm font-black text-white uppercase tracking-tight italic outline-none border-b border-transparent focus:border-amber-500/30"
-                                                />
+                                                <div className="flex flex-col gap-1">
+                                                    <label className="text-[0.7rem] font-black text-amber-400 uppercase tracking-widest">Nome do Objeto</label>
+                                                    <input
+                                                        value={prop.name}
+                                                        onChange={e => {
+                                                            onUpdateProjectInfo('props', projectProps.map(p => p.id === prop.id ? { ...p, name: e.target.value } : p));
+                                                        }}
+                                                        className="bg-transparent text-sm font-black text-white uppercase tracking-tight italic outline-none border-b border-transparent focus:border-amber-500/30"
+                                                    />
+                                                </div>
+                                                <div className="flex flex-col gap-0.5 mt-1">
+                                                    <label className="text-[0.7rem] font-black text-slate-600 uppercase tracking-widest">Nome Real (Opcional)</label>
+                                                    <input
+                                                        value={prop.realName || ''}
+                                                        placeholder="Ex: Espada"
+                                                        onChange={e => {
+                                                            onUpdateProjectInfo('props', projectProps.map(p => p.id === prop.id ? { ...p, realName: e.target.value } : p));
+                                                        }}
+                                                        className="bg-transparent text-sm font-bold text-slate-400 uppercase tracking-widest outline-none border-b border-transparent focus:border-amber-500/30"
+                                                    />
+                                                </div>
                                             </div>
                                             <div className="space-y-2">
                                                 <div className="flex flex-col gap-1 px-1">
-                                                    <label className="text-[9px] font-black text-slate-600 uppercase tracking-widest">Token Físico (Editável)</label>
-                                                    <p className="text-[8px] text-slate-500 italic leading-tight">
+                                                    <label className="text-xs font-black text-slate-600 uppercase tracking-widest">Token Físico (Editável)</label>
+                                                    <p className="text-[0.7rem] text-slate-500 italic leading-tight">
                                                         7 variáveis obrigatórias: tipo, material, cor, textura, tamanho/forma, estado, detalhes únicos.
                                                     </p>
                                                 </div>
@@ -1163,12 +1281,12 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                     onChange={e => {
                                                         onUpdateProjectInfo('props', projectProps.map(p => p.id === prop.id ? { ...p, description: e.target.value } : p));
                                                     }}
-                                                    className="w-full h-28 bg-slate-950 border border-slate-800 rounded-2xl p-4 text-[10px] font-mono text-slate-300 outline-none focus:border-amber-500 shadow-inner resize-none custom-scrollbar"
+                                                    className="w-full h-28 bg-slate-950 border border-slate-800 rounded-2xl p-4 text-sm font-mono text-slate-300 outline-none focus:border-amber-500 shadow-inner resize-none custom-scrollbar"
                                                 />
                                             </div>
                                             <div className="space-y-2">
-                                                <label className="text-[9px] font-black text-slate-600 uppercase tracking-widest px-1">Visualização do Motor</label>
-                                                <div className="w-full h-16 bg-slate-950/50 border border-slate-800 rounded-2xl p-4 text-[10px] font-mono overflow-y-auto scrollbar-hide shadow-inner">
+                                                <label className="text-xs font-black text-slate-600 uppercase tracking-widest px-1">Visualização do Motor</label>
+                                                <div className="w-full h-16 bg-slate-950/50 border border-slate-800 rounded-2xl p-4 text-sm font-mono overflow-y-auto scrollbar-hide shadow-inner">
                                                     <span className="text-amber-400 font-bold">{prop.description}</span>
                                                 </div>
                                             </div>
@@ -1198,8 +1316,8 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                     return (
                                         <div key={idx} className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-8 flex flex-col gap-6 hover:border-brand-500/30 transition-all shadow-xl group relative">
                                             <div className="flex justify-between items-start">
-                                                <div className="bg-slate-950 px-4 py-2 rounded-xl text-brand-400 font-black text-[10px] uppercase border border-slate-800">Rank #{idx + 1}</div>
-                                                <span className="text-slate-500 font-black text-[10px]">{item.viralityScore}% CTR</span>
+                                                <div className="bg-slate-950 px-4 py-2 rounded-xl text-brand-400 font-black text-sm uppercase border border-slate-800">Rank #{idx + 1}</div>
+                                                <span className="text-slate-500 font-black text-sm">{item.viralityScore}% CTR</span>
                                             </div>
                                             <h3 className="text-2xl leading-tight uppercase tracking-tight text-slate-200 font-medium whitespace-pre-line">{item.title}</h3>
 
@@ -1207,39 +1325,39 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                 <div className={`w-full rounded-2xl overflow-hidden border border-slate-800 shadow-2xl relative group-hover:border-brand-500 transition-all cursor-zoom-in ${settings.aspectRatio === '9:16' ? 'aspect-[9/16] w-1/2 mx-auto' : 'aspect-video'}`} onClick={() => setViewingImageState({ imageUrl: currentImageUrl, promptData: { action: item.thumbnailVisual, style: activeStylePrompt }, filename: `thumbnail_${idx + 1}.png` })}>
                                                     <img src={currentImageUrl} className="w-full h-full object-cover" />
                                                     <div className="absolute inset-x-0 bottom-0 bg-black/60 backdrop-blur-md p-3 text-center">
-                                                        <span className="text-white font-black italic uppercase text-[12px] tracking-tight">"{item.thumbnailText}"</span>
+                                                        <span className="text-white font-black italic uppercase text-sm tracking-tight">"{item.thumbnailText}"</span>
                                                     </div>
                                                 </div>
                                             )}
 
                                             <div className="bg-slate-950/40 p-4 rounded-2xl border border-slate-800 space-y-3">
-                                                <p className="text-brand-400 text-[10px] font-black uppercase tracking-widest flex items-center gap-2"><Layers size={12} /> Gatilho & Lógica</p>
+                                                <p className="text-brand-400 text-sm font-black uppercase tracking-widest flex items-center gap-2"><Layers size={12} /> Gatilho & Lógica</p>
                                                 <p className="text-slate-500 text-xs italic">"{item.explanation}"</p>
                                             </div>
                                             <div className="bg-slate-950/40 p-4 rounded-2xl border border-slate-800 space-y-4">
                                                 <div className="flex justify-between items-center">
-                                                    <p className="text-emerald-400 text-[10px] font-black uppercase tracking-widest flex items-center gap-2"><ImageIcon size={12} /> Sugestão de Thumbnail</p>
+                                                    <p className="text-emerald-400 text-sm font-black uppercase tracking-widest flex items-center gap-2"><ImageIcon size={12} /> Sugestão de Thumbnail</p>
                                                     <button
                                                         onClick={() => handleGenerateThumbnail(idx)}
                                                         disabled={isGenerating}
-                                                        className="bg-emerald-500 hover:bg-emerald-400 text-white px-3 py-1.5 rounded-lg text-[9px] font-black uppercase flex items-center gap-2 transition-all shadow-lg active:scale-95 disabled:opacity-50"
+                                                        className="bg-emerald-500 hover:bg-emerald-400 text-white px-3 py-1.5 rounded-lg text-xs font-black uppercase flex items-center gap-2 transition-all shadow-lg active:scale-95 disabled:opacity-50"
                                                     >
                                                         {isGenerating ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />}
                                                         {currentImageUrl ? 'Regerar Thumbnail' : 'Criar Thumbnail'}
                                                     </button>
                                                 </div>
                                                 <div className="space-y-2">
-                                                    <p className="text-[10px] text-slate-500 uppercase font-black tracking-widest">Visual:</p>
+                                                    <p className="text-sm text-slate-500 uppercase font-black tracking-widest">Visual:</p>
                                                     <p className="text-slate-300 text-xs">{item.thumbnailVisual}</p>
                                                 </div>
                                                 <div className="space-y-2">
-                                                    <p className="text-[10px] text-slate-500 uppercase font-black tracking-widest">Texto na Imagem:</p>
+                                                    <p className="text-sm text-slate-500 uppercase font-black tracking-widest">Texto na Imagem:</p>
                                                     <p className="text-emerald-300 font-black uppercase text-sm italic">"{item.thumbnailText}"</p>
                                                 </div>
                                             </div>
                                             <div className="flex justify-between items-center pt-2 border-t border-slate-800/50">
-                                                <button onClick={() => { navigator.clipboard.writeText(item.title); alert("Copiado!"); }} className="text-brand-400 text-[10px] font-black uppercase">Copiar Título</button>
-                                                {item.abWinnerReason && <span className="text-[9px] font-black text-slate-700 uppercase">A/B Winner Priority</span>}
+                                                <button onClick={() => { navigator.clipboard.writeText(item.title); alert("Copiado!"); }} className="text-brand-400 text-sm font-black uppercase">Copiar Título</button>
+                                                {item.abWinnerReason && <span className="text-xs font-black text-slate-700 uppercase">A/B Winner Priority</span>}
                                             </div>
                                         </div>
                                     );
@@ -1279,6 +1397,6 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                     }}
                 />
             )}
-        </div >
+        </div>
     );
 };

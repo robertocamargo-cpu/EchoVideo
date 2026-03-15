@@ -165,7 +165,18 @@ const App: React.FC = () => {
       }
 
       const activeStylePrompt = settings.items.find(s => s.id === selectedStyle)?.prompt || '';
-      const result = await enrichSrtWithVisuals(audio, effectiveSrt || null, context, activeStylePrompt, effectiveScript || '');
+      const result = await enrichSrtWithVisuals(
+        audio, 
+        effectiveSrt || null, 
+        context, 
+        activeStylePrompt, 
+        effectiveScript || '',
+        (progress, currentChunk, totalChunks) => {
+          // Atualiza o progresso real vindo do serviço
+          const realPct = Math.min(99, Math.round(progress));
+          setTranscriptionProgress(realPct);
+        }
+      );
       if (!result.items || result.items.length === 0) {
         if (transcriptionTimerRef.current) clearInterval(transcriptionTimerRef.current);
         console.warn('[App] No items generated from audio.');
@@ -380,7 +391,7 @@ const App: React.FC = () => {
             <div className="w-10 h-10 bg-gradient-to-br from-brand-600 to-brand-400 rounded-xl flex items-center justify-center shadow-lg shadow-brand-500/20 group-hover:shadow-brand-500/40 transition-all">
               <Zap className="w-6 h-6 text-white fill-white" />
             </div>
-            <h1 className="text-xl font-bold tracking-tight text-white uppercase italic">echo<span className="text-brand-400">VID</span> <span className="ml-2 text-[10px] font-mono bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full border border-slate-700 align-middle not-italic">v1.9.89</span></h1>
+            <h1 className="text-xl font-bold tracking-tight text-white uppercase italic">echo<span className="text-brand-400">VID</span> <span className="ml-2 text-[10px] font-mono bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full border border-slate-700 align-middle not-italic">v2.1.5</span></h1>
           </button>
           {currentProject && (
             <div className="flex items-center gap-2 mr-4 max-w-[280px]">
@@ -557,6 +568,7 @@ const App: React.FC = () => {
                   const updatedProject = { ...currentProject, [field]: value };
                   // O setItems é necessário se o campo for 'items'
                   if (field === 'items') setItems(value);
+                  setCurrentProject(updatedProject);
                   handleSaveProject(updatedProject);
                 }
               }}

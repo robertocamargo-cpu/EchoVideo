@@ -37,10 +37,10 @@ export const ColoredPrompt: React.FC<ColoredPromptProps> = ({ promptData, classN
 
     if (!isExpanded) {
         return (
-            <div className={`flex items-center gap-2 relative ${className} text-[10px] w-full max-w-full overflow-hidden`}>
+            <div className={`flex items-center gap-2 relative ${className} text-xs w-full max-w-full overflow-hidden`}>
                 <div 
                    onClick={() => setIsExpanded(true)} 
-                   className="flex-1 bg-slate-900/50 border border-slate-800 rounded-lg p-3 text-slate-400 font-mono truncate cursor-pointer hover:bg-slate-800 transition-colors opacity-80 hover:opacity-100"
+                   className="flex-1 bg-slate-900/50 border border-slate-800 rounded-lg p-3 text-slate-400 truncate cursor-pointer hover:bg-slate-800 transition-colors opacity-80 hover:opacity-100"
                    title="Clique para ver os blocos detalhados"
                 >
                     {promptData.finalPrompt || "Prompt não gerado..."}
@@ -59,7 +59,7 @@ export const ColoredPrompt: React.FC<ColoredPromptProps> = ({ promptData, classN
     }
 
     return (
-        <div className={`flex flex-col gap-y-1.5 relative ${className} text-[10px]`}>
+        <div className={`flex flex-col gap-y-1.5 relative ${className} text-xs`}>
             {/* ESTILO + MEDIUM */}
             {(promptData.style || promptData.medium) && (
                 <div className="bg-slate-900/50 rounded px-3 py-2 text-left leading-relaxed">
@@ -131,7 +131,7 @@ export const ColoredPrompt: React.FC<ColoredPromptProps> = ({ promptData, classN
             {/* RAW FULL PROMPT FALLBACK (Visualizar a string completa montada) */}
             {promptData.finalPrompt && (
                 <div className="w-full mt-3 pt-3 border-t border-white/5 relative group/prompt bg-black/20 p-2 rounded-lg">
-                    <span className="text-slate-400 font-mono text-[9px] block pr-10 break-words leading-relaxed" title="Payload Completo enviado à API">
+                    <span className="text-slate-400 text-xs block pr-10 break-words leading-relaxed" title="Payload Completo enviado à API">
                         {promptData.finalPrompt}
                     </span>
                     <button

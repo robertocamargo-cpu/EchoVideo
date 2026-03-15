@@ -159,7 +159,7 @@ export const getProjectAudio = async (projectId: string): Promise<Blob | null> =
         // Tentar primeiro com .wav (padrão)
         const { data, error } = await supabase.storage
             .from('project-audio')
-            .download(`${projectId}.wav`);
+            .download(`${projectId}.mp3`);
 
         if (!error && data) return data;
 
@@ -241,6 +241,12 @@ export const saveProject = async (
                 // Função helper para traduzir arrays de IDs usando o mapeamento
                 const translateIds = (ids: string[]) => ids.map(id => idMapping[id] || id);
 
+                // Função para limpar Base64 de URLs antes de salvar no Postgres
+                const cleanBase64 = (url: string | undefined): string | null => {
+                    if (!url || url.startsWith('data:')) return null;
+                    return url;
+                };
+
                 return {
                     project_id: projectId,
                     filename: item.filename,
@@ -253,10 +259,10 @@ export const saveProject = async (
                     image_prompt: item.imagePrompt,
                     visual_summary: JSON.stringify(extraData),
                     selected_provider: item.selectedProvider || 'google',
-                    image_url: item.imageUrl,
-                    google_image_url: item.googleImageUrl,
-                    pollinations_image_url: item.pollinationsImageUrl,
-                    imported_image_url: item.importedImageUrl,
+                    image_url: cleanBase64(item.imageUrl),
+                    google_image_url: cleanBase64(item.googleImageUrl),
+                    pollinations_image_url: cleanBase64(item.pollinationsImageUrl),
+                    imported_image_url: cleanBase64(item.importedImageUrl),
                     imported_video_url: item.importedVideoUrl,
                     image_cost: item.imageCost,
                     character_ids: translateIds(item.characterIds || []),
@@ -285,8 +291,8 @@ export const saveProject = async (
 
         if (audioFile && audioFile instanceof Blob) {
             console.log(`[Storage] Uploading audio file (${audioFile.size} bytes)...`);
-            const { error: uploadError } = await supabase.storage.from('project-audio').upload(`${projectId}.wav`, audioFile, {
-                upsert: true, contentType: audioFile.type || 'audio/wav',
+            const { error: uploadError } = await supabase.storage.from('project-audio').upload(`${projectId}.mp3`, audioFile, {
+                upsert: true, contentType: audioFile.type || 'audio/mpeg',
             });
             if (uploadError) {
                 console.error("[Storage] Failed to upload audio:", uploadError);
@@ -294,7 +300,7 @@ export const saveProject = async (
                     alert(`Falha ao salvar o áudio na nuvem (${(audioFile.size / 1024 / 1024).toFixed(1)}MB). Provavelmente excede o limite do Supabase Free (50MB). O projeto foi salvo, mas o áudio original será perdido se fechar a página. Reduza o áudio gravando em .mp3.`);
                 }
             } else {
-                const { data: urlData } = supabase.storage.from('project-audio').getPublicUrl(`${projectId}.wav`);
+                const { data: urlData } = supabase.storage.from('project-audio').getPublicUrl(`${projectId}.mp3`);
                 if (urlData?.publicUrl) {
                     console.log(`[Storage] Audio public URL generated: ${urlData.publicUrl}`);
                     project.audioUrl = urlData.publicUrl;
@@ -320,7 +326,7 @@ export const deleteProject = async (id: string): Promise<boolean> => {
         await supabase.from('master_assets').delete().eq('project_id', id);
 
         // 2. Limpar Bucket de Áudio (project-audio)
-        await supabase.storage.from('project-audio').remove([`${id}.wav`, `${id}`]);
+        await supabase.storage.from('project-audio').remove([`${id}.mp3`, `${id}.wav`, `${id}`]);
         console.log(`[Storage] Áudio removido.`);
 
         // 3. Limpar Bucket de Imagens (project-images/[ID_DO_PROJETO]/*)
@@ -533,11 +539,11 @@ export const uploadProjectFile = async (projectId: string, file: File | Blob, ty
             .toLowerCase();
 
         const finalFilename = `${sanitizedName}.${ext}`;
-        const path = type === 'audio' ? `${projectId}.${ext}` : `${projectId}/${finalFilename}`;
+        const path = type === 'audio' ? `${projectId}.mp3` : `${projectId}/${finalFilename}`;
 
         const { error } = await supabase.storage.from(bucket).upload(path, file, {
             upsert: true,
-            contentType: file instanceof File ? file.type : (type === 'audio' ? 'audio/wav' : 'image/png')
+            contentType: file instanceof File ? file.type : (type === 'audio' ? 'audio/mpeg' : 'image/png')
         });
         if (error) throw error;
 
@@ -551,7 +557,7 @@ export const uploadProjectFile = async (projectId: string, file: File | Blob, ty
 
 export const downloadProjectFile = async (projectId: string, type: string): Promise<Blob | null> => {
     const bucket = type === 'audio' ? 'project-audio' : 'project-images';
-    const ext = type === 'audio' ? 'wav' : 'png';
+    const ext = type === 'audio' ? 'mp3' : 'png';
     const path = `${projectId}.${ext}`;
     try {
         const { data, error } = await supabase.storage.from(bucket).download(path);
@@ -565,7 +571,7 @@ export const downloadProjectFile = async (projectId: string, type: string): Prom
 
 export const getProjectFileUrl = async (projectId: string, type: string, filename?: string): Promise<string | null> => {
     const bucket = type === 'audio' ? 'project-audio' : 'project-images';
-    const path = type === 'audio' ? `${projectId}.wav` : `${projectId}/${filename}`;
+    const path = type === 'audio' ? `${projectId}.mp3` : `${projectId}/${filename}`;
     const { data } = supabase.storage.from(bucket).getPublicUrl(path);
     return data?.publicUrl || null;
 };

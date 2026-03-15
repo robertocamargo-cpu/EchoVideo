@@ -63,7 +63,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
     let scriptData: string | undefined = undefined;
 
     for (const file of files) {
-      const isAudio = file.type.includes('audio') || file.name.toLowerCase().endsWith('.wav') || file.name.toLowerCase().endsWith('.mp3');
+      const isAudio = file.type === 'audio/mpeg' || file.name.toLowerCase().endsWith('.mp3');
       const isTxt = file.type === 'text/plain' || file.name.toLowerCase().endsWith('.txt');
       const isSrt = file.name.toLowerCase().endsWith('.srt');
 
@@ -78,7 +78,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
         setSrtName(file.name);
         if (onSrtSelected) onSrtSelected(srtData);
       } else {
-        alert("⚠️ Formato inválido ignorado: " + file.name);
+        alert("⚠️ Formato inválido ou pesado ignorado: " + file.name + ". Por favor, use .mp3, .srt ou .txt.");
       }
     }
 
@@ -153,7 +153,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
           type="file"
           className="hidden"
           multiple
-          accept=".wav,.mp3,.txt,.srt"
+          accept=".mp3,.txt,.srt"
           onChange={handleChange}
           disabled={disabled}
         />
@@ -197,7 +197,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
 
           {!selectedFileName && (
             <div className="text-[10px] text-slate-600 font-bold uppercase tracking-widest bg-slate-950 px-6 py-2.5 rounded-full border border-slate-800">
-              Formatos aceitos: WAV, MP3, TXT e SRT
+              Formatos aceitos: MP3, TXT e SRT
             </div>
           )}
         </div>

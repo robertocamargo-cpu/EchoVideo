@@ -141,10 +141,17 @@ export const generateViralTitles = async (script: string, context: string, title
 /**
  * Enriches an SRT file OR transcribes audio directly with visual descriptions and scene segmentation.
  */
-export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | null, context: string, stylePrompt: string, scriptText?: string): Promise<TranscriptionResponse> => {
+export const enrichSrtWithVisuals = async (
+  audioFile: File, 
+  srtText: string | null, 
+  context: string, 
+  stylePrompt: string, 
+  scriptText?: string,
+  onProgress?: (progress: number, current: number, total: number) => void
+): Promise<TranscriptionResponse> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const LARGE_FILE_THRESHOLD = 15 * 1024 * 1024; // 15MB
-  const WINDOW_SIZE = 30; // 30s para equilíbrio entre contexto e performance
+  const WINDOW_SIZE = 30; // Reduzido para 30s. Janelas de 60s estavam causando sobreposição de timestamps pela IA.
 
   logApiCost('text', TEXT_MODEL_NAME, 0.10, { audio_size: audioFile.size });
 
@@ -201,12 +208,28 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
 
     // Inventory Phase
     console.log("[Gemini] Phase 0: Assets Inventory...");
-    const inventoryPrompt = `Analyze the audio. Extract recurring characters, locations, and important/highlighted objects or items (props).
+    const inventoryPrompt = `MASTER INVENTORY — CREATIVE TRANSCRIPTION ENGINE
+    Analyze the audio. Extract recurring characters, locations, and important/highlighted objects or items (props).
+    
+    🎨 CREATIVE MANDATE (INVENTORY DNA):
+    - Surrealismo Conceitual: dê aos assets características inesperadas e justapostas.
+    - Realismo Mágico: inclua detalhes impossíveis ou poéticos em personagens e cenários.
+    
+    🗣️ DEFINITIVE NAMING RULES (LOCKDOWN - NEVER CHANGE):
+    1. CHARACTERS: ESTRITAMENTE PROIBIDO use real names in 'name'. Invent a one-word fictional nickname based on Portuguese PHONETICS (word sounds). Ex: 'Elon Musk' -> 'Ilonmãsqui', 'Hot Dog' -> 'Rótidógui'.
+    2. LOCATIONS & PROPS: The 'name' (nickname) can be the REAL NAME (ex: 'Starbucks', 'Central Park', 'iPhone 15'). Use the real name as the default nickname.
+    3. SECURITY: Real names of PEOPLE must ONLY exist in 'realName' field and NEVER in 'name' or prompts.
+    4. NO TEXT: Nicknames MUST NEVER appear as written text in the generated images.
+
     SCENARIO RULES: Concise literal English description. 4-part structure: 1. [Structure], 2. [Anchor objects], 3. [Textures], 4. [Lighting]. Max 60 words.
-    CHARACTER RULES: Fictional name for ID. Physical English description ONLY. NO style words. Use exactly: [ARCHETYPE], [GENDER/AGE], [HAIR], [TOP CLOTHING + COLOR], [BOTTOM CLOTHING + COLOR], [SHOES + COLOR], [EXTRAS]. 
-    DIVERSITY & CONSISTENCY MANDATE: Characteristics must be UNIQUE, DIVERSE and PERMANENT. Lock ethnicity, facial features and distinctive traits (scars/glasses). DO NOT USE REAL NAMES.
+    
+    CHARACTER RULES: Physical English description ONLY. NO style words. Use exactly: [ARCHETYPE], [GENDER/AGE], [HAIR], [FACE/EYES DETAILS], [TOP CLOTHING + COLOR], [BOTTOM CLOTHING + COLOR], [SHOES + COLOR], [EXTRAS].
+    
+    DIVERSITY & CONSISTENCY MANDATE: Characteristics must be UNIQUE, DIVERSE and PERMANENT. Lock ethnicity, facial features and distinctive traits (scars/glasses). 
+    
     PROP/OBJECT RULES: Describe in English: [TYPE], [MATERIAL], [COLOR], [TEXTURE], [SIZE], [CONDITION], [DETAILS]. Max 30 words.
-    Return JSON: { detectedCharacters: [...], detectedLocations: [...], detectedProps: [...] }`;
+    
+    JSON Schema: { detectedCharacters: [...], detectedLocations: [...], detectedProps: [...] }`;
 
     let globalAssets: any;
     let invRetries = 3;
@@ -288,8 +311,11 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
 
     console.log(`[Gemini] Splitted audio into ${audioChunks.length} chunks.`);
 
-    for (let i = 0; i < audioChunks.length; i++) {
-      const chunk = audioChunks[i];
+    // Parallel Processing with Concurrency Control (3 chunks)
+    console.log(`[Gemini] Processing ${audioChunks.length} chunks with concurrency...`);
+    
+    let completedChunks = 0;
+    const processChunk = async (chunk: any, i: number) => {
       const start = chunk.startSeconds;
       const end = chunk.startSeconds + chunk.durationSeconds;
 
@@ -305,7 +331,6 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
       if (globalSrtSegments.length > 0) {
         let currentSrtPart = "";
         for (const seg of globalSrtSegments) {
-          // Exclusivity filter for PROMPT only: prevent AI from duplicating
           if (seg.start >= start && seg.start < end) {
             currentSrtPart += `${formatSrtTime(seg.start)} --> ${formatSrtTime(seg.end)}\n${seg.text}\n\n`;
           }
@@ -323,53 +348,39 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
     OBJECTIVE: Analyze the audio clip. Produce frame-accurate scene segmentation with high artistic depth.
     
     🎨 CREATIVE MANDATE: Elevate every scene using these three visual principles:
-    - Surrealismo Conceitual: elementos inesperados justapostos — place objects or figures that do not belong together in the same frame to provoke emotion and tension.
-    - Realismo Mágico: detalhes impossíveis em cenas cotidianas — keep the setting believable and familiar, but introduce one detail that could not exist in reality.
-    - Simbolismo Visual: objetos/cores representando emoções — every object and color choice must carry emotional weight and reinforce the spoken narrative.
+    - Surrealismo Conceitual: elementos inesperados justapostos (ex: relógio derretendo num deserto gelado)
+    - Realismo Mágico: detalhes impossíveis em cenas cotidianas (ex: flores brotando de pegadas na neve)
+    - Simbolismo Visual: objetos/cores representando emoções (ex: uma maçã dourada para ganância)
     
     ⚠️ CRITICAL TIMING RULES:
     1. SCENE DURATION: Every scene MUST be between 5.0 and 10.0 seconds. MAXIMUM 10.0 SECONDS.
     2. NO LONG SCENES: If a speaker talks for 20s, you MUST split it into two or three scenes. 
-    3. VISUAL VARIETY (CRITICAL): NEVER repeat the same visual prompt or subject action in consecutive scenes. If the text is long, change camera angles (Wide -> Close-up -> POV), focus or symbolic elements.
-    4. TEXT PACING (CRITICAL): A person speaks about 2.5 words per second. The duration of the scene MUST be long enough for the character to speak the entire text naturally. If a sentence has 25 words, the scene MUST be at least 10 seconds. DO NOT squash long texts into short 5s scenes.
-    5. TEXT SEGMENTATION: If a sentence covers multiple scenes, SPLIT the text between them to match audio timing (e.g. Scene 1: "He started to run...", Scene 2: "...towards the mountain.")
-    6. NO GAPS & NO OVERLAPS: The end of one scene must be the start of the next. Produce a STRICT SEQUENTIAL LIST of scenes covering exactly 0 to ${chunk.durationSeconds} seconds.
+    3. VISUAL VARIETY (CRITICAL): NEVER repeat the same visual prompt or subject action in consecutive scenes. Use different angles and symbolic elements.
+    4. TEXT PACING: A person speaks about 2.5 words per second. The duration of the scene MUST be long enough for the character to speak the entire text naturally.
+    5. NO GAPS & NO OVERLAPS: The end of one scene must be the start of the next. Produce a STRICT SEQUENTIAL LIST of scenes covering exactly 0 to ${chunk.durationSeconds} seconds.
+    
+    🗣️ DEFINITIVE NAMING RECALL (LOCKDOWN):
+    1. CHARACTERS: Only use the phonetic nicknames (e.g., 'Ilonmãsqui'). REAL NAMES OF PEOPLE ARE FORBIDDEN in the prompts.
+    2. LOCATIONS & PROPS: Use their actual names (e.g., 'Starbucks', 'Central Park', 'iPhone 15') as identifying nicknames.
+    3. NO TEXT IN IMAGE: Regardless of the nickname used, NEVER render any text, names, or characters visually on the image surfaces.
     
     ${srtReference}
 
     Context: ${context}
     VISUAL STYLE: ${stylePrompt}
     
-    🔒 GLOBAL RULES (MANDATORY)
-    1. TIMESTAMPS: startSeconds and endSeconds MUST be RELATIVE (0 to ${chunk.durationSeconds}).
-    2. DURATION: 5.0s <= (endSeconds - startSeconds) <= 10.0s.
-    3. LANGUAGES: Prompts in ENGLISH. Subtitles in original language.
-    5. ACTIVE CHARACTERS ONLY: ONLY include characters in 'subject' that are ACTIVELY SPEAKING OR PRESENT in this exact segment. DO NOT include characters that are not in the scene. If a character is absent, OMIT them completely.
-    6. CRITICAL VISUAL DIVERSITY: A scene CANNOT be identical or highly similar to the previous one. You MUST completely change the camera angle, the character's pose, the lighting, and the background framing sequentially.
-
-    📸 VISUAL PROMPT FIELDS (REQUIRED FOR EACH SCENE):
-    - medium: (LEAVE EMPTY or short art form descriptor like "Cinematic photography")
-    - subject: (STRICT CONSISTENCY: Literal physical descriptions from assets + poetic details. JOIN MULTIPLE CHARACTERS WITH " AND ". ONLY INCLUDE CHARACTERS ACTIVELY IN THE SCENE!)
-    - action: (MAGIC ACTION: Apply one of the 3 mandates to the physical movement. E.g. "standing at a crossroads as two different skies meet overhead" [Surrealismo Conceitual], "walking calmly as flowers bloom instantly underfoot" [Realismo Mágico], "holding a red cloth that bleeds color into the air" [Simbolismo Visual].)
-    - cenario: (SURREAL SPACE: Rooted in a real location, transformed by one impossible detail. E.g. "a kitchen where all clocks show different times and run backwards", "a familiar street where shadows point in the wrong direction".)
-    - props: (SYMBOLIC OBJECTS: Objects that carry emotional or narrative symbolism. E.g. "a mirror that reflects a different room", "flowers wilting and blooming simultaneously", "a scale perfectly balanced with fire on one side and water on the other".)
-    - symbolism: (VISUAL METAPHOR: Translate the spoken emotion into a concrete visual image. Choose one powerful symbol. E.g. "broken glass reassembling itself", "a door opening to reveal another door", "two hands almost touching but separated by light".)
-    - camera: (CINEMATIC DYNAMICS: Vary shots radically. Wide -> Close-up -> POV.)
-    - animation: (Motion description)
-    - style: (LEAVE EMPTY "")
-
     ASSETS:
     Characters: ${JSON.stringify(globalAssets.detectedCharacters)}
     Locations: ${JSON.stringify(globalAssets.detectedLocations)}
     Props: ${JSON.stringify(globalAssets.detectedProps)}
     Return JSON: { items: [...] } following the TranscriptionSchema.`;
 
-      let chunkResponse: any;
-      let chunkData: any;
       let retries = 3;
+      let chunkData = { items: [] };
+
       while (retries > 0) {
         try {
-          chunkResponse = await ai.models.generateContent({
+          const chunkResponse = await ai.models.generateContent({
             model: TEXT_MODEL_NAME,
             contents: { parts: [chunkAudioPart, { text: chunkPrompt }] },
             config: {
@@ -409,35 +420,74 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
           });
 
           let rawText = chunkResponse.text || '{"items":[]}';
-          // Fix trailing dots in numbers (e.g. `15.,` -> `15.0,` or `15. }` -> `15.0 }`) which breaks JSON.parse
           rawText = rawText.replace(/(\d+)\.(?=[,\]}\s])/g, '$1.0');
           chunkData = JSON.parse(rawText);
-          break; // Parsing and generation successful, break retry loop!
+          break;
         } catch (err: any) {
           retries--;
-          console.warn(`[Gemini] Failed chunk ${start}-${end}s (could be malformed JSON or fetch error), retries left: ${retries}`, err);
-          if (retries === 0) {
-            console.error(`Falha final ao processar cenas ${start}-${end}s: ${err.message || err}. Pulando bloco para não perder o projeto todo.`);
-            chunkData = { items: [] };
-            break;
-          }
+          console.warn(`[Gemini] Failed chunk ${i + 1} (${start}-${end}s), retries left: ${retries}`, err);
+          if (retries === 0) break;
           await new Promise(r => setTimeout(r, 4000));
         }
       }
 
+      completedChunks++;
+      if (onProgress) {
+        onProgress((completedChunks / audioChunks.length) * 100, completedChunks, audioChunks.length);
+      }
+      return { index: i, items: chunkData.items, start, duration: chunk.durationSeconds };
+    };
+
+    // Use a simple pool-based concurrency (3 chunks at a time)
+    const allChunkResults: any[] = [];
+    const queue = [...audioChunks.map((c, idx) => ({ ...c, originalIndex: idx }))];
+    const poolSize = 3;
+    const activeTasks: Promise<any>[] = [];
+
+    while (queue.length > 0 || activeTasks.length > 0) {
+      while (activeTasks.length < poolSize && queue.length > 0) {
+        const chunk = queue.shift()!;
+        const task = processChunk(chunk, chunk.originalIndex);
+        activeTasks.push(task);
+        task.then(res => {
+          allChunkResults.push(res);
+          activeTasks.splice(activeTasks.indexOf(task), 1);
+        });
+      }
+      if (activeTasks.length > 0) {
+        await Promise.race(activeTasks);
+      }
+    }
+
+    // Reorder results to maintain temporal sequence
+    allChunkResults.sort((a, b) => a.index - b.index);
+
+    for (const chunkResult of allChunkResults) {
+      const { items: rawItems, start, duration: chunkDuration } = chunkResult;
       try {
-        const rawItems = chunkData.items || [];
         let currentBoundary = start;
         if (allItems.length > 0) {
           currentBoundary = allItems[allItems.length - 1].endSeconds;
         }
 
-        const items = rawItems.flatMap((item: any, idx: number) => {
+        // Deduplicação e Limpeza: Remove itens com timestamps inválidos ou duplicados antes de processar
+        const uniqueRawItems = (rawItems || []).filter((item: any, i: number) => {
+          if (!item || item.startSeconds === undefined || item.endSeconds === undefined) return false;
+          // Ignora cenas com duração zero ou negativa
+          if (item.endSeconds <= item.startSeconds) return false;
+          // Verifica se já existe uma cena idêntica no mesmo bloco (evita loop de Smart Split)
+          const isDuplicate = rawItems.slice(0, i).some((prev: any) => 
+            prev.startSeconds === item.startSeconds && prev.endSeconds === item.endSeconds
+          );
+          return !isDuplicate;
+        });
+
+        const items = uniqueRawItems.flatMap((item: any, idx: number) => {
           let rawStart = item.startSeconds !== undefined ? Number(item.startSeconds) : (idx * 5);
           let rawEnd = item.endSeconds !== undefined ? Number(item.endSeconds) : rawStart + 7;
 
           let gStart = currentBoundary;
-          let gEnd = rawEnd >= start ? rawEnd : start + Math.min(rawEnd, chunk.durationSeconds);
+          let gEnd = rawEnd >= start ? rawEnd : start + Math.min(rawEnd, chunkDuration);
 
           // Se a IA sugerir uma duração antes do nosso gStart (por conta da sincronia), empurramos ela pra frente
           if (gEnd <= gStart + 0.5) {
@@ -450,21 +500,21 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
 
           // Force the end of the scene if the duration is too short to fit the spoken text
           if (gEnd - gStart < textMinDuration) {
-            gEnd = Math.min(gStart + textMinDuration, start + chunk.durationSeconds);
+            gEnd = Math.min(gStart + textMinDuration, start + chunkDuration);
           }
 
           // Force the end of the scene for the LAST scene of ANY chunk to match the chunk boundary exactly.
           // This prevents orphaned subtitles that fall between the last scene's end and the next chunk's start.
           if (idx === rawItems.length - 1) {
-            gEnd = start + chunk.durationSeconds;
+            gEnd = start + chunkDuration;
           }
 
           // Final safety clamp: ensure end is after start within current chunk context
           if (gEnd <= gStart) gEnd = gStart + 5.0;
 
-          // Failsafe bounds mapping - DO NOT allow overflow beyond chunk.durationSeconds otherwise SRT tracking breaks!
-          gStart = Math.max(start, Math.min(gStart, start + chunk.durationSeconds - 0.5));
-          gEnd = Math.max(gStart + 0.5, Math.min(gEnd, start + chunk.durationSeconds));
+          // Failsafe bounds mapping - DO NOT allow overflow beyond chunkDuration otherwise SRT tracking breaks!
+          gStart = Math.max(start, Math.min(gStart, start + chunkDuration - 0.5));
+          gEnd = Math.max(gStart + 0.5, Math.min(gEnd, start + chunkDuration));
 
           currentBoundary = gEnd;
 
@@ -494,10 +544,10 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
           let vp = "";
           if (resolvedSubject) vp += `Subject: ${resolvedSubject}. `;
           if (item.characterIds?.length > 0) vp += `Quantity: ${item.characterIds.length} character${item.characterIds.length > 1 ? 's' : ''}. `;
-          if (item.action) vp += `Action: ${item.action}. `;
+          if (item.action) vp += `${item.action}. `;
           if (item.camera) vp += `Camera: ${item.camera}. `;
-          if (item.props) vp += `Object: ${item.props}. `;
-          if (item.cenario) vp += `Environment: ${item.cenario}. `;
+          if (item.props) vp += `Props: ${item.props}. `;
+          if (item.cenario) vp += `${item.cenario}. `;
           if (item.symbolism) vp += `Symbolic detail: ${item.symbolism}. `;
 
           vp = vp.trim();
@@ -568,10 +618,10 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
               let partVp = "";
               if (resolvedSubjectPart) partVp += `Subject: ${resolvedSubjectPart}. `;
               if (item.characterIds?.length > 0) partVp += `Quantity: ${item.characterIds.length} character${item.characterIds.length > 1 ? 's' : ''}. `;
-              partVp += `Action: ${partAction}. `;
+              partVp += `${partAction}. `;
               partVp += `Camera: ${partCamera}. `;
-              if (item.props) partVp += `Object: ${item.props}. `;
-              if (item.cenario) partVp += `Environment: ${item.cenario}. `;
+              if (item.props) partVp += `Props: ${item.props}. `;
+              if (item.cenario) partVp += `${item.cenario}. `;
               if (item.symbolism) partVp += `Symbolic detail: ${item.symbolism}. `;
               // REGRA ANTI-TEXTO: nunca pedir texto escrito na imagem
               partVp += "Pure image only: absolutely NO text, NO letters, NO words, NO numbers, NO signs, NO banners, NO captions written anywhere in the image.";
@@ -632,8 +682,9 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
 
         allItems.push(...items);
       } catch (e: any) {
-        console.error(`[Gemini] Error in chunk ${i + 1}`, e);
-        throw new Error(`Ocorreu uma falha na inteligência artificial ao decupar o trecho de ${start}s até ${end}s: ${e?.message || e}. Dica: o script enviado pode estar muito grande ou detalhado para ser processado de uma vez.`);
+        const chunkIndex = (chunkResult as any).index || 0;
+        console.error(`[Gemini] Error in chunk ${chunkIndex + 1}`, e);
+        throw new Error(`Ocorreu uma falha na inteligência artificial ao decupar o trecho de ${start}s até ${start + chunkDuration}s: ${e?.message || e}. Dica: o script enviado pode estar muito grande ou detalhado para ser processado de uma vez.`);
       }
     }
 
@@ -665,11 +716,36 @@ export const enrichSrtWithVisuals = async (audioFile: File, srtText: string | nu
           continue; // Successfully merged, skip pushing item
         }
       }
-      finalMergedItems.push(item);
+    finalMergedItems.push(item);
     }
 
+    // FINAL SANITIZATION: Systematic removal of Real Names if leaked
+    const allAssets = [
+      ...(globalAssets.detectedCharacters || []),
+      ...(globalAssets.detectedLocations || []),
+      ...(globalAssets.detectedProps || [])
+    ];
+
+    const sanitizedItems = finalMergedItems.map(item => {
+      let subject = item.subject || "";
+      let action = item.action || "";
+      let vp = item.imagePrompt || "";
+
+      allAssets.forEach((asset: any) => {
+        if (asset.realName && asset.name) {
+          // Case insensitive global replacement
+          const realNameRegex = new RegExp(`\\b${asset.realName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
+          subject = subject.replace(realNameRegex, asset.name);
+          action = action.replace(realNameRegex, asset.name);
+          vp = vp.replace(realNameRegex, asset.name);
+        }
+      });
+
+      return { ...item, subject, action, imagePrompt: vp };
+    });
+
     return {
-      items: finalMergedItems,
+      items: sanitizedItems,
       detectedCharacters: globalAssets.detectedCharacters,
       detectedLocations: globalAssets.detectedLocations,
       detectedProps: globalAssets.detectedProps || []

@@ -162,7 +162,7 @@ export const splitAudioFile = async (file: File, targetChunkDurationSecs: number
 
     if (targetEndSample < totalDurationSamples) {
       actualEndSample = findSilence(primaryChannelData, targetEndSample, sampleRate);
-      const maxExtension = 15 * sampleRate;
+      const maxExtension = 10 * sampleRate;
       if (actualEndSample > targetEndSample + maxExtension) {
         actualEndSample = targetEndSample;
       }
