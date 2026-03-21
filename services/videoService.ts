@@ -261,9 +261,14 @@ const drawSingleSource = (
     if (isVideo) {
         const v = source as HTMLVideoElement;
         const targetTime = (progress * v.duration) % v.duration;
-        if (Math.abs(v.currentTime - targetTime) > 0.1) {
+        
+        // Otimização de Seek: Se a diferença for menor que 100ms, deixa o vídeo rodar naturalmente.
+        // 100ms é o "sweet spot" entre precisão de sincronia e fluidez de animação.
+        if (Math.abs(v.currentTime - targetTime) > 0.100) {
             v.currentTime = targetTime;
         }
+        
+        v.muted = true; // Garante silêncio absoluto durante a renderização de frames
         if (v.paused) v.play().catch(() => { });
     }
 
@@ -419,7 +424,6 @@ export const generateTimelineVideo = async (
                 // Usar o tipo exato detectado pelo recorder no Blob final
                 resolve(new Blob(chunks, { type: recorder.mimeType || 'video/webm' }));
             };
-
             const sourceNode = audioContext.createBufferSource();
             sourceNode.buffer = audioBuffer;
             sourceNode.connect(streamDestination);
@@ -430,18 +434,18 @@ export const generateTimelineVideo = async (
             let isFinished = false;
 
             let audioStartTime = 0;
-            let renderIntervalId: ReturnType<typeof setInterval> | null = null;
             let lastProgressUpdate = 0;
+            let animationFrameId: number | null = null;
 
-            const render = (forcedElapsed?: number) => {
+            const renderLoop = () => {
                 if (isFinished) return;
 
                 // CRITICAL FIX: Use the exact audio hardware clock to avoid sync drift
-                const elapsed = forcedElapsed !== undefined ? forcedElapsed : (audioContext.currentTime - audioStartTime);
+                const elapsed = audioContext.currentTime - audioStartTime;
 
-                if (elapsed >= audioDuration && forcedElapsed === undefined) {
+                if (elapsed >= audioDuration) {
                     isFinished = true;
-                    if (renderIntervalId !== null) clearInterval(renderIntervalId);
+                    if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
                     if (recorder.state === 'recording') {
                         setTimeout(() => recorder.stop(), 200); // small buffer for encoder to flush
                     }
@@ -487,8 +491,10 @@ export const generateTimelineVideo = async (
                     }
 
                     if (subtitleStyle) {
-                        // Offset de +0.5s para compensar o delay de inicialização do AudioContext/pipeline
-                        const subtitleElapsed = elapsed + 0.5;
+                        // FIX: Removido offset de +0.5s que causava adiantamento das legendas.
+                        // Agora usamos o elapsed real para garantir que a legenda espere o áudio.
+                        // Adicionamos uma pequena tolerância de 50ms para garantir que a legenda apareça no frame exato.
+                        const subtitleElapsed = elapsed + 0.05; 
                         const currentChunk = allSubtitleChunks.find(c => subtitleElapsed >= c.startSeconds && subtitleElapsed < c.endSeconds);
                         if (currentChunk) {
                             drawSubtitle(ctx, currentChunk.text, width, height, subtitleStyle);
@@ -500,21 +506,24 @@ export const generateTimelineVideo = async (
                     onProgress(Math.floor((elapsed / audioDuration) * 100), `Renderizando Master (${elapsed.toFixed(1)}s / ${audioDuration.toFixed(1)}s)`);
                     lastProgressUpdate = Date.now();
                 }
+
+                animationFrameId = requestAnimationFrame(renderLoop);
             };
 
-            // 1. Pre-render the first frame SYNCHRONOUSLY before starting.
-            // This guarantees the stream has visual data at 0.0s, eliminating the startup black-screen lag.
-            render(0);
+            // 1. Pre-render initial frame
+            ctx.fillStyle = "#000";
+            ctx.fillRect(0, 0, width, height);
+            drawSingleSource(ctx, loadedAssets.get(0) || null, width, height, 0, 0, 1.0, effectMap.get(0));
 
             // 2. Start exact clock
             audioStartTime = audioContext.currentTime;
 
             // 3. Start hardware processes
-            recorder.start(1000); // Coleta chunks a cada 1 segundo
+            recorder.start(1000); 
             sourceNode.start(0);
 
-            // 4. Start tick loop
-            renderIntervalId = setInterval(() => render(), 1000 / 30);
+            // 4. Start tick loop (rAF)
+            animationFrameId = requestAnimationFrame(renderLoop);
 
         } catch (e) { reject(e); }
     });

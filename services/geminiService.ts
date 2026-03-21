@@ -205,31 +205,37 @@ export const enrichSrtWithVisuals = async (
   if (totalDuration === 0) totalDuration = 300;
 
   try {
-
     // Inventory Phase
     console.log("[Gemini] Phase 0: Assets Inventory...");
     const inventoryPrompt = `MASTER INVENTORY — CREATIVE TRANSCRIPTION ENGINE
-    Analyze the audio. Extract recurring characters, locations, and important/highlighted objects or items (props).
+    Analyze the audio/script. Extract recurring characters, locations, and important props.
     
     🎨 CREATIVE MANDATE (INVENTORY DNA):
-    - Surrealismo Conceitual: dê aos assets características inesperadas e justapostas.
-    - Realismo Mágico: inclua detalhes impossíveis ou poéticos em personagens e cenários.
+    - Realismo Mágico & Surrealismo: Dê aos assets detalhes poéticos ou inesperados (ex: olhos cor de galáxia, móveis que flutuam levemente).
     
-    🗣️ DEFINITIVE NAMING RULES (LOCKDOWN - NEVER CHANGE):
-    1. CHARACTERS: ESTRITAMENTE PROIBIDO use real names in 'name'. Invent a one-word fictional nickname based on Portuguese PHONETICS (word sounds). Ex: 'Elon Musk' -> 'Ilonmãsqui', 'Hot Dog' -> 'Rótidógui'.
-    2. LOCATIONS & PROPS: The 'name' (nickname) can be the REAL NAME (ex: 'Starbucks', 'Central Park', 'iPhone 15'). Use the real name as the default nickname.
-    3. SECURITY: Real names of PEOPLE must ONLY exist in 'realName' field and NEVER in 'name' or prompts.
-    4. NO TEXT: Nicknames MUST NEVER appear as written text in the generated images.
+    🗣️ DEFINITIVE NAMING RULES:
+    1. CHARACTERS: ESTRITAMENTE PROIBIDO usar nomes reais no campo 'name'. Crie um apelido (nickname) fonético em português. Ex: 'Elon Musk' -> 'Ilonmãsqui'.
+    2. LOCATIONS/PROPS: O 'name' pode ser o nome real (ex: 'Quarto 12', 'Relógio de Ouro').
+    3. SECURITY: Nomes reais de pessoas devem ficar APENAS no campo 'realName'.
+    
+    🗣️ SCRIPT ALIGNMENT (ABSOLUTE PRIORITY):
+    If a script is provided, you MUST provide a 'scriptMap'. 
+    Divide the ENTIRE script into segments of roughly 30 seconds (or less if natural pauses exist).
+    Each segment must accurately match the timing in the audio.
+    
+    FIELD RULES FOR GENERATION (ENGLISH ONLY in description fields):
+    CHARACTER description — one paragraph, ALL fields mandatory.
+    LOCATION description — exactly 4 parts, max 60 words.
+    PROP description — one paragraph, ALL fields mandatory.
+    
+    ${scriptText ? `ORIGINAL SCRIPT FOR REFERENCE:\n${scriptText}\n` : ''}
 
-    SCENARIO RULES: Concise literal English description. 4-part structure: 1. [Structure], 2. [Anchor objects], 3. [Textures], 4. [Lighting]. Max 60 words.
-    
-    CHARACTER RULES: Physical English description ONLY. NO style words. Use exactly: [ARCHETYPE], [GENDER/AGE], [HAIR], [FACE/EYES DETAILS], [TOP CLOTHING + COLOR], [BOTTOM CLOTHING + COLOR], [SHOES + COLOR], [EXTRAS].
-    
-    DIVERSITY & CONSISTENCY MANDATE: Characteristics must be UNIQUE, DIVERSE and PERMANENT. Lock ethnicity, facial features and distinctive traits (scars/glasses). 
-    
-    PROP/OBJECT RULES: Describe in English: [TYPE], [MATERIAL], [COLOR], [TEXTURE], [SIZE], [CONDITION], [DETAILS]. Max 30 words.
-    
-    JSON Schema: { detectedCharacters: [...], detectedLocations: [...], detectedProps: [...] }`;
+    Return JSON: { 
+      detectedCharacters: [...], 
+      detectedLocations: [...], 
+      detectedProps: [...],
+      scriptMap: [ { text: "segment words here", startSeconds: 0, endSeconds: 30 }, ... ]
+    }`;
 
     let globalAssets: any;
     let invRetries = 3;
@@ -242,11 +248,46 @@ export const enrichSrtWithVisuals = async (
             maxOutputTokens: 8192,
             responseMimeType: "application/json",
             responseSchema: {
-              type: Type.OBJECT,
+              type: "object",
               properties: {
-                detectedCharacters: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { id: { type: Type.STRING }, name: { type: Type.STRING }, realName: { type: Type.STRING }, description: { type: Type.STRING } }, required: ["id", "name", "description"] } },
-                detectedLocations: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { id: { type: Type.STRING }, name: { type: Type.STRING }, realName: { type: Type.STRING }, description: { type: Type.STRING } }, required: ["id", "name", "description"] } },
-                detectedProps: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { id: { type: Type.STRING }, name: { type: Type.STRING }, description: { type: Type.STRING } }, required: ["id", "name", "description"] } }
+                detectedCharacters: { 
+                  type: "array", 
+                  items: { 
+                    type: "object", 
+                    properties: { 
+                      id: { type: "string" }, 
+                      name: { type: "string" }, 
+                      realName: { type: "string" }, 
+                      description: { type: "string" } 
+                    }, 
+                    required: ["id", "name", "description"] 
+                  } 
+                },
+                detectedLocations: { 
+                  type: "array", 
+                  items: { 
+                    type: "object", 
+                    properties: { 
+                      id: { type: "string" }, 
+                      name: { type: "string" }, 
+                      realName: { type: "string" }, 
+                      description: { type: "string" } 
+                    }, 
+                    required: ["id", "name", "description"] 
+                  } 
+                },
+                detectedProps: { 
+                  type: "array", 
+                  items: { 
+                    type: "object", 
+                    properties: { 
+                      id: { type: "string" }, 
+                      name: { type: "string" }, 
+                      description: { type: "string" } 
+                    }, 
+                    required: ["id", "name", "description"] 
+                  } 
+                }
               },
               required: ["detectedCharacters", "detectedLocations", "detectedProps"]
             }
@@ -343,37 +384,36 @@ export const enrichSrtWithVisuals = async (
       const chunkAudioBase64 = await fileToBase64(chunk.file);
       const chunkAudioPart = { inlineData: { mimeType: chunk.file.type || 'audio/wav', data: chunkAudioBase64 } };
 
+      // Slice the script for this specific chunk based on scriptMap if available
+      let relativeScriptContext = scriptText || '';
+      if (globalAssets.scriptMap && globalAssets.scriptMap.length > 0) {
+        const relevantParts = globalAssets.scriptMap.filter((m: any) => 
+          (m.endSeconds > start && m.startSeconds < start + chunk.durationSeconds)
+        );
+        if (relevantParts.length > 0) {
+          relativeScriptContext = relevantParts.map((p: any) => p.text).join('\n');
+        }
+      }
+
       const chunkPrompt = `MASTER PROMPT — AUDIO-TEXT SYNCHRONIZATION ENGINE
-    ROLE: Surrealist Visionary & Visual Poet
-    OBJECTIVE: Analyze the audio clip. Produce frame-accurate scene segmentation with high artistic depth.
+    Divide this audio into scenes (5-10s).
     
-    🎨 CREATIVE MANDATE: Elevate every scene using these three visual principles:
-    - Surrealismo Conceitual: elementos inesperados justapostos (ex: relógio derretendo num deserto gelado)
-    - Realismo Mágico: detalhes impossíveis em cenas cotidianas (ex: flores brotando de pegadas na neve)
-    - Simbolismo Visual: objetos/cores representando emoções (ex: uma maçã dourada para ganância)
-    
-    ⚠️ CRITICAL TIMING RULES:
-    1. SCENE DURATION: Every scene MUST be between 5.0 and 10.0 seconds. MAXIMUM 10.0 SECONDS.
-    2. NO LONG SCENES: If a speaker talks for 20s, you MUST split it into two or three scenes. 
-    3. VISUAL VARIETY (CRITICAL): NEVER repeat the same visual prompt or subject action in consecutive scenes. Use different angles and symbolic elements.
-    4. TEXT PACING: A person speaks about 2.5 words per second. The duration of the scene MUST be long enough for the character to speak the entire text naturally.
-    5. NO GAPS & NO OVERLAPS: The end of one scene must be the start of the next. Produce a STRICT SEQUENTIAL LIST of scenes covering exactly 0 to ${chunk.durationSeconds} seconds.
-    
-    🗣️ DEFINITIVE NAMING RECALL (LOCKDOWN):
-    1. CHARACTERS: Only use the phonetic nicknames (e.g., 'Ilonmãsqui'). REAL NAMES OF PEOPLE ARE FORBIDDEN in the prompts.
-    2. LOCATIONS & PROPS: Use their actual names (e.g., 'Starbucks', 'Central Park', 'iPhone 15') as identifying nicknames.
-    3. NO TEXT IN IMAGE: Regardless of the nickname used, NEVER render any text, names, or characters visually on the image surfaces.
+    🗣️ FIELD RULES (STRICT, 'subject', 'action', 'cenario', 'props', and 'animation' MUST be in ENGLISH ONLY):
+    - action: The creative idea of the scene. You MUST use Conceptual Surrealism and Visual Symbolism to create poetic, dreamlike, or unexpected visual metaphors (English ONLY).
+    - subject: Return a string mentioning ONLY character nicknames (English ONLY).
+    - cenario: Return a string mentioning ONLY location/prop names (English ONLY).
+    - CRITICAL TIMING & DENSITY: Max 25 words per scene. If a segment has more than 25 words, you MUST split it into two or more scenes, even if the visual background remains the same.
+    - NO PLACEHOLDERS: Never use "(continua)", "(pausa)", or empty strings for the 'text' field. Each 'text' field must contain the actual spoken words.
     
     ${srtReference}
+    ${relativeScriptContext ? `\nORIGINAL TEXT REFERENCE (MANDATORY TEXT CONTENT):\n${relativeScriptContext}\nRule: Use strictly the words from the provided text for the 'text' field. Synchronize the text with the audio. Do NOT skip any words.\n` : ''}
 
-    Context: ${context}
-    VISUAL STYLE: ${stylePrompt}
+    MASTER ASSETS (USE IDs):
+    Characters: ${globalAssets.detectedCharacters.map((c: any) => `${c.id} (${c.name})`).join(", ")}
+    Locations: ${globalAssets.detectedLocations.map((l: any) => `${l.id} (${l.name})`).join(", ")}
+    Props: ${globalAssets.detectedProps.map((p: any) => `${p.id} (${p.name})`).join(", ")}
     
-    ASSETS:
-    Characters: ${JSON.stringify(globalAssets.detectedCharacters)}
-    Locations: ${JSON.stringify(globalAssets.detectedLocations)}
-    Props: ${JSON.stringify(globalAssets.detectedProps)}
-    Return JSON: { items: [...] } following the TranscriptionSchema.`;
+    Return JSON following the schema. Ensure characterIds, locationIds, and propIds are populated with the IDs above.`;
 
       let retries = 3;
       let chunkData = { items: [] };
@@ -387,30 +427,26 @@ export const enrichSrtWithVisuals = async (
               maxOutputTokens: 8192,
               responseMimeType: "application/json",
               responseSchema: {
-                type: Type.OBJECT,
+                type: "object",
                 properties: {
                   items: {
-                    type: Type.ARRAY,
+                    type: "array",
                     items: {
-                      type: Type.OBJECT,
+                      type: "object",
                       properties: {
-                        startSeconds: { type: Type.NUMBER },
-                        endSeconds: { type: Type.NUMBER },
-                        text: { type: Type.STRING },
-                        medium: { type: Type.STRING },
-                        subject: { type: Type.STRING },
-                        action: { type: Type.STRING },
-                        cenario: { type: Type.STRING },
-                        props: { type: Type.STRING },
-                        symbolism: { type: Type.STRING },
-                        style: { type: Type.STRING },
-                        camera: { type: Type.STRING },
-                        animation: { type: Type.STRING },
-                        characterIds: { type: Type.ARRAY, items: { type: Type.STRING } },
-                        locationIds: { type: Type.ARRAY, items: { type: Type.STRING } },
-                        propIds: { type: Type.ARRAY, items: { type: Type.STRING } }
+                        startSeconds: { type: "number" },
+                        endSeconds: { type: "number" },
+                        text: { type: "string" },
+                        subject: { type: "string" },
+                        action: { type: "string" },
+                        cenario: { type: "string" },
+                        props: { type: "string" },
+                        animation: { type: "string" },
+                        characterIds: { type: "array", items: { type: "string" } },
+                        locationIds: { type: "array", items: { type: "string" } },
+                        propIds: { type: "array", items: { type: "string" } }
                       },
-                      required: ["startSeconds", "endSeconds", "text", "medium", "subject", "cenario", "props"]
+                      required: ["startSeconds", "endSeconds", "text", "subject", "action", "cenario"]
                     }
                   }
                 },
@@ -486,37 +522,44 @@ export const enrichSrtWithVisuals = async (
           let rawStart = item.startSeconds !== undefined ? Number(item.startSeconds) : (idx * 5);
           let rawEnd = item.endSeconds !== undefined ? Number(item.endSeconds) : rawStart + 7;
 
-          let gStart = currentBoundary;
-          let gEnd = rawEnd >= start ? rawEnd : start + Math.min(rawEnd, chunkDuration);
+          // Global sync adjustment (User reported ~0.5s lag)
+          const GLOBAL_SYNC_OFFSET = -0.5;
 
-          // Se a IA sugerir uma duração antes do nosso gStart (por conta da sincronia), empurramos ela pra frente
-          if (gEnd <= gStart + 0.5) {
-            gEnd = gStart + Math.max(5.0, (item.endSeconds - item.startSeconds) || 7.0);
+          // Mapping relative timestamps to global ones and applying offset
+          let gStart = (rawStart >= start ? rawStart : start + Math.min(rawStart, chunkDuration)) + GLOBAL_SYNC_OFFSET;
+          let gEnd = (rawEnd >= start ? rawEnd : start + Math.min(rawEnd, chunkDuration)) + GLOBAL_SYNC_OFFSET;
+
+          // Safety: don't go below zero
+          gStart = Math.max(0, gStart);
+          gEnd = Math.max(0.5, gEnd);
+
+          // Fill small gaps (< 1.5s) to ensure subtitle continuity, but respect larger silences
+          if (allItems.length > 0) {
+            const lastEnd = allItems[allItems.length - 1].endSeconds;
+            const gap = gStart - lastEnd;
+            if (gap > 0 && gap < 1.5) {
+              gStart = lastEnd;
+            }
+          } else {
+            // Respect the very first scene start for the first chunk
+            const gap = gStart - start;
+            if (gap > 0 && gap < 1.5) {
+              gStart = start;
+            }
           }
 
           // Compute required minimum duration based on text length (approx 2.5 words per second)
           const wordCount = item.text ? item.text.split(' ').length : 0;
-          const textMinDuration = Math.max(5.0, wordCount / 2.5);
+          const textMinDuration = Math.max(3.0, wordCount / 3.0); // Slightly more relaxed limit
 
-          // Force the end of the scene if the duration is too short to fit the spoken text
-          if (gEnd - gStart < textMinDuration) {
-            gEnd = Math.min(gStart + textMinDuration, start + chunkDuration);
+          // Ensure end is always after start
+          if (gEnd <= gStart + 0.5) {
+            gEnd = gStart + Math.max(textMinDuration, 5.0);
           }
 
-          // Force the end of the scene for the LAST scene of ANY chunk to match the chunk boundary exactly.
-          // This prevents orphaned subtitles that fall between the last scene's end and the next chunk's start.
-          if (idx === rawItems.length - 1) {
-            gEnd = start + chunkDuration;
-          }
-
-          // Final safety clamp: ensure end is after start within current chunk context
-          if (gEnd <= gStart) gEnd = gStart + 5.0;
-
-          // Failsafe bounds mapping - DO NOT allow overflow beyond chunkDuration otherwise SRT tracking breaks!
+          // Final safety clamp: ensure end is within reasonable bounds
           gStart = Math.max(start, Math.min(gStart, start + chunkDuration - 0.5));
-          gEnd = Math.max(gStart + 0.5, Math.min(gEnd, start + chunkDuration));
-
-          currentBoundary = gEnd;
+          gEnd = Math.max(gStart + 0.5, Math.min(gEnd, start + chunkDuration + 5.0)); // Allow slight overflow if needed
 
           const formatTime = (secs: number) => {
             const m = Math.floor(secs / 60);
@@ -528,155 +571,123 @@ export const enrichSrtWithVisuals = async (
           // CONSTRUCT IMAGE PROMPT — padrão instructions.md
           // Estrutura: Subject (desc. física) | Action | Camera | Object | Environment | Visual Integrity
 
-          // Resolve descrição física real dos personagens a partir dos globalAssets (nunca confiar só no item.subject)
-          let resolvedSubject = "";
-          if (item.characterIds && item.characterIds.length > 0 && globalAssets.detectedCharacters?.length > 0) {
-            const charDescs = item.characterIds
-              .map((id: string) => globalAssets.detectedCharacters.find((c: any) => c.id === id))
-              .filter(Boolean)
-              .map((c: any) => c.description)
-              .filter(Boolean);
-            if (charDescs.length > 0) resolvedSubject = charDescs.join(" AND ");
+          // POST-PROCESSING: Strict Field Purity & Mapping
+          
+          // Reconstruct SUBJECT: Nickname + Physical Description
+          let uiSubject = "";
+          let detailedSubjectForVp = "";
+          const foundChars = (item.characterIds || []).map((id: string) => globalAssets.detectedCharacters.find((c: any) => c.id === id)).filter(Boolean);
+          
+          if (foundChars.length > 0) {
+            uiSubject = foundChars.map((c: any) => {
+              const characteristics = c.description.split(',').map((s: string) => s.trim()).filter(Boolean);
+              const twoCharacteristics = characteristics.slice(0, 2).join(', ');
+              return `${c.name}: ${twoCharacteristics || c.description}`;
+            }).join(" | ");
+            detailedSubjectForVp = foundChars.map((c: any) => c.description).join(", ");
+          } else {
+            uiSubject = "";
+            detailedSubjectForVp = "";
           }
-          // Fallback: usa o subject gerado pela IA se não houver characterIds
-          if (!resolvedSubject && item.subject) resolvedSubject = item.subject;
 
-          let vp = "";
-          if (resolvedSubject) vp += `Subject: ${resolvedSubject}. `;
-          if (item.characterIds?.length > 0) vp += `Quantity: ${item.characterIds.length} character${item.characterIds.length > 1 ? 's' : ''}. `;
-          if (item.action) vp += `${item.action}. `;
-          if (item.camera) vp += `Camera: ${item.camera}. `;
-          if (item.props) vp += `Props: ${item.props}. `;
-          if (item.cenario) vp += `${item.cenario}. `;
-          if (item.symbolism) vp += `Symbolic detail: ${item.symbolism}. `;
+          // Reconstruct SCENARIO: Local Nickname + Desc + Props Nickname + Desc
+          let uiCenario = "";
+          let detailedCenarioForVp = "";
+          const foundLoc = (item.locationIds || []).map((id: string) => globalAssets.detectedLocations.find((l: any) => l.id === id)).filter(Boolean)[0];
+          const foundProps = (item.propIds || []).map((id: string) => globalAssets.detectedProps.find((p: any) => p.id === id)).filter(Boolean);
 
-          vp = vp.trim();
-          // REGRA ANTI-TEXTO: nunca pedir texto escrito na imagem
-          vp += " Pure image only: absolutely NO text, NO letters, NO words, NO numbers, NO signs, NO banners, NO captions written anywhere in the image.";
+          if (foundLoc) {
+            uiCenario = `${foundLoc.name}: ${foundLoc.description}`;
+            detailedCenarioForVp = foundLoc.description;
+          } else {
+            uiCenario = item.cenario || "Unknown location";
+            detailedCenarioForVp = item.cenario;
+          }
+
+          if (foundProps.length > 0) {
+            const propStrings = foundProps.map((p: any) => `${p.name}: ${p.description}`);
+            uiCenario += " | " + propStrings.join(" | ");
+            detailedCenarioForVp += `, ${foundProps.map((p: any) => p.description).join(", ")}`;
+          }
+
+          // ACTION stays focused on movement
+          const uiAction = item.action || "";
+
+          // Final Image Prompt (sum of fields)
+          const vpParts = [
+            stylePrompt,
+            detailedSubjectForVp,
+            uiAction,
+            detailedCenarioForVp,
+            `Visual Integrity: "Pure image only: absolutely NO text, NO letters, NO words, NO numbers, NO signs, NO banners, NO captions written anywhere in the image."`
+          ].filter(Boolean);
+          const vp = vpParts.join(". ");
 
           const totalDuration = gEnd - gStart;
           const scenesToCreate: any[] = [];
+          
+          const sceneBase = {
+            filename: audioFile.name,
+            startSeconds: gStart,
+            endSeconds: gEnd,
+            duration: totalDuration,
+            startTimestamp: formatTime(gStart),
+            endTimestamp: formatTime(gEnd),
+            text: item.text,
+            subject: uiSubject,
+            action: uiAction,
+            cenario: uiCenario,
+            animation: item.animation || "",
+            characterIds: item.characterIds || [],
+            locationIds: item.locationIds || [],
+            propIds: item.propIds || [],
+            imagePrompt: vp,
+            selectedProvider: 'google-imagen',
+            srtSegments: undefined
+          };
 
-          if (totalDuration > 10.5) {
-            // Safety "Smart Split": If AI fails to segment, we force it but append visual variations
-            const numParts = Math.ceil(totalDuration / 10);
+          if (totalDuration > 11.0) {
+            const numParts = Math.ceil(totalDuration / 10.0);
             const partDuration = totalDuration / numParts;
-            const cameraVariations = [
-              " (alternative angle)",
-              " (closer perspective)",
-              " (POV shift)",
-              " (slight focus change)",
-              " (different visual depth)"
-            ];
-
             for (let p = 0; p < numParts; p++) {
               const pStart = gStart + (p * partDuration);
               const pEnd = (p === numParts - 1) ? gEnd : gStart + ((p + 1) * partDuration);
-
-              const srtSegments = globalSrtSegments.filter(seg =>
-                seg.end > pStart && seg.start < pEnd
-              );
-
-              // Use the actual subtitle segments spoken in this part to avoid duplicating the huge original text
+              
               let partText = "";
-              if (srtSegments.length > 0) {
-                partText = srtSegments.map(s => s.text).join(' ').trim();
+              let partSrt: any[] = [];
+              
+              if (globalSrtSegments.length > 0) {
+                partSrt = globalSrtSegments.filter(seg => seg.end > pStart && seg.start < pEnd);
+                partText = partSrt.length > 0 ? partSrt.map(s => s.text).join(' ').trim() : "(continua)";
               } else {
-                // If srt is missing for this exact half, split the text mathematically by words
-                const words = item.text.split(' ');
+                // Split words manually for TXT/Script reference
+                const words = item.text ? item.text.split(/\s+/) : [];
                 const wordsPerPart = Math.ceil(words.length / numParts);
                 partText = words.slice(p * wordsPerPart, (p + 1) * wordsPerPart).join(' ');
-                if (!partText) partText = "(scene continues)";
               }
-
-              // Forçar variação extrema no CLONE (Smart Split) para IAs não gerarem a mesma imagem
-              let partCamera = item.camera || "";
-              let partAction = item.action || "";
-
-              if (numParts > 1) {
-                if (p % 2 === 0) {
-                  partCamera = "Extreme Wide Shot, establishing the whole environment from a distance";
-                  partAction = `From afar: ${item.action}`;
-                } else {
-                  partCamera = "Extreme Close-Up macro shot of the face, distinct alternate angle";
-                  partAction = `Close-up perspective: ${item.action}`;
-                }
-              }
-
-              // Resolve descrição física dos personagens para o partVp
-              let resolvedSubjectPart = "";
-              if (item.characterIds && item.characterIds.length > 0 && globalAssets.detectedCharacters?.length > 0) {
-                const charDescs = item.characterIds
-                  .map((id: string) => globalAssets.detectedCharacters.find((c: any) => c.id === id))
-                  .filter(Boolean)
-                  .map((c: any) => c.description)
-                  .filter(Boolean);
-                if (charDescs.length > 0) resolvedSubjectPart = charDescs.join(" AND ");
-              }
-              if (!resolvedSubjectPart && item.subject) resolvedSubjectPart = item.subject;
-
-              let partVp = "";
-              if (resolvedSubjectPart) partVp += `Subject: ${resolvedSubjectPart}. `;
-              if (item.characterIds?.length > 0) partVp += `Quantity: ${item.characterIds.length} character${item.characterIds.length > 1 ? 's' : ''}. `;
-              partVp += `${partAction}. `;
-              partVp += `Camera: ${partCamera}. `;
-              if (item.props) partVp += `Props: ${item.props}. `;
-              if (item.cenario) partVp += `${item.cenario}. `;
-              if (item.symbolism) partVp += `Symbolic detail: ${item.symbolism}. `;
-              // REGRA ANTI-TEXTO: nunca pedir texto escrito na imagem
-              partVp += "Pure image only: absolutely NO text, NO letters, NO words, NO numbers, NO signs, NO banners, NO captions written anywhere in the image.";
 
               scenesToCreate.push({
-                filename: audioFile.name,
+                ...sceneBase,
                 startTimestamp: formatTime(pStart),
                 endTimestamp: formatTime(pEnd),
                 startSeconds: pStart,
                 endSeconds: pEnd,
                 duration: pEnd - pStart,
-                text: partText,
-                medium: item.medium || "",
-                subject: item.subject || "",
-                action: partAction,
-                cenario: item.cenario || "",
-                style: item.style || "",
-                camera: partCamera,
-                animation: item.animation || "",
-                characterIds: item.characterIds || (item as any).character_ids || [],
-                locationIds: item.locationIds || (item as any).location_ids || [],
-                propIds: item.propIds || (item as any).prop_ids || [],
-                imagePrompt: partVp.trim(),
-                selectedProvider: 'google-imagen',
-                srtSegments: srtSegments.length > 0 ? srtSegments : undefined
+                text: partText || "(continua)",
+                action: uiAction + (numParts > 1 ? ` (Parte ${p+1})` : ""),
+                srtSegments: partSrt.length > 0 ? partSrt : undefined
               });
             }
           } else {
             const srtSegments = globalSrtSegments.filter(seg =>
               seg.end > gStart && seg.start < gEnd
             );
-
             scenesToCreate.push({
-              filename: audioFile.name,
-              startTimestamp: formatTime(gStart),
-              endTimestamp: formatTime(gEnd),
-              startSeconds: gStart,
-              endSeconds: gEnd,
-              duration: totalDuration,
-              text: item.text,
-              medium: item.medium || "",
-              subject: item.subject || "",
-              action: item.action || "",
-              cenario: item.cenario || "",
-              style: item.style || "",
-              camera: item.camera || "",
-              animation: item.animation || "",
-              characterIds: item.characterIds || (item as any).character_ids || [],
-              locationIds: item.locationIds || (item as any).location_ids || [],
-              propIds: item.propIds || (item as any).prop_ids || [],
-              imagePrompt: vp,
-              selectedProvider: 'google-imagen',
+              ...sceneBase,
               srtSegments: srtSegments.length > 0 ? srtSegments : undefined
             });
           }
+          return scenesToCreate;
           return scenesToCreate;
         });
 
@@ -693,8 +704,14 @@ export const enrichSrtWithVisuals = async (
     for (const item of allItems) {
       if (finalMergedItems.length > 0) {
         const last = finalMergedItems[finalMergedItems.length - 1];
-        // Merge if last scene is < 4.0s (bumped slightly to catch short chunk cutoffs)
-        if (last.duration <= 4.15 && (last.duration + item.duration) <= 10.5) {
+        
+        const lastWords = last.text ? last.text.split(/\s+/).filter(Boolean).length : 0;
+        const itemWords = item.text ? item.text.split(/\s+/).filter(Boolean).length : 0;
+        const projectedDuration = last.duration + item.duration;
+        const projectedWps = (lastWords + itemWords) / (projectedDuration || 1);
+
+        // Merge if last scene is short, BUT ONLY if merging won't create a heavily "atropelada" scene.
+        if (last.duration <= 4.15 && projectedDuration <= 11.0 && projectedWps <= 2.6) {
           last.endSeconds = item.endSeconds;
           last.endTimestamp = item.endTimestamp;
           last.duration = last.endSeconds - last.startSeconds;
@@ -719,6 +736,101 @@ export const enrichSrtWithVisuals = async (
     finalMergedItems.push(item);
     }
 
+    // POST-PROCESS 2: FORCE-MERGE SCENES TOO SHORT TO RENDER (< 5s)
+    // Se o WPS protection impediu um merge normal, forçamos aqui — cena impossível é pior que atropelada.
+    let i = 0;
+    while (i < finalMergedItems.length) {
+      const current = finalMergedItems[i];
+      if (current.duration < 5.0 && finalMergedItems.length > 1) {
+        // Prefer absorbing forward, fall back to absorbing previous
+        const absorb = i + 1 < finalMergedItems.length ? finalMergedItems[i + 1] : null;
+        const target = absorb ? absorb : finalMergedItems[i - 1];
+        const targetIdx = absorb ? i + 1 : i - 1;
+
+        // Merge into target: take its range as union
+        const newStart = Math.min(current.startSeconds, target.startSeconds);
+        const newEnd = Math.max(current.endSeconds, target.endSeconds);
+        target.startSeconds = newStart;
+        target.endSeconds = newEnd;
+        target.duration = newEnd - newStart;
+        
+        const fmtLocal = (secs: number) => {
+          const m = Math.floor(secs / 60);
+          const s = Math.floor(secs % 60);
+          const ms = Math.floor((secs % 1) * 100);
+          return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(2, '0')}`;
+        };
+        target.startTimestamp = fmtLocal(target.startSeconds);
+        target.endTimestamp = fmtLocal(target.endSeconds);
+
+        // Merge text in correct order
+        if (absorb) {
+          target.text = (current.text + " " + target.text).trim();
+        } else {
+          target.text = (target.text + " " + current.text).trim();
+        }
+
+        // Merge SRT
+        if (current.srtSegments) {
+          target.srtSegments = [...(target.srtSegments || []), ...(current.srtSegments || [])];
+          const uniq = new Map();
+          target.srtSegments.forEach((s: any) => uniq.set(s.start, s));
+          target.srtSegments = Array.from(uniq.values()).sort((a: any, b: any) => a.start - b.start);
+        }
+
+        // Remove the short scene
+        finalMergedItems.splice(i, 1);
+        // Don't advance i — recheck from same position
+      } else {
+        i++;
+      }
+    }
+
+    // POST-PROCESS 3: RE-SPLIT LONG SCENES (Enforcement do limite máximo)
+    // Se a IA cuspir uma cena gigante sozinha, fatiamos de volta para respeitar a regra dos ~10s
+    const ultimateItems: any[] = [];
+    for (const item of finalMergedItems) {
+      if (item.duration > 11.0) {
+        const numParts = Math.ceil(item.duration / 10.0);
+        const partDuration = item.duration / numParts;
+        
+        for (let p = 0; p < numParts; p++) {
+          const pStart = item.startSeconds + (p * partDuration);
+          const pEnd = (p === numParts - 1) ? item.endSeconds : item.startSeconds + ((p + 1) * partDuration);
+          
+          let partText = "";
+          if (item.srtSegments && item.srtSegments.length > 0) {
+            const partSrt = item.srtSegments.filter((seg: any) => seg.end > pStart && seg.start < pEnd);
+            partText = partSrt.map((s: any) => s.text).join(' ').trim();
+          } else {
+            const words = item.text ? item.text.split(' ') : [];
+            const wordsPerPart = Math.ceil(words.length / numParts);
+            partText = words.slice(p * wordsPerPart, (p + 1) * wordsPerPart).join(' ');
+          }
+
+          const formatTimeLocal = (secs: number) => {
+            const m = Math.floor(secs / 60);
+            const s = Math.floor(secs % 60);
+            const ms = Math.floor((secs % 1) * 100);
+            return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(2, '0')}`;
+          };
+
+          ultimateItems.push({
+            ...item,
+            startSeconds: pStart,
+            endSeconds: pEnd,
+            duration: pEnd - pStart,
+            startTimestamp: formatTimeLocal(pStart),
+            endTimestamp: formatTimeLocal(pEnd),
+            action: item.action + (numParts > 1 ? ` (Parte ${p+1} / ${numParts})` : ""),
+            text: partText || "(pausa)"
+          });
+        }
+      } else {
+        ultimateItems.push(item);
+      }
+    }
+
     // FINAL SANITIZATION: Systematic removal of Real Names if leaked
     const allAssets = [
       ...(globalAssets.detectedCharacters || []),
@@ -726,9 +838,52 @@ export const enrichSrtWithVisuals = async (
       ...(globalAssets.detectedProps || [])
     ];
 
-    const sanitizedItems = finalMergedItems.map(item => {
+    // POST-PROCESS 4: WORD DENSITY ENFORCEMENT (Regra Anti-Atropelamento)
+    // Se a cena ainda tiver mais de 2.5 palavras por segundo, forçamos a divisão para garantir legibilidade.
+    const strictDensityItems: any[] = [];
+    for (const item of ultimateItems) {
+      const words = item.text ? item.text.split(/\s+/).filter(Boolean) : [];
+      const duration = item.endSeconds - item.startSeconds;
+      const wps = words.length / (duration || 1);
+
+      if (wps > 3.0 && words.length > 10) { // Tolerância de até 3.0 WPS antes de forçar split
+        const numParts = Math.ceil(words.length / 15); // Almeja ~15 palavras por cena (~6s a 2.5 WPS)
+        const partDuration = duration / numParts;
+        
+        for (let p = 0; p < numParts; p++) {
+          const pStart = item.startSeconds + (p * partDuration);
+          const pEnd = (p === numParts - 1) ? item.endSeconds : item.startSeconds + ((p + 1) * partDuration);
+          
+          const wordsPerPart = Math.ceil(words.length / numParts);
+          const partText = words.slice(p * wordsPerPart, (p + 1) * wordsPerPart).join(' ');
+
+          const formatTimeLocal = (secs: number) => {
+            const m = Math.floor(secs / 60);
+            const s = Math.floor(secs % 60);
+            const ms = Math.floor((secs % 1) * 100);
+            return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(2, '0')}`;
+          };
+
+          strictDensityItems.push({
+            ...item,
+            startSeconds: pStart,
+            endSeconds: pEnd,
+            duration: pEnd - pStart,
+            startTimestamp: formatTimeLocal(pStart),
+            endTimestamp: formatTimeLocal(pEnd),
+            action: item.action + (numParts > 1 ? ` (Densidade ${p+1})` : ""),
+            text: partText || "(continua)"
+          });
+        }
+      } else {
+        strictDensityItems.push(item);
+      }
+    }
+
+    const sanitizedItems = strictDensityItems.map(item => {
       let subject = item.subject || "";
       let action = item.action || "";
+      let cenario = item.cenario || "";
       let vp = item.imagePrompt || "";
 
       allAssets.forEach((asset: any) => {
@@ -737,11 +892,12 @@ export const enrichSrtWithVisuals = async (
           const realNameRegex = new RegExp(`\\b${asset.realName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
           subject = subject.replace(realNameRegex, asset.name);
           action = action.replace(realNameRegex, asset.name);
+          cenario = cenario.replace(realNameRegex, asset.name);
           vp = vp.replace(realNameRegex, asset.name);
         }
       });
 
-      return { ...item, subject, action, imagePrompt: vp };
+      return { ...item, subject, action, cenario, imagePrompt: vp };
     });
 
     return {
