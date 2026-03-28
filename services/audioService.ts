@@ -1,5 +1,16 @@
-
 import { TranscriptionItem } from '../types';
+import { Mp3Encoder } from '@breezystack/lamejs';
+
+// Fix for lamejs internal reference to MPEGMode in some module environments
+if (typeof (window as any).MPEGMode === 'undefined') {
+  (window as any).MPEGMode = {
+    STEREO: 0,
+    JOINT_STEREO: 1,
+    DUAL_CHANNEL: 2,
+    MONO: 3,
+    NOT_SET: 4
+  };
+}
 
 // Utility to write WAV headers
 const writeString = (view: DataView, offset: number, string: string) => {
@@ -8,92 +19,52 @@ const writeString = (view: DataView, offset: number, string: string) => {
   }
 };
 
-const audioBufferToWav = (buffer: AudioBuffer): Blob => {
-  const numOfChan = buffer.numberOfChannels;
-  const length = buffer.length * numOfChan * 2 + 44;
-  const bufferArray = new ArrayBuffer(length);
-  const view = new DataView(bufferArray);
-  const channels = [];
-  let i;
-  let sample;
-  let offset = 0;
-  let pos = 0;
+export const audioBufferToMp3 = (buffer: AudioBuffer): Blob => {
+  const channels = buffer.numberOfChannels;
+  const sampleRate = buffer.sampleRate;
+  const mp3encoder = new Mp3Encoder(channels, sampleRate, 128);
+  const mp3Data = [];
 
-  // write WAVE header
-  writeString(view, 0, 'RIFF');
-  view.setUint32(4, 36 + buffer.length * numOfChan * 2, true);
-  writeString(view, 8, 'WAVE');
-  writeString(view, 12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, numOfChan, true);
-  view.setUint32(24, buffer.sampleRate, true);
-  view.setUint32(28, buffer.sampleRate * 2 * numOfChan, true);
-  view.setUint16(32, numOfChan * 2, true);
-  view.setUint16(34, 16, true);
-  writeString(view, 36, 'data');
-  view.setUint32(40, buffer.length * numOfChan * 2, true);
+  const samplesLeft = buffer.getChannelData(0);
+  const samplesRight = channels > 1 ? buffer.getChannelData(1) : samplesLeft;
 
-  // interleave channels
-  for (i = 0; i < buffer.numberOfChannels; i++) {
-    channels.push(buffer.getChannelData(i));
-  }
-
-  offset = 44;
-  while (pos < buffer.length) {
-    for (i = 0; i < numOfChan; i++) {
-      sample = Math.max(-1, Math.min(1, channels[i][pos]));
-      sample = (0.5 + sample < 0 ? sample * 32768 : sample * 32767) | 0;
-      view.setInt16(offset, sample, true);
-      offset += 2;
+  const floatTo16Bit = (input: Float32Array) => {
+    const output = new Int16Array(input.length);
+    for (let i = 0; i < input.length; i++) {
+      const s = Math.max(-1, Math.min(1, input[i]));
+      output[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
     }
-    pos++;
+    return output;
+  };
+
+  const left16 = floatTo16Bit(samplesLeft);
+  const right16 = floatTo16Bit(samplesRight);
+
+  const sampleBlockSize = 1152;
+  for (let i = 0; i < left16.length; i += sampleBlockSize) {
+    const leftChunk = left16.subarray(i, i + sampleBlockSize);
+    const rightChunk = right16.subarray(i, i + sampleBlockSize);
+    const mp3buf = mp3encoder.encodeBuffer(leftChunk, rightChunk);
+    if (mp3buf.length > 0) {
+      mp3Data.push(new Int8Array(mp3buf));
+    }
   }
 
-  return new Blob([view], { type: 'audio/wav' });
+  const flush = mp3encoder.flush();
+  if (flush.length > 0) {
+    mp3Data.push(new Int8Array(flush));
+  }
+
+  return new Blob(mp3Data, { type: 'audio/mpeg' });
 };
 
-// Generates a valid silent WAV file for video previews
+// Generates a valid silent MP3 file for video previews
 export const createSilentAudioBlob = (durationSeconds: number): Blob => {
   const sampleRate = 44100;
-  const numChannels = 1;
-  const bitsPerSample = 16;
-  const blockAlign = numChannels * bitsPerSample / 8;
-  const byteRate = sampleRate * blockAlign;
-  const dataSize = durationSeconds * sampleRate * blockAlign;
-  const fileSize = 36 + dataSize;
-
-  const buffer = new ArrayBuffer(44 + dataSize);
-  const view = new DataView(buffer);
-
-  // RIFF identifier
-  writeString(view, 0, 'RIFF');
-  // file length
-  view.setUint32(4, fileSize, true);
-  // RIFF type
-  writeString(view, 8, 'WAVE');
-  // format chunk identifier
-  writeString(view, 12, 'fmt ');
-  // format chunk length
-  view.setUint32(16, 16, true);
-  // sample format (raw)
-  view.setUint16(20, 1, true);
-  // channel count
-  view.setUint16(22, numChannels, true);
-  // sample rate
-  view.setUint32(24, sampleRate, true);
-  // byte rate (sample rate * block align)
-  view.setUint32(28, byteRate, true);
-  // block align (channel count * bytes per sample)
-  view.setUint16(32, blockAlign, true);
-  // bits per sample
-  view.setUint16(34, bitsPerSample, true);
-  // data chunk identifier
-  writeString(view, 36, 'data');
-  // data chunk length
-  view.setUint32(40, dataSize, true);
-
-  return new Blob([view], { type: 'audio/wav' });
+  const offlineCtx = new OfflineAudioContext(1, sampleRate * durationSeconds, sampleRate);
+  const buffer = offlineCtx.createBuffer(1, sampleRate * durationSeconds, sampleRate);
+  // Buffer is already silent (filled with zeros)
+  return audioBufferToMp3(buffer);
 };
 
 export const getAudioDuration = async (file: File): Promise<number> => {
@@ -183,9 +154,9 @@ export const splitAudioFile = async (file: File, targetChunkDurationSecs: number
       }
     }
 
-    const wavBlob = audioBufferToWav(chunkBuffer);
+    const mp3Blob = audioBufferToMp3(chunkBuffer);
     const fileName = file.name.replace(/\.[^/.]+$/, "");
-    const chunkFile = new File([wavBlob], `${fileName}_part_${partIndex}.wav`, { type: 'audio/wav' });
+    const chunkFile = new File([mp3Blob], `${fileName}_part_${partIndex}.mp3`, { type: 'audio/mpeg' });
 
     chunks.push({
       file: chunkFile,

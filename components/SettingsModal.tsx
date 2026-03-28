@@ -15,33 +15,22 @@ interface SettingsModalProps {
 
 export const DEFAULT_SETTINGS: AppSettings = {
     transcriptionPrompt: `🧠 MASTER PROMPT — AUDIO-TEXT SYNCHRONIZATION ENGINE
-ROLE
-Audio-Visual Alignment Engineer
-
-OBJECTIVE
-Analyze one audio file and one provided text file.
-Produce frame-accurate scene segmentation (5-10s each).
-
-🔒 GLOBAL RULES (MANDATORY)
-1. Use the provided text verbatim. No summarization.
-2. Timestamps must mark exact spoken words.
-3. Scene length MUST be between 5.0 and 10.0 seconds. 
-4. If a phrase is short (<5s), merge it with the next. If long (>10s), split it logically.
-5. ALL FIELDS MUST BE IN ENGLISH.
-
-📸 IMAGE PROMPT STRUCTURE (REQUIRED FOR EACH SCENE - CONTENT ONLY, NO TITLES)
-- medium: Technical description of the medium (e.g., "Disney Pixar 3D animation").
-- subject: Physical description of ALL characters present. YOU MUST STRICTLY USE DEFINED ANATOMY ALWAYS: Subject/Archetype, Hair, Face Shape/Eyes, Upper/Lower Clothing, Shoes. NEVER USE PROPER NAMES (e.g. use "Middle-aged bearded man" instead of "Jesus"). Describe each character if multiple are present using natural English phrases. DO NOT use brackets [ ], slashes /, or CamelCase.
-- action: Spacial/Physical interaction/gestures, especially between characters if multiple are present.
-- cenario: Physical description of environment. YOU MUST STRICTLY USE DEFINED ANATOMY ALWAYS: Structure/Limits, 2-3 Anchor Fixed Objects w/ Exact Positions, Dominant Materials/Textures, Lighting/Colors. NEVER USE PROPER NAMES. Be literal. No emotional metaphors. DO NOT use brackets.
-- style: DO NOT generate style phrases (like Disney, Cinematic, etc) unless absolutely specific to the scene narrative. Keep it empty normally.
-- camera: Camera angle (REQUIRED: close-up, wide shot, etc).
-- negative: Elements to exclude.
-- animation: Technical motion prompt for video generation (e.g. "Slow pan right, cinematic movement").
-
-- imagePrompt: Composed descriptive string including ONLY the contents above. NO field titles allowed.
-
-Return JSON: { items: [...] } following the TranscriptionResponse schema.`,
+    Divide this audio into scenes (5-10s).
+    
+    🗣️ FIELD RULES (STRICT, 'subject', 'action', 'cenario', 'props', and 'animation' MUST be in ENGLISH ONLY):
+    - action: The ONLY creative field. Make the action intensely cinematic and visually stunning. Use dramatic verbs, dynamic volumetric lighting cues, extreme composition, and highly evocative visual symbolism (English ONLY). For example: instead of 'walking', use 'striding through a volumetric neon mist'. ALWAYS vary the action dynamics wildly!
+    - subject: Return a string mentioning ONLY character nicknames or IDs (English ONLY). NO CHARACTERISTICS HERE.
+    - cenario: Return a string mentioning ONLY location/prop names or IDs (English ONLY). PHYSICAL ANCHORING ONLY. NO SYMBOLISM OR CREATIVITY.
+    - camera: Pick a camera angle from: [Wide shot, Close-up, Low angle, Eye level, Bird's eye view] based on 'action'. YOU MUST VARY THE CAMERA ANGLE! Never repeat the same angle consecutively.
+    - animation: Pick one logic from: [Dynamic Zoom-In Drift, Contextual Zoom-Out Reveal, Cinematic Dolly Slide, Elegant Diagonal Lift, Fluid Descending Sweep]. Justify in English based strictly on the creative 'action'. YOU MUST VARY THE ANIMATION! Never repeat consecutively.
+    - DURATION LIMITS: Each scene must fall between 5.0 and 10.0 seconds. The text assigned to it must fit comfortably (target of approx 2.5 words per second / max 25 words). If a logical segment exceeds this heavily, you MUST SPLIT IT into two or more >=5s scenes.
+    - NO PLACEHOLDERS: NEVER use "(continua)", "(pausa)", or empty strings for the 'text' field.
+    - NO CREATIVE BLEED: Fields 'subject' and 'cenario' must be ID-ONLY mappings or literal descriptions. Symbolic language is FORBIDDEN in 'cenario'. Move it all to 'action'.
+    - DO NOT SKIP TEXT: You must transcribe 100% of the spoken text in the audio chunk. Do not cut or skip ANY words.
+    - SYNC PARAMOUNT (CRITICAL): The timeline markers (startSeconds/endSeconds) MUST perfectly reflect reality. Text MUST be assigned EXACTLY to the timestamps when they are spoken. If the natural speaker is speaking very fast (e.g. 20 words in a 5 second timeframe), YOU MUST PRIORITIZE REALITY OVER THE WORD-DENSITY TABLE. Do not shift words into the next scene just to obey the flow, as this causes catastrophic audio desync.
+    - MUSIC/SILENCE HANDLING: Even if the chunk has NO spoken words (e.g., only instrumental music or silence), YOU MUST NOT RETURN AN EMPTY ARRAY. You must generate at least ONE scene covering the duration, setting text to " ", and describing a visual that matches the mood of the music/silence.
+    
+    Return JSON: { items: [...] } following the TranscriptionResponse schema.`,
 
     effectsPrompt: `Efeito Ken Burns: Aplica movimentos suaves baseados na paridade da cena.`,
 
@@ -132,11 +121,11 @@ Escolha os 2 melhores candidatos e justifique por que eles teriam o CTR mais alt
     imageGenerationStrategy: 'gemini-preferred'
 };
 
-type TabType = 'transcription' | 'styles' | 'subtitles' | 'effects' | 'titles' | 'api';
+type TabType = 'styles' | 'subtitles' | 'effects' | 'titles' | 'api';
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, settings, onSave }) => {
     const [localSettings, setLocalSettings] = useState<AppSettings>(settings);
-    const [activeTab, setActiveTab] = useState<TabType>('transcription');
+    const [activeTab, setActiveTab] = useState<TabType>('styles');
     const [apiStatus, setApiStatus] = useState<'STANDARD' | 'PREMIUM'>('STANDARD');
     const [motionEffects, setMotionEffects] = useState<MotionEffect[]>([]);
     const [isSaving, setIsSaving] = useState(false);
@@ -303,7 +292,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, s
                     <div className="w-72 bg-slate-900/20 border-r border-slate-800">
                         <nav className="p-5 space-y-2">
                             {[
-                                { id: 'transcription', label: 'Sincronia & IA', icon: Edit2 },
                                 { id: 'styles', label: 'Estilos de Imagem', icon: Palette },
                                 { id: 'subtitles', label: 'Legendas', icon: Type },
                                 { id: 'effects', label: 'EFEITOS', icon: Zap },
@@ -381,12 +369,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, s
                                 </div>
                             </div>
                         )}
-                        {activeTab === 'transcription' && (
-                            <div className="space-y-6 h-full flex flex-col">
-                                <div className="flex items-center gap-3 text-brand-400"><Edit2 size={24} /><h3 className="font-black uppercase tracking-widest text-white italic">Motor de Sincronia Master</h3></div>
-                                <textarea value={localSettings.transcriptionPrompt} onChange={(e) => setLocalSettings({ ...localSettings, transcriptionPrompt: e.target.value })} className="w-full flex-1 bg-slate-900 border border-slate-800 rounded-3xl p-8 text-xs font-mono text-slate-400 outline-none" />
-                            </div>
-                        )}
+
                         {activeTab === 'styles' && (
                             <div className="space-y-6">
                                 <div className="flex items-center justify-between">

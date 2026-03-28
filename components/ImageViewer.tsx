@@ -31,11 +31,19 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({ imageUrl, promptData, 
             <div className="absolute inset-0 opacity-5" style={{backgroundImage: 'radial-gradient(#ffffff 1px, transparent 1px)', backgroundSize: '30px 30px'}}></div>
             
             {imageUrl ? (
-                <img 
-                  src={imageUrl} 
-                  alt="IA Generated Output" 
-                  className="max-w-full max-h-full object-contain rounded-2xl shadow-[0_0_100px_rgba(0,0,0,0.8)] relative z-10 transition-transform duration-500 group-hover:scale-[1.01]"
-                />
+                filename?.match(/\.mp4$/i)
+                    ? <video
+                        src={imageUrl}
+                        controls
+                        autoPlay
+                        loop
+                        className="max-w-full max-h-full object-contain rounded-2xl shadow-[0_0_100px_rgba(0,0,0,0.8)] relative z-10"
+                      />
+                    : <img 
+                        src={imageUrl} 
+                        alt="IA Generated Output" 
+                        className="max-w-full max-h-full object-contain rounded-2xl shadow-[0_0_100px_rgba(0,0,0,0.8)] relative z-10 transition-transform duration-500 group-hover:scale-[1.01]"
+                      />
             ) : (
                 <div className="text-slate-800 flex flex-col items-center gap-4 uppercase font-black tracking-widest opacity-20 relative z-10">
                     <Info size={120}/>

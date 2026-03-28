@@ -104,103 +104,66 @@ export const ImageStylesGallery: React.FC<ImageStylesGalleryProps> = ({ settings
   return (
     <div className="w-full max-w-7xl mx-auto py-12 px-4 animate-in fade-in slide-in-from-bottom-4 duration-700">
 
-      {/* Top Navigation */}
-      <div className="flex flex-col md:flex-row md:items-end justify-between gap-8 mb-16">
-        <div className="space-y-4">
+      {/* Top Navigation — Single Row */}
+      <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
+        <div className="flex items-center gap-4">
           <button
             onClick={onBack}
-            className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 hover:text-brand-400 transition-colors mb-6"
+            className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 hover:text-brand-400 transition-colors"
           >
-            <ArrowLeft size={14} /> Voltar para o Estúdio
+            <ArrowLeft size={14} /> Voltar
           </button>
-          <div className="flex items-center gap-6">
-            <div className="bg-brand-500/10 p-4 rounded-3xl border border-brand-500/20 text-brand-400 shadow-2xl shadow-brand-500/5">
-              <Palette size={40} />
+          <div className="w-px h-5 bg-slate-800" />
+          <div className="flex items-center gap-3">
+            <div className="bg-brand-500/10 p-2 rounded-2xl border border-brand-500/20 text-brand-400">
+              <Palette size={20} />
             </div>
             <div>
-              <h1 className="text-5xl font-black text-white uppercase tracking-tighter italic">Galeria de <span className="text-brand-400">Estilos</span></h1>
-              <p className="text-slate-500 text-sm font-medium mt-1">Guia visual permanente de calibração estética echoVID.</p>
+              <h1 className="text-xl font-black text-white uppercase tracking-tighter italic leading-none">Galeria de <span className="text-brand-400">Estilos</span></h1>
+              <p className="text-slate-500 text-[10px] font-medium">Guia visual de calibração estética echoVID.</p>
             </div>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-4 bg-slate-900/60 p-4 rounded-[2.5rem] border border-slate-800 shadow-xl">
-          <div className="flex bg-slate-950 p-1.5 rounded-2xl border border-slate-800 flex-wrap">
-            <button
-              onClick={() => setProvider('google-nano')}
-              className={`px-4 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${provider === 'google-nano' ? 'bg-slate-700 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
-            >
-              Nano Pro
-            </button>
-            <button
-              onClick={() => setProvider('google-imagen')}
-              className={`px-4 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${provider === 'google-imagen' ? 'bg-brand-500 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
-            >
-              Imagen 4 Fast
-            </button>
-            <button
-              onClick={() => setProvider('pollinations')}
-              className={`px-4 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${provider === 'pollinations' ? 'bg-indigo-500 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
-            >
-              Flux Cinematic
-            </button>
-            <button
-              onClick={() => setProvider('pollinations-zimage')}
-              className={`px-4 py-3 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${provider === 'pollinations-zimage' ? 'bg-emerald-500 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
-            >
-              ZImage Magic
-            </button>
+        <div className="flex flex-wrap items-center gap-3 bg-slate-900/60 px-4 py-2 rounded-2xl border border-slate-800">
+          <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800">
+            <button onClick={() => setProvider('google-nano')} className={`px-3 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${provider === 'google-nano' ? 'bg-slate-700 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}>Nano Pro</button>
+            <button onClick={() => setProvider('google-imagen')} className={`px-3 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${provider === 'google-imagen' ? 'bg-brand-500 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}>Imagen 4 Fast</button>
+            <button onClick={() => setProvider('pollinations')} className={`px-3 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${provider === 'pollinations' ? 'bg-indigo-500 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}>Flux Cinematic</button>
+            <button onClick={() => setProvider('pollinations-zimage')} className={`px-3 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${provider === 'pollinations-zimage' ? 'bg-emerald-500 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}>ZImage Magic</button>
           </div>
-
-          <div className="w-px h-10 bg-slate-800 hidden md:block"></div>
-
           <div className="flex items-center gap-2">
             {isAutoGenerating ? (
-              <button
-                onClick={handleStopAuto}
-                className="bg-red-500/10 hover:bg-red-500/20 text-red-400 px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 transition-all border border-red-500/20"
-              >
-                <Loader2 size={16} className="animate-spin" /> Parar Geração
+              <button onClick={handleStopAuto} className="bg-red-500/10 hover:bg-red-500/20 text-red-400 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 transition-all border border-red-500/20">
+                <Loader2 size={14} className="animate-spin" /> Parar
               </button>
             ) : (
-              <button
-                onClick={() => handleAutoGenerate(settings.items)}
-                className="bg-slate-800 hover:bg-slate-700 text-brand-400 px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 transition-all border border-slate-700 shadow-lg"
-              >
-                <RefreshCw size={16} /> Regerar Tudo
+              <button onClick={() => handleAutoGenerate(settings.items)} className="bg-slate-800 hover:bg-slate-700 text-brand-400 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 transition-all border border-slate-700">
+                <RefreshCw size={14} /> Regerar Tudo
               </button>
             )}
-
-            <button
-              onClick={handleResetGallery}
-              className="p-3 text-slate-600 hover:text-red-500 transition-colors"
-              title="Limpar Cache da Galeria"
-            >
-              <Trash2 size={20} />
-            </button>
+            <button onClick={handleResetGallery} className="p-2 text-slate-600 hover:text-red-500 transition-colors" title="Limpar Cache"><Trash2 size={16} /></button>
           </div>
         </div>
       </div>
 
-      {/* Idea Input Row */}
-      <div className="mb-12 animate-in fade-in slide-in-from-top-4 duration-1000">
-        <div className="bg-slate-900/60 p-8 rounded-[2.5rem] border border-slate-800 shadow-2xl flex flex-col md:flex-row items-center gap-6 group hover:border-brand-500/30 transition-all">
-          <div className="bg-brand-500/10 p-3 rounded-2xl text-brand-400 border border-brand-500/20 group-hover:scale-110 transition-transform">
-            <Sparkles size={24} />
+      {/* Idea Input Row — Compacto */}
+      <div className="mb-6">
+        <div className="bg-slate-900/60 px-5 py-3 rounded-2xl border border-slate-800 flex items-center gap-4">
+          <div className="bg-brand-500/10 p-2 rounded-xl text-brand-400 border border-brand-500/20 shrink-0">
+            <Sparkles size={16} />
           </div>
-          <div className="flex-1 w-full space-y-2">
-            <label className="text-[10px] font-black uppercase text-slate-500 tracking-[0.2em] px-1">Sua Ideia para Teste de Estilo</label>
+          <div className="flex-1">
+            <label className="text-[9px] font-black uppercase text-slate-500 tracking-[0.2em]">Ideia para Teste de Estilo</label>
             <input
               type="text"
               value={userIdea}
               onChange={(e) => setUserIdea(e.target.value)}
-              placeholder="Ex: Um astronauta medieval em Marte, Um gato samurai no Japão futurista..."
-              className="w-full bg-slate-950/50 border border-slate-800 rounded-2xl px-6 py-4 text-white placeholder-slate-700 outline-none focus:border-brand-500 transition-all font-medium text-sm shadow-inner"
+              placeholder="Ex: Um astronauta medieval em Marte..."
+              className="w-full bg-transparent text-white placeholder-slate-700 outline-none text-sm font-medium"
             />
           </div>
-          <div className="text-[9px] text-slate-500 italic max-w-xs text-center md:text-right">
-            Deixe vazio para usar a "Biblioteca Mágica" de benchmark. Sua ideia será combinada com cada prompt de estilo abaixo.
-          </div>
+          <span className="text-[9px] text-slate-600 italic hidden md:block shrink-0">Vazio = Biblioteca Mágica</span>
         </div>
       </div>
 

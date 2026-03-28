@@ -99,6 +99,7 @@ export interface Project {
   props?: MasterAsset[];
   customStylePrompt?: string;
   updatedAt?: string;
+  preferredImageModel?: 'google-imagen' | 'pollinations-flux' | 'pollinations-zimage' | 'pollinations-turbo';
 }
 
 export interface TranscriptionResponse {
@@ -149,6 +150,7 @@ export interface AppSettings {
   audioChunkDuration: number;
   aspectRatio: '16:9' | '9:16';
   imageGenerationStrategy: 'gemini-preferred' | 'pollinations-only';
+  preferredImageModel?: 'google-imagen' | 'pollinations-flux' | 'pollinations-zimage' | 'pollinations-turbo';
 }
 
 export interface ViralTitle {

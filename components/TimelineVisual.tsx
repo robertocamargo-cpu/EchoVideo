@@ -157,7 +157,9 @@ export const TimelineVisual: React.FC<TimelineVisualProps> = ({ items, onImageCl
                         return (
                             <div key={index} style={{ width: `${widthPercent}%` }} onClick={() => onImageClick(index)} className={`h-full relative border-r border-slate-950/20 transition-all cursor-pointer group ${isPlaying ? 'ring-2 ring-brand-500 z-10' : 'opacity-80 hover:opacity-100'}`}>
                                 {imageUrl ? (
-                                    <img src={imageUrl} className="w-full h-full object-cover" />
+                                    imageUrl.match(/\.(mp4|webm|mov)(\?|$)/i) || item.importedVideoUrl
+                                        ? <video src={imageUrl} className="w-full h-full object-cover pointer-events-none" muted autoPlay loop playsInline />
+                                        : <img src={imageUrl} className="w-full h-full object-cover" />
                                 ) : (
                                     <div className="w-full h-full bg-[#b026ff]/20 flex items-center justify-center border-b-2 border-[#b026ff]">
                                         <div className="w-2 h-2 rounded-full bg-[#b026ff] animate-pulse"></div>

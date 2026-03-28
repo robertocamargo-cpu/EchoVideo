@@ -1,12 +1,12 @@
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Clapperboard, Download, Edit3, FileArchive, FileSpreadsheet, FileText, Image as ImageIcon, Loader2, MapPin, Monitor, Play, PlayCircle, Sparkles, Type, Upload, Users, Video, X, Zap, Ban, Activity, Wallet, Target, Layers, Video as VideoIcon, HelpCircle, Box, Plus, Trash2, AlertTriangle } from 'lucide-react';
+import { Clapperboard, Download, Edit3, FileArchive, FileSpreadsheet, FileText, Image as ImageIcon, Loader2, MapPin, Monitor, Play, PlayCircle, RefreshCw, Sparkles, Type, Upload, Users, Video, X, Zap, Ban, Activity, Wallet, Target, Layers, Video as VideoIcon, HelpCircle, Box, Plus, Trash2, AlertTriangle, Clock, AlertCircle } from 'lucide-react';
 import { TranscriptionItem, AppSettings, TransitionType, ViralTitle, MasterAsset, MotionEffect } from '../types';
-import { generateImage, generateViralTitles, getApiInfrastructure, generateText, TEXT_MODEL_NAME, IMAGEN_MODEL_NAME, IMAGE_MODEL_NAME } from '../services/geminiService';
+import { generateImage, generateViralTitles, getApiInfrastructure, generateText, TEXT_MODEL_NAME, IMAGEN_MODEL_NAME, IMAGE_MODEL_NAME, syncScenesWithAudio } from '../services/geminiService';
 import { generatePollinationsImage } from '../services/pollinationsService';
 import { logApiCost } from '../services/usageService';
 import { generateTimelineVideo, generatePreviewVideo, generatePresetSRT } from '../services/videoService';
-import { getMotionEffects, uploadProjectFile } from '../services/storageService';
+import { uploadProjectFile, getMotionEffects } from '../services/storageService';
 import { TimelineVisual } from './TimelineVisual';
 import { ImageViewer } from './ImageViewer';
 import { ColoredPrompt } from './ColoredPrompt';
@@ -15,6 +15,7 @@ import JSZip from 'jszip';
 interface TranscriptionTableProps {
     data: TranscriptionItem[];
     onUpdateItem: (index: number, item: Partial<TranscriptionItem>) => void;
+    onUpdateAllItems?: (items: TranscriptionItem[]) => void;
     audioFile: File | null;
     audioDuration: number;
     onAudioAttached: (file: File) => void;
@@ -38,7 +39,7 @@ interface TranscriptionTableProps {
 type TabMode = 'scenes' | 'characters' | 'locations' | 'props' | 'titles';
 
 export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
-    data, onUpdateItem, audioFile, audioDuration, settings, onSave, project, context, projectCharacters, projectLocations, projectProps, activeStylePrompt, onUpdateProjectInfo, onUpdateGlobalSetting, projectName = 'projeto-sem-nome', projectId, selectedStyleId, onStyleChange, onForceSave
+    data, onUpdateItem, onUpdateAllItems, audioFile, audioDuration, settings, onSave, project, context, projectCharacters, projectLocations, projectProps, activeStylePrompt, onUpdateProjectInfo, onUpdateGlobalSetting, projectName = 'projeto-sem-nome', projectId, selectedStyleId, onStyleChange, onForceSave
 }) => {
     const [activeTab, setActiveTab] = useState<TabMode>('scenes');
     const [isVideoGenerating, setIsVideoGenerating] = useState(false);
@@ -59,6 +60,9 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
     const [selectedSubtitlePresetId, setSelectedSubtitlePresetId] = useState<string>('');
     const [renderElapsed, setRenderElapsed] = useState(0);
     const [isSaving, setIsSaving] = useState(false);
+    const [comparisonAsset, setComparisonAsset] = useState<{ asset: MasterAsset, type: 'characters' | 'locations' | 'props' } | null>(null);
+    const [isComparing, setIsComparing] = useState(false);
+    const [comparisonResults, setComparisonResults] = useState<{ modelId: string, label: string, imageUrl: string, loading: boolean, error?: string }[]>([]);
     const renderTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
     const [apiInfo, setApiInfo] = useState<{ type: string, isPremium: boolean }>({ type: 'STANDARD', isPremium: false });
@@ -92,6 +96,140 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
     const totalInvestment = useMemo(() => {
         return data.reduce((acc, item) => acc + (item.imageCost || 0), 0);
     }, [data]);
+
+    const totalDurationSum = useMemo(() => {
+        return data.reduce((acc, item) => acc + (item.duration || 0), 0);
+    }, [data]);
+
+    const isSyncError = totalDurationSum > (audioDuration + 0.1); // Tolerância de 100ms
+
+    const formatTime = (seconds: number): string => {
+        const hrs = Math.floor(seconds / 3600);
+        const mins = Math.floor((seconds % 3600) / 60);
+        const secs = Math.floor(seconds % 60);
+        const ms = Math.floor((seconds % 1) * 100);
+        return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
+    };
+
+    const handleDurationChange = (index: number, newDuration: number) => {
+        if (!onUpdateAllItems) return;
+        const val = Math.max(0.1, newDuration);
+        
+        const updatedData = [...data];
+        updatedData[index] = { ...updatedData[index], duration: val };
+        
+        // Recalcular toda a cadeia
+        let currentStart = 0;
+        for (let i = 0; i < updatedData.length; i++) {
+            updatedData[i] = {
+                ...updatedData[i],
+                startSeconds: currentStart,
+                endSeconds: currentStart + updatedData[i].duration,
+                startTimestamp: formatTime(currentStart),
+                endTimestamp: formatTime(currentStart + updatedData[i].duration)
+            };
+            currentStart = updatedData[i].endSeconds;
+        }
+        
+        onUpdateAllItems(updatedData);
+    };
+
+    const handleAutoAdjustTimings = () => {
+        if (!onUpdateAllItems) return;
+        if (!confirm("Isso irá recalcular o tempo de TODAS as cenas baseado na quantidade de palavras (2.5/seg). Deseja continuar?")) return;
+        
+        const updatedData = [...data];
+        let currentStart = 0;
+        for (let i = 0; i < updatedData.length; i++) {
+            const text = updatedData[i].text || "";
+            const wordCount = text.split(/\s+/).filter(Boolean).length;
+            // Alinhado com instructions.md: offset de -0.5s aplicado no motor, aqui mantemos a duração pura baseada em palavras
+            const idealDuration = Math.max(5, (wordCount / 2.5));
+            
+            updatedData[i] = {
+                ...updatedData[i],
+                duration: idealDuration,
+                startSeconds: currentStart,
+                endSeconds: currentStart + idealDuration,
+                startTimestamp: formatTime(currentStart),
+                endTimestamp: formatTime(currentStart + idealDuration)
+            };
+            currentStart = updatedData[i].endSeconds;
+        }
+        onUpdateAllItems(updatedData);
+    };
+
+    const [isSyncing, setIsSyncing] = useState(false);
+
+    const handleMagicSync = async () => {
+        if (!audioFile || !onUpdateAllItems) return;
+        if (!confirm("O sistema vai ouvir o áudio completo para alinhar cada cena exatamente com a fala do locutor. Isso pode levar alguns segundos. Deseja iniciar?")) return;
+        
+        setIsSyncing(true);
+        try {
+            // Prepara as cenas para alinhar (índice e texto)
+            const scenesToSync = data.map((item, index) => ({ id: index, text: item.text }));
+            const syncResults = await syncScenesWithAudio(audioFile, scenesToSync);
+            
+            const updatedData = [...data];
+            syncResults.forEach(res => {
+                if (updatedData[res.index-1]) { // Res.index é 1-based vindo da IA no prompt atualizado
+                    const idx = res.index - 1;
+                    const duration = Math.max(0.1, res.end - res.start);
+                    updatedData[idx] = {
+                        ...updatedData[idx],
+                        startSeconds: res.start,
+                        endSeconds: res.end,
+                        duration: duration,
+                        startTimestamp: formatTime(res.start),
+                        endTimestamp: formatTime(res.end)
+                    };
+                }
+            });
+            
+            onUpdateAllItems(updatedData);
+            alert("Sincronia Mágica concluída com sucesso! ✨ Suas cenas agora estão alinhadas com o áudio real.");
+        } catch (error) {
+            console.error("Erro na Sincronia Mágica:", error);
+            alert("Falha ao sincronizar. Verifique sua conexão e tente novamente.");
+        } finally {
+            setIsSyncing(false);
+        }
+    };
+
+    const handleManualImageUpload = async (index: number, file: File) => {
+        if (!projectId) {
+            alert("Aviso: Salve o projeto pelo menos uma vez antes de subir imagens manuais para garantir persistência.");
+            // Mesmo sem ID, podemos gerar uma URL local temporária se for o caso, 
+            // mas o ideal é ter o projectId para subir pro bucket correto.
+            const localUrl = URL.createObjectURL(file);
+            onUpdateItem(index, { 
+                imageUrl: localUrl, 
+                importedVideoUrl: file.type.includes('video') ? localUrl : '', 
+                importedImageUrl: file.type.includes('image') ? localUrl : '',
+                googleImageUrl: '',
+                pollinationsImageUrl: ''
+            });
+            return;
+        }
+        
+        try {
+            const publicUrl = await uploadProjectFile(projectId, file, 'image', file.name);
+            if (publicUrl) {
+                onUpdateItem(index, { 
+                    imageUrl: publicUrl, 
+                    importedVideoUrl: file.type.includes('video') ? publicUrl : '',
+                    importedImageUrl: file.type.includes('image') ? publicUrl : '',
+                    googleImageUrl: '',
+                    pollinationsImageUrl: ''
+                });
+                if (onForceSave) onForceSave();
+            }
+        } catch (error) {
+            console.error("Erro no upload manual:", error);
+            alert("Falha ao subir imagem.");
+        }
+    };
 
     const getPromptData = (index: number, overrideItem?: Partial<TranscriptionItem>) => {
         const item = overrideItem ? { ...data[index], ...overrideItem } : data[index];
@@ -266,8 +404,9 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
     const handleExportAnimationPrompts = () => {
         const exportedContent = data.map((item, index) => {
             const promptData = getPromptData(index);
-            const animationIdea = item.animation || 'Nenhuma ideia de animação gerada';
-            return `${promptData.finalPrompt}\nMovement Instruction: ${animationIdea}`;
+            const animationIdea = item.animation?.trim();
+            const base = promptData.finalPrompt.replace(/\.\s*$/, '');
+            return animationIdea ? `${base}. ${animationIdea}` : base;
         }).join('\n\n');
         const blob = new Blob([exportedContent], { type: 'text/plain' });
         const url = URL.createObjectURL(blob);
@@ -314,13 +453,12 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         const csvContent = [headers, ...rows].map(e => e.join(",")).join("\n");
         zip.file(`${sanitizeFilename(projectName)}-cenas.csv`, "\ufeff" + csvContent);
 
-        // 4. Arquivo de Áudio Original
         if (audioFile) {
-            zip.file(audioFile.name || 'audio_original.wav', audioFile);
+            zip.file(audioFile.name || 'audio_original.mp3', audioFile);
         } else if (project?.audioUrl) {
             try {
                 const audioRes = await fetch(project.audioUrl);
-                if (audioRes.ok) zip.file(`audio_original.wav`, await audioRes.blob());
+                if (audioRes.ok) zip.file(`audio_original.mp3`, await audioRes.blob());
             } catch (e) {
                 console.warn("Could not fetch remote audio for zip", e);
             }
@@ -380,12 +518,15 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         setIsVideoGenerating(false);
     };
 
-    const handleGenerateImage = async (index: number, provider: 'google-nano' | 'google-imagen' | 'pollinations' | 'pollinations-zimage', overrideItem?: Partial<TranscriptionItem>) => {
+    const handleGenerateImage = async (index: number, providerParam?: 'google-nano' | 'google-imagen' | 'pollinations' | 'pollinations-zimage', overrideItem?: Partial<TranscriptionItem>) => {
+        // Usar o modelo preferencial se existir, senão o parâmetro ou globalProvider
+        const provider = providerParam || (project?.preferredImageModel as any) || globalProvider;
         // Limpar a imagem anterior para feedback visual de regeneração
         onUpdateItem(index, {
             ...overrideItem,
             imageUrl: '',
             importedVideoUrl: '',
+            importedImageUrl: '',
             googleImageUrl: '',
             pollinationsImageUrl: '',
             [!provider.startsWith('pollinations') ? 'isGeneratingGoogle' : 'isGeneratingPollinations']: true
@@ -471,8 +612,64 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         onUpdateProjectInfo(type, list.filter(a => a.id !== id));
     };
 
+    const handleCompareModels = async (asset: MasterAsset, type: 'characters' | 'locations' | 'props') => {
+        setComparisonAsset({ asset, type });
+        setIsComparing(true);
+        
+        const models = [
+            { id: 'google-imagen', label: 'GEN NANO (IMAGEN 3)' },
+            { id: 'pollinations-flux', label: 'FLUX' },
+            { id: 'pollinations-zimage', label: 'ZIMAGE' },
+            { id: 'pollinations-turbo', label: 'TURBO' }
+        ];
+
+        setComparisonResults(models.map(m => ({ modelId: m.id, label: m.label, imageUrl: '', loading: true })));
+
+        const assetPrompt = `${asset.description} style: ${activeStylePrompt}, Visual Integrity: "Pure image only: all surfaces are blank and free of any text or letters."`;
+
+        // Execução paralela
+        models.forEach(async (model, idx) => {
+            try {
+                let result;
+                if (model.id === 'google-imagen') {
+                    result = await generateImage(assetPrompt, '1:1' as any, IMAGEN_MODEL_NAME);
+                } else {
+                    const polModel = model.id === 'pollinations-zimage' ? 'zimage' : (model.id === 'pollinations-turbo' ? 'turbo' : 'flux');
+                    result = await generatePollinationsImage(assetPrompt, polModel, "", '16:9');
+                }
+                
+                setComparisonResults(prev => prev.map(r => r.modelId === model.id ? { ...r, imageUrl: result.image, loading: false } : r));
+            } catch (err: any) {
+                setComparisonResults(prev => prev.map(r => r.modelId === model.id ? { ...r, loading: false, error: err.message } : r));
+            }
+        });
+    };
+
+    const handleSelectModel = async (modelId: string, imageUrl: string) => {
+        if (!comparisonAsset) return;
+        const { asset, type } = comparisonAsset;
+
+        // 1. Atualizar a imagem do asset
+        const list = type === 'characters' ? [...projectCharacters] : type === 'locations' ? [...projectLocations] : [...projectProps];
+        const newList = list.map(a => a.id === asset.id ? { ...a, imageUrl } : a);
+        onUpdateProjectInfo(type, newList);
+
+        // 2. Definir este modelo como o PREFERENCIAL do projeto
+        if (onUpdateAllItems && project) {
+            onSave({ 
+                ...project, 
+                preferredImageModel: modelId as any 
+            } as any);
+            alert(`Motor ${modelId.toUpperCase()} definido como padrão para o projeto!`);
+        }
+
+        setIsComparing(false);
+        setComparisonAsset(null);
+    };
+
     const handleGenerateAssetImage = async (asset: MasterAsset, type: 'characters' | 'locations' | 'props') => {
-        const provider = globalProvider;
+        // Usar o modelo preferencial se existir, senão usa o globalProvider
+        const provider = project?.preferredImageModel || globalProvider;
         const updateList = (update: Partial<MasterAsset>) => {
             const list = type === 'characters' ? [...projectCharacters] : type === 'locations' ? [...projectLocations] : [...projectProps];
             const newList: MasterAsset[] = list.map(a => a.id === asset.id ? { ...a, ...update } : a);
@@ -480,7 +677,11 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         };
         updateList({ [!provider.startsWith('pollinations') ? 'isGeneratingGoogle' : 'isGeneratingPollinations']: true });
         try {
-            const assetPrompt = `${asset.description} style: ${activeStylePrompt}, Visual Integrity: "Pure image only: all surfaces are blank and free of any text or letters."`;
+            const realWorldNote = type === 'characters'
+                ? `IMPORTANT: If the character "${asset.name}" is a real-world person (celebrity, historical figure, athlete, politician, etc.), you MUST faithfully reproduce their known physical characteristics: face, skin tone, hair color/style, body type, and their most iconic/default outfit or uniform. Do not invent or stylize beyond what the style dictates.`
+                : '';
+            const assetPrompt = `${realWorldNote ? realWorldNote + ' ' : ''}${asset.description} style: ${activeStylePrompt}, Visual Integrity: "Pure image only: all surfaces are blank and free of any text or letters."`;
+
             const isPollinationsZ = provider === 'pollinations-zimage';
             const isGoogleImagen = provider === 'google-imagen';
             const isGoogleNano = provider === 'google-nano';
@@ -755,41 +956,6 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
 
     return (
         <div className="w-full max-w-[1600px] mx-auto mt-3 flex flex-col gap-3 relative">
-            <div className="bg-slate-900/60 backdrop-blur-md border border-slate-800 rounded-xl p-3 flex items-center justify-between shadow-2xl">
-                <div className="flex items-center gap-4">
-                    <div className="bg-brand-500/20 p-2.5 rounded-xl border border-brand-500/20 text-brand-400"><Wallet size={20} /></div>
-                    <div className="flex flex-col">
-                        <div className="flex items-center gap-1.5">
-                            <span className="text-sm font-black uppercase text-slate-500 tracking-[0.2em]">Investimento Total do Projeto</span>
-                            <div className="group relative">
-                                <HelpCircle size={10} className="text-slate-600 cursor-help" />
-                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 shadow-2xl">
-                                    Soma dos custos de todas as cenas geradas neste projeto específico.
-                                </div>
-                            </div>
-                        </div>
-                        <span className="text-xl font-black text-white">$ {totalInvestment.toFixed(6)}</span>
-                    </div>
-                </div>
-                <div className="flex gap-6 pr-4">
-                    <div className="flex flex-col items-end">
-                        <span className="text-xs font-black uppercase text-fuchsia-600/60">Personagens</span>
-                        <span className="text-sm font-bold text-slate-300">{projectCharacters.length}</span>
-                    </div>
-                    <div className="flex flex-col items-end">
-                        <span className="text-xs font-black uppercase text-emerald-600/60">Cenários</span>
-                        <span className="text-sm font-bold text-slate-300">{projectLocations.length}</span>
-                    </div>
-                    <div className="flex flex-col items-end border-l border-slate-800 pl-6">
-                        <span className="text-xs font-black uppercase text-amber-600/60">Objetos</span>
-                        <span className="text-sm font-bold text-slate-300">{projectProps.length}</span>
-                    </div>
-                    <div className="flex flex-col items-end border-l border-slate-800 pl-6">
-                        <span className="text-xs font-black uppercase text-slate-600 tracking-widest italic">Cenas</span>
-                        <span className="text-sm font-bold text-slate-300">{data.filter(i => i.imageUrl || i.importedVideoUrl).length} / {data.length}</span>
-                    </div>
-                </div>
-            </div>
 
             {isVideoGenerating && (
                 <div className="fixed bottom-0 left-0 right-0 z-[120] bg-slate-950/95 backdrop-blur-2xl border-t border-brand-500/40 p-5 shadow-2xl">
@@ -834,48 +1000,47 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
             {
                 showVideoSettings && (
                     <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/95 backdrop-blur-xl p-4 animate-in fade-in duration-300">
-                        <div className="bg-slate-900 rounded-[3rem] border border-slate-800 w-full max-w-2xl h-auto max-h-[90vh] flex flex-col shadow-2xl overflow-hidden relative">
-                            <div className="p-8 border-b border-slate-800 flex justify-between items-center bg-slate-900/40">
-                                <div className="flex items-center gap-3">
-                                    <Clapperboard className="text-brand-400" size={24} />
-                                    <h3 className="text-xl font-black text-white uppercase tracking-tight italic">Exportação Vídeo Master</h3>
+                        <div className="bg-slate-900 rounded-[2.5rem] border border-slate-800 w-full max-w-3xl h-auto flex flex-col shadow-2xl overflow-hidden relative">
+                            {/* Header compacto */}
+                            <div className="px-6 py-4 border-b border-slate-800 flex justify-between items-center bg-slate-900/40">
+                                <div className="flex items-center gap-2">
+                                    <Clapperboard className="text-brand-400" size={18} />
+                                    <h3 className="text-base font-black text-white uppercase tracking-tight italic">Exportação Vídeo Master</h3>
                                 </div>
-                                <button onClick={() => setShowVideoSettings(false)} className="p-2 hover:bg-slate-800 rounded-full text-slate-500 hover:text-white transition-all"><X size={28} /></button>
+                                <button onClick={() => setShowVideoSettings(false)} className="p-1.5 hover:bg-slate-800 rounded-full text-slate-500 hover:text-white transition-all"><X size={20} /></button>
                             </div>
-                            <div className="flex-1 overflow-y-auto p-8 space-y-8 custom-scrollbar">
-                                <div className="flex flex-col gap-4 bg-slate-950/40 p-6 rounded-3xl border border-slate-800">
-                                    <label className="text-sm font-black uppercase text-brand-400 tracking-widest flex items-center gap-2"><Type size={14} /> Incluir Legendas Sincronizadas?</label>
-                                    <div className="flex gap-4">
-                                        <button onClick={() => setIncludeSubtitles(true)} className={`flex-1 py-4 rounded-xl font-black uppercase text-sm tracking-widest transition-all border ${includeSubtitles ? 'bg-brand-500 text-white border-brand-400 shadow-lg shadow-brand-500/20' : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-300'}`}> Sim </button>
-                                        <button onClick={() => setIncludeSubtitles(false)} className={`flex-1 py-4 rounded-xl font-black uppercase text-sm tracking-widest transition-all border ${!includeSubtitles ? 'bg-red-500 text-white border-red-400 shadow-lg shadow-red-500/20' : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-300'}`}> Não </button>
+                            {/* Corpo horizontal: legenda à esquerda + preview à direita */}
+                            <div className="flex flex-row gap-4 p-5">
+                                {/* Coluna esquerda: controles de legenda + gerar */}
+                                <div className="flex flex-col gap-3 w-[220px] shrink-0">
+                                    <label className="text-[10px] font-black uppercase text-brand-400 tracking-widest flex items-center gap-1.5"><Type size={11} /> Legendas</label>
+                                    <div className="flex gap-2">
+                                        <button onClick={() => setIncludeSubtitles(true)} className={`flex-1 py-2 rounded-xl font-black uppercase text-xs tracking-widest transition-all border ${includeSubtitles ? 'bg-brand-500 text-white border-brand-400' : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-300'}`}>Sim</button>
+                                        <button onClick={() => setIncludeSubtitles(false)} className={`flex-1 py-2 rounded-xl font-black uppercase text-xs tracking-widest transition-all border ${!includeSubtitles ? 'bg-red-500 text-white border-red-400' : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-300'}`}>Não</button>
                                     </div>
                                     {includeSubtitles && (
-                                        <div className="mt-4 space-y-2">
-                                            <label className="text-xs font-black uppercase text-slate-500 tracking-widest">Preset de Legenda</label>
-                                            <select
-                                                value={selectedSubtitlePresetId || (settings.aspectRatio === '16:9' ? 'horizontal-16-9' : 'vertical-9-16')}
-                                                onChange={(e) => setSelectedSubtitlePresetId(e.target.value)}
-                                                className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-white text-xs outline-none focus:border-brand-500 transition-colors"
-                                            >
-                                                {settings.subtitleStyles.map(preset => (
-                                                    <option key={preset.id} value={preset.id}>{preset.label}</option>
-                                                ))}
-                                            </select>
-                                        </div>
+                                        <select
+                                            value={selectedSubtitlePresetId || (settings.aspectRatio === '16:9' ? 'horizontal-16-9' : 'vertical-9-16')}
+                                            onChange={(e) => setSelectedSubtitlePresetId(e.target.value)}
+                                            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white text-xs outline-none focus:border-brand-500 transition-colors"
+                                        >
+                                            {settings.subtitleStyles.map(preset => (
+                                                <option key={preset.id} value={preset.id}>{preset.label}</option>
+                                            ))}
+                                        </select>
                                     )}
+                                    <button onClick={handleFinalRender} disabled={isVideoGenerating} className="mt-auto w-full py-4 bg-brand-500 hover:bg-brand-400 text-white rounded-2xl font-black uppercase text-sm tracking-[0.2em] shadow-xl shadow-brand-500/20 transition-all flex items-center justify-center active:scale-95">RENDERIZAR</button>
                                 </div>
-                                <div className="space-y-4">
+                                {/* Coluna direita: preview */}
+                                <div className="flex-1 flex flex-col gap-2">
                                     <div className="flex justify-between items-center">
-                                        <label className="text-sm font-black uppercase text-slate-500 tracking-widest flex items-center gap-2"><Monitor size={14} /> Preview de Produção (Amostra)</label>
-                                        <button onClick={handlePreview} disabled={isPreviewing} className="bg-slate-800 hover:bg-slate-700 text-brand-400 px-4 py-2 rounded-xl text-xs font-black uppercase flex items-center gap-2 border border-slate-700">{isPreviewing ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />} Gerar Amostra</button>
+                                        <button onClick={handlePreview} disabled={isPreviewing} className="bg-slate-800 hover:bg-slate-700 text-brand-400 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase flex items-center gap-1.5 border border-slate-700">{isPreviewing ? <Loader2 size={10} className="animate-spin" /> : <Play size={10} />} Preview</button>
+                                        <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex items-center gap-1"><Monitor size={11} /> Amostra</label>
                                     </div>
-                                    <div className={`bg-black rounded-3xl border border-slate-800 overflow-hidden relative shadow-inner mx-auto ${settings.aspectRatio === '9:16' ? 'aspect-[9/16] w-64' : 'aspect-video w-full'}`}>
-                                        {previewVideoUrl ? <video key={previewVideoUrl} src={previewVideoUrl} controls autoPlay className="w-full h-full object-contain" /> : <div className="w-full h-full flex flex-col items-center justify-center opacity-20 gap-4"><PlayCircle size={64} /><span className="text-sm font-black uppercase tracking-[0.2em]">Clique em Gerar Amostra</span></div>}
+                                    <div className={`bg-black rounded-2xl border border-slate-800 overflow-hidden relative shadow-inner flex-1 mx-auto w-full ${settings.aspectRatio === '9:16' ? 'aspect-[9/16] max-w-[160px]' : 'aspect-video'}`}>
+                                        {previewVideoUrl ? <video key={previewVideoUrl} src={previewVideoUrl} controls autoPlay className="w-full h-full object-contain" /> : <div className="w-full h-full flex flex-col items-center justify-center opacity-20 gap-2"><PlayCircle size={40} /><span className="text-[10px] font-black uppercase tracking-[0.2em]">Gerar Amostra</span></div>}
                                     </div>
                                 </div>
-                            </div>
-                            <div className="p-8 border-t border-slate-800 bg-slate-950 flex flex-col gap-4">
-                                <button onClick={handleFinalRender} disabled={isVideoGenerating} className="w-full py-6 bg-brand-500 hover:bg-brand-400 text-white rounded-2xl font-black uppercase text-sm tracking-[0.2em] shadow-xl shadow-brand-500/20 transition-all flex items-center justify-center gap-3"><Download size={20} /> Renderizar e Baixar Master (.webm)</button>
                             </div>
                         </div>
                     </div>
@@ -887,37 +1052,88 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                     <div className="bg-slate-950/40 px-4 py-2 rounded-2xl border border-slate-800/50 flex flex-col md:flex-row items-center gap-4 shadow-inner flex-1 shadow-lg">
                         <div className="flex items-center gap-3 w-full lg:w-auto">
                             <span className="text-xs font-black uppercase text-brand-400 tracking-[0.2em] italic pr-2 border-r border-slate-800">Direção</span>
-                            <select value={settings.aspectRatio} onChange={(e) => onUpdateGlobalSetting('aspectRatio', e.target.value as '16:9' | '9:16')} className="bg-transparent border-none text-sm text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white">
+                            <select value={settings.aspectRatio} onChange={(e) => onUpdateGlobalSetting('aspectRatio', e.target.value as '16:9' | '9:16')} className="bg-slate-950 border border-slate-800/60 rounded-lg px-2 py-1 text-xs text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white hover:border-slate-700 transition-colors">
                                 <option value="16:9">16:9</option>
                                 <option value="9:16">9:16</option>
                             </select>
-                            <select value={selectedStyleId} onChange={(e) => onStyleChange(e.target.value)} className="bg-transparent border-none text-sm text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white transition-colors min-w-[140px]">
+                            <select value={selectedStyleId} onChange={(e) => onStyleChange(e.target.value)} className="bg-slate-950 border border-slate-800/60 rounded-lg px-2 py-1 text-xs text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white hover:border-slate-700 transition-colors min-w-[140px]">
                                 {settings.items.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
                             </select>
-                            <select value={globalProvider} onChange={e => setGlobalProvider(e.target.value as any)} className="bg-transparent border-none text-sm text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white transition-colors min-w-[160px]">
+                            <select value={globalProvider} onChange={e => setGlobalProvider(e.target.value as any)} className="bg-slate-950 border border-slate-800/60 rounded-lg px-2 py-1 text-xs text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white hover:border-slate-700 transition-colors min-w-[160px]">
                                 <option value="google-nano">GEMINI NANO</option>
                                 <option value="google-imagen">IMAGEN 4</option>
                                 <option value="pollinations">POLLINATIONS FLUX</option>
                                 <option value="pollinations-zimage">POLLINATIONS ZIMAGE</option>
                             </select>
                         </div>
-                        <div className="flex items-center gap-2 ml-auto w-full md:w-auto overflow-x-auto scrollbar-hide shrink-0">
-                            <button onClick={handleGenerateMissing} className={`px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all border ${isGeneratingAll ? 'bg-red-500/10 border-red-500/20 text-red-500' : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white hover:border-brand-500'}`}>{isGeneratingAll ? <Ban size={10} /> : <Sparkles className="inline text-brand-400 opacity-50 mr-1" size={10} />} Faltantes</button>
-                            <button onClick={handleGenerateAll} className={`px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all border ${isGeneratingAll ? 'bg-red-500/10 border-red-500/20 text-red-500' : 'bg-brand-500 border-brand-400 text-white hover:bg-brand-400'}`}>{isGeneratingAll ? <Ban size={10} /> : <Sparkles className="inline text-white mr-1" size={10} />} {isGeneratingAll ? "Parar" : "Tudo"}</button>
-                            <button onClick={() => importInputRef.current?.click()} className="p-1.5 bg-slate-800 border border-slate-700 rounded-lg text-slate-400 hover:text-white transition-all"><Upload size={14} /></button>
-                            <input type="file" multiple ref={importInputRef} onChange={handleBulkImportImages} className="hidden" accept="image/*,video/*" />
+                        <div className="flex items-center gap-3 ml-auto w-full md:w-auto overflow-x-auto scrollbar-hide shrink-0 pb-1">
+                            <div className="flex items-center gap-1.5 h-full">
+                                <div className="flex flex-col items-center gap-1 w-[80px]">
+                                    <button 
+                                        onClick={handleMagicSync} 
+                                        disabled={isSyncing || !audioFile}
+                                        className={`w-full h-8 rounded-xl transition-all border flex items-center justify-center shadow-lg ${isSyncing ? 'bg-purple-500/20 border-purple-500/40 text-purple-400 animate-pulse' : 'bg-slate-900 border-slate-700 text-brand-400 hover:bg-brand-500 hover:text-white hover:border-brand-500 shadow-brand-500/5'}`}
+                                    >
+                                        {isSyncing ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} fill="currentColor" />}
+                                    </button>
+                                    <span className="text-[10px] font-black uppercase text-slate-500 tracking-widest text-center mt-0.5">Sintonia</span>
+                                </div>
+
+                                <div className="flex flex-col items-center gap-1 w-[80px]">
+                                    <button 
+                                        onClick={handleAutoAdjustTimings} 
+                                        className="w-full h-8 bg-slate-900 border border-slate-700 rounded-xl text-slate-400 hover:text-white hover:border-brand-500 transition-all flex items-center justify-center shadow-lg group"
+                                    >
+                                        <Clock size={14} className="text-slate-500 group-hover:text-brand-400 transition-colors" />
+                                    </button>
+                                    <span className="text-[10px] font-black uppercase text-slate-500 tracking-widest text-center mt-0.5">Ajustar</span>
+                                </div>
+
+                                <div className="flex flex-col items-center gap-1 w-[80px]">
+                                    <button 
+                                        onClick={handleGenerateMissing} 
+                                        disabled={isGeneratingAll || data.length === 0}
+                                        className={`w-full h-8 rounded-xl transition-all border flex items-center justify-center shadow-lg ${isGeneratingAll ? 'bg-amber-500/20 border-amber-500/40 text-amber-400 animate-pulse' : 'bg-slate-900 border-slate-700 text-amber-400 hover:bg-amber-500 hover:text-white hover:border-amber-500 shadow-amber-500/5'}`}
+                                    >
+                                        {isGeneratingAll ? <Loader2 size={14} className="animate-spin" /> : <Layers size={14} />}
+                                    </button>
+                                    <span className="text-[10px] font-black uppercase text-slate-500 tracking-widest text-center mt-0.5">Faltas</span>
+                                </div>
+
+                                <div className="flex flex-col items-center gap-1 w-[80px]">
+                                    <button 
+                                        onClick={handleGenerateAll} 
+                                        disabled={isGeneratingAll || data.length === 0}
+                                        className={`w-full h-8 rounded-xl transition-all border flex items-center justify-center shadow-lg ${isGeneratingAll ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400 animate-pulse' : 'bg-brand-500 border-brand-400 text-white hover:bg-brand-400'}`}
+                                    >
+                                        {isGeneratingAll ? <Ban size={16} /> : <RefreshCw size={16} />}
+                                    </button>
+                                    <span className="text-[10px] font-black uppercase text-slate-500 tracking-widest text-center mt-0.5">Tudo</span>
+                                </div>
+                            </div>
+
+                            <div className="h-8 w-px bg-slate-800 mx-1"></div>
+
+                            {/* Upload + VIDEO grudados sem gap */}
+                            <div className="flex items-center">
+                                <button onClick={() => importInputRef.current?.click()} title="Import em Lote" className="h-8 w-10 bg-slate-900 border border-slate-700 rounded-l-xl border-r-0 text-slate-400 hover:text-white transition-all flex items-center justify-center shadow-lg"><Upload size={14} /></button>
+                                <input type="file" multiple ref={importInputRef} onChange={handleBulkImportImages} className="hidden" accept="image/*,video/*" />
+                                <button 
+                                    onClick={() => !isSyncError && setShowVideoSettings(true)} 
+                                    disabled={isSyncError}
+                                    className={`h-8 flex items-center justify-center gap-1.5 px-4 rounded-r-xl border border-l-0 text-xs font-black uppercase tracking-[0.15em] shadow-lg transition-all active:scale-95 ${isSyncError ? 'bg-slate-800 text-slate-500 cursor-not-allowed border-red-500/20' : 'bg-brand-500 hover:bg-brand-400 text-white border-brand-400/30'}`}
+                                >
+                                    VIDEO
+                                </button>
+                            </div>
                         </div>
                     </div>
-                    <div className="flex items-center min-w-[140px]">
-                        <button onClick={() => setShowVideoSettings(true)} className="w-full flex items-center justify-center gap-2 px-6 py-2 bg-brand-500 hover:bg-brand-400 text-white rounded-xl text-base font-black uppercase tracking-[0.2em] shadow-lg transition-all active:scale-95 group"><VideoIcon size={16} className="group-hover:rotate-12 transition-transform" /> RENDERIZAR</button>
-                    </div>
                 </div>
-            </div>
 
-            <div className="flex flex-col lg:flex-row lg:items-center justify-between border-b border-slate-800 pb-0 gap-2">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between border-b border-slate-800 pb-0 gap-2">
                 <div className="flex items-center gap-1 overflow-x-auto whitespace-nowrap scrollbar-hide">
                     {['scenes', 'characters', 'locations', 'props', 'titles'].map(tab => (
-                        <button key={tab} onClick={() => setActiveTab(tab as TabMode)} className={`px-3 py-4 text-xs font-black uppercase tracking-widest border-b-2 transition-all ${activeTab === tab ? 'text-brand-400 border-brand-500 bg-brand-500/5' : 'text-slate-500 border-transparent hover:text-slate-300'}`}>
+                        <button key={tab} onClick={() => setActiveTab(tab as TabMode)} className={`px-3 py-4 text-[11px] font-black uppercase tracking-widest border-b-2 transition-all ${activeTab === tab ? 'text-brand-400 border-brand-500 bg-brand-500/5' : 'text-slate-500 border-transparent hover:text-slate-300'}`}>
                             {tab === 'scenes' ? 'Story Board' : tab === 'characters' ? 'Personagens' : tab === 'locations' ? 'Cenários' : tab === 'props' ? 'Objetos' : 'CTR Ninja'}
                         </button>
                     ))}
@@ -931,23 +1147,24 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                             finally { setIsSaving(false); }
                         }}
                         disabled={isSaving || !project}
-                        className={`text-xs font-black uppercase px-3 py-1.5 rounded-lg border transition-all flex items-center gap-1.5 ${isSaving ? 'bg-slate-800 text-slate-500 border-slate-700' : 'bg-brand-500/10 text-brand-400 border-brand-500/30 hover:bg-brand-500 hover:text-white'}`}
+                        className={`text-[11px] font-black uppercase px-3 py-1.5 rounded-lg border transition-all flex items-center gap-1.5 ${isSaving ? 'bg-slate-800 text-slate-500 border-slate-700' : 'bg-brand-500/10 text-brand-400 border-brand-500/30 hover:bg-brand-500 hover:text-white'}`}
                     >
                         {isSaving ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
                         {isSaving ? 'SALVANDO...' : 'SALVAR'}
                     </button>
-                    <button onClick={handleExportPrompts} className="text-xs font-black uppercase text-slate-400 hover:text-brand-400 flex items-center gap-1.5 transition-colors pr-3 border-r border-slate-800/50 min-w-max"><FileText size={12} /> Prompts</button>
-                    <button onClick={handleExportAnimationPrompts} className="text-xs font-black uppercase text-slate-400 hover:text-sky-400 flex items-center gap-1.5 transition-colors pr-3 border-r border-slate-800/50 min-w-max"><Video size={12} /> Anim</button>
-                    <button onClick={handleExportCSV} className="text-xs font-black uppercase text-slate-400 hover:text-brand-400 flex items-center gap-1.5 transition-colors pr-3 border-r border-slate-800/50 min-w-max"><FileSpreadsheet size={12} /> CSV</button>
-                    <button onClick={handleExportAllImages} className="text-xs font-black uppercase text-slate-400 hover:text-brand-400 flex items-center gap-1.5 transition-colors pr-4 min-w-max"><FileArchive size={12} /> ZIP</button>
-                    <button onClick={handlePreview} className={`group relative flex items-center gap-3 px-6 py-2 ${isPreviewing ? 'bg-slate-700' : 'bg-slate-800 hover:bg-slate-700'} text-white rounded-[1.5rem] text-xs font-black uppercase tracking-widest transition-all shadow-xl active:scale-95`}>
-                        {isPreviewing ? <Loader2 className="animate-spin" size={14} /> : null}
+                    <button onClick={handleExportPrompts} className="text-[11px] font-black uppercase text-slate-400 hover:text-brand-400 flex items-center gap-1.5 transition-colors pr-3 border-r border-slate-800/50 min-w-max"><FileText size={12} /> Prompts</button>
+                    <button onClick={handleExportAnimationPrompts} className="text-[11px] font-black uppercase text-slate-400 hover:text-sky-400 flex items-center gap-1.5 transition-colors pr-3 border-r border-slate-800/50 min-w-max"><Video size={12} /> Anim</button>
+                    <button onClick={handleExportCSV} className="text-[11px] font-black uppercase text-slate-400 hover:text-brand-400 flex items-center gap-1.5 transition-colors pr-3 border-r border-slate-800/50 min-w-max"><FileSpreadsheet size={12} /> CSV</button>
+                    <button onClick={handleExportAllImages} className="text-[11px] font-black uppercase text-slate-400 hover:text-brand-400 flex items-center gap-1.5 transition-colors pr-4 min-w-max"><FileArchive size={12} /> ZIP</button>
+                    <button onClick={handlePreview} className={`group relative flex items-center gap-3 px-6 py-2 ${isPreviewing ? 'bg-slate-700' : 'bg-slate-800 hover:bg-slate-700'} text-white rounded-[1.5rem] text-[11px] font-black uppercase tracking-widest transition-all shadow-xl active:scale-95`}>
+                        {isPreviewing ? <Loader2 className="animate-spin" size={12} /> : null}
                         <span>Preview</span>
                     </button>
                 </div>
             </div>
+        </div>
 
-            <div className="px-3">
+        <div className="px-3">
                 <TimelineVisual items={data} onImageClick={(idx) => {
                     const el = document.getElementById(`scene-card-${idx}`);
                     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -960,64 +1177,74 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                             {data.map((item, index) => (
                                 <div key={index} className="flex flex-col gap-2">
-                                    <div className="flex items-center justify-center gap-3">
-                                        <div className="text-center text-[15px] font-black text-slate-600 uppercase tracking-widest">{item.duration.toFixed(1)}s</div>
+                                    {/* Linha do topo: duração editável + CAP (Capacidade de Palavras) */}
+                                    <div className="flex items-center justify-center gap-2">
+                                        <div className="flex items-center gap-1.5 px-3 py-1 bg-slate-950/50 rounded-full border border-slate-800/50">
+                                            <input 
+                                                type="number"
+                                                step="0.1"
+                                                min="0.1"
+                                                value={item.duration.toFixed(2)}
+                                                onChange={(e) => handleDurationChange(index, parseFloat(e.target.value) || 0.1)}
+                                                className={`bg-transparent border-none text-[15px] font-black w-12 text-center outline-none focus:text-brand-400 transition-colors [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${isSyncError ? 'text-red-500' : 'text-slate-200'}`}
+                                            />
+                                            <div className="flex items-center gap-1 ml-1 border-l border-white/10 pl-2">
+                                                <span className="text-[13px] font-black text-slate-400">{(item.duration * 2.5).toFixed(2)}</span>
+                                            </div>
+                                            <button onClick={() => {
+                                                if ((window as any).sceneAudioPlayer) {
+                                                    (window as any).sceneAudioPlayer.pause();
+                                                    if ((window as any).sceneAudioPlayerPlayingIndex === index) {
+                                                        (window as any).sceneAudioPlayerPlayingIndex = null;
+                                                        return;
+                                                    }
+                                                }
+                                                if (!audioFile) { alert("Áudio original não encontrado na memória."); return; }
+                                                if (!(window as any).projectAudioUrl) {
+                                                    (window as any).projectAudioUrl = URL.createObjectURL(audioFile);
+                                                }
+                                                const audio = new Audio((window as any).projectAudioUrl);
+                                                (window as any).sceneAudioPlayer = audio;
+                                                (window as any).sceneAudioPlayerPlayingIndex = index;
+                                                audio.currentTime = item.startSeconds;
+                                                audio.play();
+                                                const checkStop = () => {
+                                                    if (audio.currentTime >= item.endSeconds) { audio.pause(); (window as any).sceneAudioPlayerPlayingIndex = null; }
+                                                    else if (!audio.paused) requestAnimationFrame(checkStop);
+                                                };
+                                                requestAnimationFrame(checkStop);
+                                            }} className="text-slate-500 hover:text-brand-400 transition-colors ml-1">
+                                                <Play size={11} className="fill-current" />
+                                            </button>
+                                        </div>
                                         {(() => {
                                             const wordCount = item.text.split(/\s+/).filter(Boolean).length;
-                                            const wps = wordCount / (item.duration || 1);
-                                            if (wps > 2.6) {
-                                                return (
-                                                    <div className="flex items-center gap-1 bg-red-500/10 text-red-500 px-2 py-0.5 rounded text-[10px] font-black uppercase border border-red-500/20 animate-pulse" title={`${wps.toFixed(1)} palavras/seg (Limite sugerido: 2.5)`}>
-                                                        <AlertTriangle size={10} /> Atropelado
-                                                    </div>
-                                                );
-                                            }
+                                            // Alinhado com instructions.md: duração real sem buffers de teste
+                                            const wps = wordCount / Math.max(0.1, item.duration);
+                                            if (wordCount < 10) return (
+                                                <div className="flex items-center gap-1 bg-red-500/10 text-red-500 px-2 py-0.5 rounded text-[10px] font-black uppercase border border-red-500/20 animate-pulse" title={`${wordCount} palavras: MÍNIMO 10 por 5s exigido`}>
+                                                    <AlertCircle size={10} /> Pouca Legenda
+                                                </div>
+                                            );
+                                            if (wordCount < 12) return (
+                                                <div className="flex items-center gap-1 bg-amber-500/10 text-amber-500 px-2 py-0.5 rounded text-[10px] font-black uppercase border border-amber-500/20" title={`${wordCount} palavras: MÍNIMO 12 recomendadas`}>
+                                                    <AlertCircle size={10} /> Cena Curta
+                                                </div>
+                                            );
+                                            if (wps > 3.0) return (
+                                                <div className="flex items-center gap-1 bg-red-500/10 text-red-500 px-2 py-0.5 rounded text-[10px] font-black uppercase border border-red-500/20 animate-pulse" title={`${wps.toFixed(1)} palavras/seg`}>
+                                                    <AlertTriangle size={10} /> Atropelado
+                                                </div>
+                                            );
                                             return null;
                                         })()}
                                     </div>
                                     <div className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-6 flex flex-col gap-5 shadow-lg group hover:border-brand-500/30 transition-all">
-                                        <div className="flex justify-between items-center text-base font-black uppercase text-brand-400">
-                                            <div className="flex items-center gap-2 flex-nowrap shrink-0">
-                                                <span className="bg-brand-500/10 text-brand-400 px-3 py-1.5 rounded-xl text-[14px] font-black whitespace-nowrap">{index + 1}</span>
-                                                <span className="bg-slate-950 px-3 py-1.5 rounded-full border border-slate-800 font-mono text-[13px] whitespace-nowrap"> {item.startTimestamp} - {item.endTimestamp} </span>
-                                                <div className="flex items-center gap-1 bg-slate-950/50 rounded-full px-2 py-1 ml-1" title="Ouvir Cena Original vs Total de Palavras">
-                                                    <button onClick={() => {
-                                                        if ((window as any).sceneAudioPlayer) {
-                                                            (window as any).sceneAudioPlayer.pause();
-                                                            if ((window as any).sceneAudioPlayerPlayingIndex === index) {
-                                                                (window as any).sceneAudioPlayerPlayingIndex = null;
-                                                                return; // Toggle stop
-                                                            }
-                                                        }
-                                                        if (!audioFile) {
-                                                            alert("Áudio original não encontrado na memória.");
-                                                            return;
-                                                        }
-                                                        if (!(window as any).projectAudioUrl) {
-                                                            (window as any).projectAudioUrl = URL.createObjectURL(audioFile);
-                                                        }
-                                                        const audio = new Audio((window as any).projectAudioUrl);
-                                                        (window as any).sceneAudioPlayer = audio;
-                                                        (window as any).sceneAudioPlayerPlayingIndex = index;
-                                                        
-                                                        audio.currentTime = item.startSeconds;
-                                                        audio.play();
-                                                        
-                                                        const checkStop = () => {
-                                                            if (audio.currentTime >= item.endSeconds) {
-                                                                audio.pause();
-                                                                (window as any).sceneAudioPlayerPlayingIndex = null;
-                                                            } else if (!audio.paused) {
-                                                                requestAnimationFrame(checkStop);
-                                                            }
-                                                        };
-                                                        requestAnimationFrame(checkStop);
-                                                    }} className="text-slate-400 hover:text-brand-400 transition-colors p-0.5">
-                                                        <Play size={10} className="fill-current" />
-                                                    </button>
-                                                    <span className="text-[14px] font-black text-blue-500 whitespace-nowrap px-1">{item.text.split(/\s+/).filter(Boolean).length}</span>
-                                                </div>
-                                            </div>
+                                        {/* Linha de metadados alinhada à largura da imagem */}
+                                        <div className="flex items-center gap-2 text-base font-black uppercase text-brand-400">
+                                            <span className="bg-brand-500/10 text-brand-400 px-3 py-1.5 rounded-xl text-[14px] font-black whitespace-nowrap shrink-0">{index + 1}</span>
+                                            <span className="bg-slate-950 px-3 py-1.5 rounded-full border border-slate-800 font-mono text-[13px] whitespace-nowrap flex-1 text-center">{item.startTimestamp} – {item.endTimestamp}</span>
+                                            <span className="text-[14px] font-black text-blue-500 whitespace-nowrap bg-slate-950 px-3 py-1.5 rounded-full border border-slate-800 shrink-0">{item.text.split(/\s+/).filter(Boolean).length}</span>
                                         </div>
                                         <div className={`bg-black rounded-3xl overflow-hidden relative shadow-inner ${settings.aspectRatio === '9:16' ? 'aspect-[9/16]' : 'aspect-video'}`}>
                                             {item.imageUrl || item.importedVideoUrl ? (
@@ -1028,7 +1255,16 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                             {(item.isGeneratingGoogle || item.isGeneratingPollinations) && <div className="absolute inset-0 bg-slate-950/95 flex flex-col items-center justify-center gap-4"><Loader2 className="animate-spin text-brand-400" size={40} /></div>}
                                             <div className="absolute top-4 right-4 flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                                 <button onClick={() => handleGenerateImage(index, globalProvider as any)} title="Recriar Imagem (Manter Prompt)" className="p-2.5 bg-brand-500 hover:bg-brand-400 text-white rounded-full shadow-xl transition-colors"><Zap size={14} /></button>
-                                                <button onClick={() => handleRecreateSceneBroll(index)} title="Transformar em B-Roll Genérico" className="p-2.5 bg-indigo-500 hover:bg-indigo-400 text-white rounded-full shadow-xl transition-colors"><VideoIcon size={14} /></button>
+                                                <button onClick={() => {
+                                                    const input = document.createElement('input');
+                                                    input.type = 'file';
+                                                    input.accept = 'image/*,video/*';
+                                                    input.onchange = (e: any) => {
+                                                        const file = e.target.files[0];
+                                                        if (file) handleManualImageUpload(index, file);
+                                                    };
+                                                    input.click();
+                                                }} title="Upload Manual de Imagem/Vídeo para esta cena" className="p-2.5 bg-emerald-500 hover:bg-emerald-400 text-white rounded-full shadow-xl transition-colors"><Upload size={14} /></button>
                                             </div>
                                         </div>
 
@@ -1059,7 +1295,8 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                 value={item.text} 
                                                 onChange={e => onUpdateItem(index, { text: e.target.value })}
                                                 onBlur={() => onForceSave()}
-                                                className="bg-slate-950 p-2 rounded-xl border border-slate-800 text-[13px] text-slate-300 w-full resize-y min-h-[120px] focus:outline-none focus:border-brand-500/50 transition-all leading-relaxed [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-slate-800/80 [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-slate-700"
+                                                rows={3}
+                                                className="bg-slate-950 p-2 rounded-xl border border-slate-800 text-[13px] text-slate-300 w-full resize-none focus:outline-none focus:border-brand-500/50 transition-all leading-relaxed [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-slate-800/80 [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-slate-700"
                                                 placeholder="Texto da cena..."
                                             />
                                             <div className="space-y-3">
@@ -1100,8 +1337,23 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                 </div>
 
                                                 <div className="space-y-1">
-                                                    <span className="text-[0.7rem] font-bold text-white/40 uppercase px-1">Action</span>
-                                                    <textarea value={item.action || ''} onChange={e => onUpdateItem(index, { action: e.target.value })} className="w-full h-12 bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-300 outline-none focus:border-white/20 resize-none custom-scrollbar" placeholder="Ação descritiva da cena..." />
+                                                    <div className="flex items-center justify-between px-1">
+                                                        <span className="text-[0.7rem] font-bold text-white/40 uppercase">Action</span>
+                                                        <button
+                                                            onClick={async () => {
+                                                                try {
+                                                                    const prompt = `Given this scene context, generate ONE new highly cinematic action description in English (max 25 words). Style: Conceptual Surrealism or Magical Realism. Be dramatic, use dynamic verbs, volumetric lighting cues, and visual symbolism. Subject: "${item.subject || 'unknown'}", Scenario: "${item.cenario || 'unknown'}", Text: "${item.text || ''}"\n\nReturn ONLY the action string, no JSON, no quotes, no prefix.`;
+                                                                    const newAction = await generateText(prompt, TEXT_MODEL_NAME);
+                                                                    if (newAction?.trim()) onUpdateItem(index, { action: newAction.trim() });
+                                                                } catch(e) { console.warn('Falha ao regenerar action', e); }
+                                                            }}
+                                                            title="Regenerar Action com IA"
+                                                            className="p-1 text-slate-600 hover:text-brand-400 transition-colors"
+                                                        >
+                                                            <RefreshCw size={11} />
+                                                        </button>
+                                                    </div>
+                                                    <textarea value={item.action || ''} onChange={e => onUpdateItem(index, { action: e.target.value })} className="w-full h-12 bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-300 outline-none focus:border-white/20 resize-none custom-scrollbar" placeholder="Ação criativa (Surrealismo, Simbolismo, Metáforas)..." />
                                                 </div>
 
                                                 <div className="space-y-1">
@@ -1188,7 +1440,22 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                         </div>
                                     )}
                                     {(asset.isGeneratingGoogle || asset.isGeneratingPollinations) && <div className="absolute inset-0 bg-slate-950/95 flex flex-col items-center justify-center gap-4"><Loader2 className="animate-spin text-brand-400" size={40} /></div>}
-                                    <button onClick={() => handleGenerateAssetImage(asset, activeTab as any)} className="absolute top-4 right-4 p-2.5 bg-brand-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity shadow-xl z-20"><Zap size={14} /></button>
+                                    <div className="absolute top-4 right-4 flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-20">
+                                        <button 
+                                            onClick={() => handleGenerateAssetImage(asset, activeTab as any)} 
+                                            className="p-2.5 bg-brand-500 text-white rounded-full shadow-xl hover:bg-brand-400 transition-all active:scale-95"
+                                            title="Gerar Única (Padrão)"
+                                        >
+                                            <Zap size={14} />
+                                        </button>
+                                        <button 
+                                            onClick={() => handleCompareModels(asset, activeTab as any)} 
+                                            className="px-3 py-1.5 bg-slate-900/90 backdrop-blur-md border border-slate-700 text-white rounded-lg shadow-xl hover:border-brand-500 transition-all active:scale-95 flex items-center gap-2"
+                                        >
+                                            <Sparkles size={12} className="text-brand-400" />
+                                            <span className="text-[10px] font-black uppercase tracking-widest">MODELO</span>
+                                        </button>
+                                    </div>
                                 </div>
                                 <div className="space-y-4">
                                     <div className="flex flex-col gap-1 px-1">
@@ -1307,7 +1574,22 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                 </div>
                                             )}
                                             {(prop.isGeneratingGoogle || prop.isGeneratingPollinations) && <div className="absolute inset-0 bg-slate-950/95 flex flex-col items-center justify-center gap-4"><Loader2 className="animate-spin text-amber-400" size={40} /></div>}
-                                            <button onClick={() => handleGenerateAssetImage(prop, 'props')} className="absolute top-4 right-4 p-2.5 bg-amber-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity shadow-xl z-20"><Zap size={14} /></button>
+                                            <div className="absolute top-4 right-4 flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-20">
+                                                <button 
+                                                    onClick={() => handleGenerateAssetImage(prop, 'props')} 
+                                                    className="p-2.5 bg-amber-500 text-white rounded-full shadow-xl hover:bg-amber-400 transition-all active:scale-95"
+                                                    title="Gerar Única (Padrão)"
+                                                >
+                                                    <Zap size={14} />
+                                                </button>
+                                                <button 
+                                                    onClick={() => handleCompareModels(prop, 'props')} 
+                                                    className="px-3 py-1.5 bg-slate-900/90 backdrop-blur-md border border-slate-700 text-white rounded-lg shadow-xl hover:border-amber-500 transition-all active:scale-95 flex items-center gap-2"
+                                                >
+                                                    <Sparkles size={12} className="text-amber-400" />
+                                                    <span className="text-[10px] font-black uppercase tracking-widest">MODELO</span>
+                                                </button>
+                                            </div>
                                         </div>
                                         <div className="space-y-4">
                                             <div className="flex flex-col gap-1 px-1">
@@ -1460,6 +1742,84 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                         });
                     }}
                 />
+            )}
+
+            {/* Modal de Comparação de Modelos (MODELO) */}
+            {isComparing && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-xl">
+                    <div className="bg-slate-900 border border-slate-800 rounded-[3rem] w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
+                        <div className="p-8 border-b border-slate-800 flex justify-between items-center bg-slate-900/80">
+                            <div>
+                                <h3 className="text-2xl font-black text-white uppercase tracking-tighter flex items-center gap-3">
+                                    <Sparkles className="text-brand-400" size={24} /> 
+                                    Comparar Modelos de IA
+                                </h3>
+                                <p className="text-slate-500 text-sm font-bold uppercase tracking-widest mt-1">
+                                    Escolha o melhor visual para definir o padrão do projeto
+                                </p>
+                            </div>
+                            <button 
+                                onClick={() => setIsComparing(false)}
+                                className="p-3 bg-slate-800 text-slate-400 rounded-full hover:bg-red-500 hover:text-white transition-all shadow-lg"
+                            >
+                                <X size={24} />
+                            </button>
+                        </div>
+                        
+                        <div className="flex-1 overflow-y-auto p-10 custom-scrollbar">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                                {comparisonResults.map((res) => (
+                                    <div key={res.modelId} className="group flex flex-col gap-4">
+                                        <div className="flex justify-between items-center px-1">
+                                            <span className="text-xs font-black text-slate-500 uppercase tracking-[0.2em]">{res.label}</span>
+                                            {res.loading && <Loader2 className="animate-spin text-brand-400" size={16} />}
+                                        </div>
+                                        
+                                        <div className="aspect-square bg-black rounded-[2rem] overflow-hidden relative border-2 border-slate-800 group-hover:border-brand-500/50 transition-all shadow-2xl">
+                                            {res.imageUrl ? (
+                                                <>
+                                                    <img src={res.imageUrl} className="w-full h-full object-cover" />
+                                                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center backdrop-blur-[2px]">
+                                                        <button 
+                                                            onClick={() => handleSelectModel(res.modelId, res.imageUrl)}
+                                                            className="bg-brand-500 hover:bg-brand-400 text-white px-8 py-3 rounded-full font-black uppercase text-xs tracking-widest shadow-2xl transform translate-y-4 group-hover:translate-y-0 transition-all active:scale-95"
+                                                        >
+                                                            Escolher este Estilo
+                                                        </button>
+                                                    </div>
+                                                </>
+                                            ) : (
+                                                <div className="w-full h-full flex flex-col items-center justify-center gap-4 text-slate-700">
+                                                    {res.loading ? (
+                                                        <>
+                                                            <div className="w-32 h-1 bg-slate-800 rounded-full overflow-hidden">
+                                                                <div className="h-full bg-brand-500 animate-[loading_2s_ease-in-out_infinite]" style={{ width: '40%' }}></div>
+                                                            </div>
+                                                            <span className="text-[10px] font-black uppercase tracking-widest animate-pulse">Gerando...</span>
+                                                        </>
+                                                    ) : (
+                                                        res.error ? (
+                                                            <div className="text-center p-6 space-y-2">
+                                                                <Ban className="mx-auto text-red-500/50" size={32} />
+                                                                <p className="text-[10px] text-red-400 font-bold uppercase leading-tight">{res.error}</p>
+                                                            </div>
+                                                        ) : <Monitor size={48} />
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                        
+                        <div className="p-8 bg-slate-950/50 border-t border-slate-800 text-center">
+                            <p className="text-[11px] font-bold text-slate-600 uppercase tracking-[0.3em]">
+                                O modelo escolhido será aplicado automaticamente em todas as novas gerações de cena
+                            </p>
+                        </div>
+                    </div>
+                </div>
             )}
         </div>
     );

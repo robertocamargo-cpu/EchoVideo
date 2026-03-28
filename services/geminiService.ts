@@ -151,7 +151,7 @@ export const enrichSrtWithVisuals = async (
 ): Promise<TranscriptionResponse> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const LARGE_FILE_THRESHOLD = 15 * 1024 * 1024; // 15MB
-  const WINDOW_SIZE = 30; // Reduzido para 30s. Janelas de 60s estavam causando sobreposição de timestamps pela IA.
+  const WINDOW_SIZE = 30; // Reduzido de 60s para 30s para forçar fragmentação e precisão.
 
   logApiCost('text', TEXT_MODEL_NAME, 0.10, { audio_size: audioFile.size });
 
@@ -210,17 +210,21 @@ export const enrichSrtWithVisuals = async (
     const inventoryPrompt = `MASTER INVENTORY — CREATIVE TRANSCRIPTION ENGINE
     Analyze the audio/script. Extract recurring characters, locations, and important props.
     
-    🎨 CREATIVE MANDATE (INVENTORY DNA):
-    - Realismo Mágico & Surrealismo: Dê aos assets detalhes poéticos ou inesperados (ex: olhos cor de galáxia, móveis que flutuam levemente).
+    🎨 ASSET DNA (STRICT ANATOMY & NO STYLE):
+    - CHARACTERS description: YOU MUST STRICTLY USE DEFINED ANATOMY ALWAYS: Subject/Archetype, Hair, Face Shape/Eyes, Upper/Lower Clothing, Shoes. NEVER USE PROPER NAMES IN DESCRIPTIONS (e.g. use "Middle-aged bearded man" instead of "Jesus").
+    - IMPORTANT: If the character is a real-world entity (celebrity, historical figure, politician, etc.), you MUST faithfully reproduce their actual physical characteristics: facial features, skin tone, hair style, build, and their most iconic or default outfit/uniform. Use their real identity as the absolute reference for the anatomy description.
+    - Describe using natural English phrases. ESTRITAMENTE PROIBIDO terms about lighting, quality, or style (no "cinematic", "4k").
+    - LOCATIONS/PROPS description: Exactly 4 parts (Structure, Anchors, Materials, Lighting), max 60 words. LITERAL descriptions only, NO proper names, NO metaphors or emotions.
     
     🗣️ DEFINITIVE NAMING RULES:
     1. CHARACTERS: ESTRITAMENTE PROIBIDO usar nomes reais no campo 'name'. Crie um apelido (nickname) fonético em português. Ex: 'Elon Musk' -> 'Ilonmãsqui'.
     2. LOCATIONS/PROPS: O 'name' pode ser o nome real (ex: 'Quarto 12', 'Relógio de Ouro').
     3. SECURITY: Nomes reais de pessoas devem ficar APENAS no campo 'realName'.
     
-    🗣️ SCRIPT ALIGNMENT (ABSOLUTE PRIORITY):
+    🗣️ SCRIPT ALIGNMENT (ABSOLUTE PRIORITY - DO NOT SKIP):
     If a script is provided, you MUST provide a 'scriptMap'. 
-    Divide the ENTIRE script into segments of roughly 30 seconds (or less if natural pauses exist).
+    Divide the ENTIRE script into segments of roughly 15 seconds (NEVER EXCEED 20S).
+    CRITICAL: YOU MUST INCLUDE 100% OF THE WORDS FROM THE SCRIPT. DO NOT SKIP, SUMMARIZE, OR OMIT ANY SENTENCES.
     Each segment must accurately match the timing in the audio.
     
     FIELD RULES FOR GENERATION (ENGLISH ONLY in description fields):
@@ -234,7 +238,7 @@ export const enrichSrtWithVisuals = async (
       detectedCharacters: [...], 
       detectedLocations: [...], 
       detectedProps: [...],
-      scriptMap: [ { text: "segment words here", startSeconds: 0, endSeconds: 30 }, ... ]
+      scriptMap: [ { text: "segment words here", startSeconds: 0, endSeconds: 15 }, ... ]
     }`;
 
     let globalAssets: any;
@@ -242,7 +246,7 @@ export const enrichSrtWithVisuals = async (
     while (invRetries > 0) {
       try {
         const inventoryResponse = await ai.models.generateContent({
-          model: TEXT_MODEL_NAME,
+          model: TEXT_MODEL_NAME, // Flash 2.0 handles this well and avoids 404 errors
           contents: { parts: [audioPart, { text: inventoryPrompt }] },
           config: {
             maxOutputTokens: 8192,
@@ -382,7 +386,7 @@ export const enrichSrtWithVisuals = async (
       }
 
       const chunkAudioBase64 = await fileToBase64(chunk.file);
-      const chunkAudioPart = { inlineData: { mimeType: chunk.file.type || 'audio/wav', data: chunkAudioBase64 } };
+      const chunkAudioPart = { inlineData: { mimeType: 'audio/mpeg', data: chunkAudioBase64 } };
 
       // Slice the script for this specific chunk based on scriptMap if available
       let relativeScriptContext = scriptText || '';
@@ -396,17 +400,22 @@ export const enrichSrtWithVisuals = async (
       }
 
       const chunkPrompt = `MASTER PROMPT — AUDIO-TEXT SYNCHRONIZATION ENGINE
-    Divide this audio into scenes (5-10s).
+    Divide this audio into multiple short scenes (STRICTLY 5-10s AND AT LEAST 12 WORDS EACH).
+    CRITICAL: A 30-second chunk SHOULD generate roughly 3 to 6 scenes. NEVER return a single scene for the entire chunk. If a scene has few words, merge it with the adjacent one to respect the 12-word minimum.
     
     🗣️ FIELD RULES (STRICT, 'subject', 'action', 'cenario', 'props', and 'animation' MUST be in ENGLISH ONLY):
-    - action: The creative idea of the scene. You MUST use Conceptual Surrealism and Visual Symbolism to create poetic, dreamlike, or unexpected visual metaphors (English ONLY).
-    - subject: Return a string mentioning ONLY character nicknames (English ONLY).
-    - cenario: Return a string mentioning ONLY location/prop names (English ONLY).
-    - CRITICAL TIMING & DENSITY: Max 25 words per scene. If a segment has more than 25 words, you MUST split it into two or more scenes, even if the visual background remains the same.
-    - NO PLACEHOLDERS: Never use "(continua)", "(pausa)", or empty strings for the 'text' field. Each 'text' field must contain the actual spoken words.
+    - action: The ONLY creative field. Use Conceptual Surrealism or Magical Realism (Surrealismo Conceitual ou Realismo Mágico) as the core aesthetic. Make the action intensely cinematic and visually stunning. Use dramatic verbs, dynamic volumetric lighting cues, extreme composition, and highly evocative visual symbolism (English ONLY). 
+    CRITICAL: AVOID REPETITIVE FRAMING! Every scene MUST feel visually unique from the previous one. Use a mix of abstract concepts, extreme close-ups, and giant-scale landscapes. NEVER repeat the same visual setup twice in a row.
+    - subject: Return a string mentioning ONLY character nicknames or IDs (English ONLY). NO CHARACTERISTICS HERE.
+    - cenario: Return a string mentioning ONLY location/prop names or IDs (English ONLY). PHYSICAL ANCHORING ONLY. NO SYMBOLISM OR CREATIVITY.
+    - camera: Pick a camera angle from: [Wide shot, Close-up, Low angle, Eye level, Bird's eye view, Dutch angle, Extreme Close-up, High Angle]. YOU MUST VARY THE CAMERA ANGLE WILDLY! Never repeat the same angle consecutively. Avoid boring head-on eye-level shots.
+    - animation: Create a short, highly cinematic animation idea in English (max 15 words) for this scene. Based on scenario, subject, props, and 'action', describe how elements move (e.g., parallax, slow-motion drift, particles floating, or character-specific motion). Make it feel like an epic animated clip. YOU MUST VARY THE IDEAS!
+    - DO NOT SKIP TEXT: The 'text' field MUST be 100% identical to the words spoken in the audio. VERBATIM transcription only. Do NOT summarize, do NOT paraphrase, and do NOT improve the language. It is strictly forbidden to omit any words.
+    - SYNC: O início e fim devem bater com a fala real (Exatamente no início da primeira palavra e no fim da última).
+    - MUSIC/SILENCE: Se não houver fala, gere 1 cena de música/silêncio.
     
     ${srtReference}
-    ${relativeScriptContext ? `\nORIGINAL TEXT REFERENCE (MANDATORY TEXT CONTENT):\n${relativeScriptContext}\nRule: Use strictly the words from the provided text for the 'text' field. Synchronize the text with the audio. Do NOT skip any words.\n` : ''}
+    ${relativeScriptContext ? `\nORIGINAL TEXT REFERENCE (MANDATORY VERBATIM CONTENT):\n${relativeScriptContext}\nRule: Use strictly the EXACT words from the provided text for the 'text' field. Word-for-word synchronization is mandatory. Do NOT skip any words.\n` : ''}
 
     MASTER ASSETS (USE IDs):
     Characters: ${globalAssets.detectedCharacters.map((c: any) => `${c.id} (${c.name})`).join(", ")}
@@ -421,7 +430,7 @@ export const enrichSrtWithVisuals = async (
       while (retries > 0) {
         try {
           const chunkResponse = await ai.models.generateContent({
-            model: TEXT_MODEL_NAME,
+            model: TEXT_MODEL_NAME, 
             contents: { parts: [chunkAudioPart, { text: chunkPrompt }] },
             config: {
               maxOutputTokens: 8192,
@@ -522,8 +531,8 @@ export const enrichSrtWithVisuals = async (
           let rawStart = item.startSeconds !== undefined ? Number(item.startSeconds) : (idx * 5);
           let rawEnd = item.endSeconds !== undefined ? Number(item.endSeconds) : rawStart + 7;
 
-          // Global sync adjustment (User reported ~0.5s lag)
-          const GLOBAL_SYNC_OFFSET = -0.5;
+          // Global sync adjustment (Removed anticipation per user request for exact start)
+          const GLOBAL_SYNC_OFFSET = 0.0;
 
           // Mapping relative timestamps to global ones and applying offset
           let gStart = (rawStart >= start ? rawStart : start + Math.min(rawStart, chunkDuration)) + GLOBAL_SYNC_OFFSET;
@@ -548,9 +557,9 @@ export const enrichSrtWithVisuals = async (
             }
           }
 
-          // Compute required minimum duration based on text length (approx 2.5 words per second)
+          // Compute required minimum duration based on text length (approx 3.0 words per second)
           const wordCount = item.text ? item.text.split(' ').length : 0;
-          const textMinDuration = Math.max(3.0, wordCount / 3.0); // Slightly more relaxed limit
+          const textMinDuration = Math.max(3.0, wordCount / 3.0); // Restaurado para 3.0w/s para evitar atropelamento visual
 
           // Ensure end is always after start
           if (gEnd <= gStart + 0.5) {
@@ -559,7 +568,7 @@ export const enrichSrtWithVisuals = async (
 
           // Final safety clamp: ensure end is within reasonable bounds
           gStart = Math.max(start, Math.min(gStart, start + chunkDuration - 0.5));
-          gEnd = Math.max(gStart + 0.5, Math.min(gEnd, start + chunkDuration + 5.0)); // Allow slight overflow if needed
+          gEnd = Math.max(gStart + 0.5, Math.min(gEnd, start + chunkDuration + 5.0)); 
 
           const formatTime = (secs: number) => {
             const m = Math.floor(secs / 60);
@@ -600,8 +609,8 @@ export const enrichSrtWithVisuals = async (
             uiCenario = `${foundLoc.name}: ${foundLoc.description}`;
             detailedCenarioForVp = foundLoc.description;
           } else {
-            uiCenario = item.cenario || "Unknown location";
-            detailedCenarioForVp = item.cenario;
+            uiCenario = "";
+            detailedCenarioForVp = "";
           }
 
           if (foundProps.length > 0) {
@@ -619,6 +628,7 @@ export const enrichSrtWithVisuals = async (
             detailedSubjectForVp,
             uiAction,
             detailedCenarioForVp,
+            item.camera || "",
             `Visual Integrity: "Pure image only: absolutely NO text, NO letters, NO words, NO numbers, NO signs, NO banners, NO captions written anywhere in the image."`
           ].filter(Boolean);
           const vp = vpParts.join(". ");
@@ -646,7 +656,7 @@ export const enrichSrtWithVisuals = async (
             srtSegments: undefined
           };
 
-          if (totalDuration > 11.0) {
+          if (totalDuration > 10.0) {
             const numParts = Math.ceil(totalDuration / 10.0);
             const partDuration = totalDuration / numParts;
             for (let p = 0; p < numParts; p++) {
@@ -688,10 +698,7 @@ export const enrichSrtWithVisuals = async (
             });
           }
           return scenesToCreate;
-          return scenesToCreate;
-        });
-
-        allItems.push(...items);
+        }); allItems.push(...items);
       } catch (e: any) {
         const chunkIndex = (chunkResult as any).index || 0;
         console.error(`[Gemini] Error in chunk ${chunkIndex + 1}`, e);
@@ -699,7 +706,15 @@ export const enrichSrtWithVisuals = async (
       }
     }
 
-    // POST-PROCESS: GLOBAL MERGE SHORT SCENES (Cross-chunk capability)
+    // TEMPORAL SAFETY: Ensure all generated items are strictly sorted chronologically.
+    // Ocasionalmente a IA retorna propriedades JSON embaraçadas (ex: cena de 56s aparecendo antes da de 31s).
+    // O 'sort' absoluto blinda 100% nossa cascata de Post-Processadores para não gerar vácuos cronológicos inversos.
+    allItems.sort((a, b) => a.startSeconds - b.startSeconds);
+
+    // DIAGNOSTIC LOG — Ajuda a identificar em qual étapa um gap aparece
+    console.log(`[GeminiService] ✅ Total raw items after sort: ${allItems.length}`);
+    console.log(`[GeminiService] ✅ Timeline coverage: ${allItems.map(it => `${it.startSeconds.toFixed(1)}-${it.endSeconds.toFixed(1)}`).join(' | ')}`);
+
     const finalMergedItems: any[] = [];
     for (const item of allItems) {
       if (finalMergedItems.length > 0) {
@@ -707,11 +722,19 @@ export const enrichSrtWithVisuals = async (
         
         const lastWords = last.text ? last.text.split(/\s+/).filter(Boolean).length : 0;
         const itemWords = item.text ? item.text.split(/\s+/).filter(Boolean).length : 0;
-        const projectedDuration = last.duration + item.duration;
+        const projectedDuration = (item.endSeconds - last.startSeconds);
         const projectedWps = (lastWords + itemWords) / (projectedDuration || 1);
 
-        // Merge if last scene is short, BUT ONLY if merging won't create a heavily "atropelada" scene.
-        if (last.duration <= 4.15 && projectedDuration <= 11.0 && projectedWps <= 2.6) {
+        // MERGE CRITERIA: 
+        // 1. If last scene is too short in duration (< 5.0s)
+        // 2. If last scene has too few words (< 10 words - User Golden Rule)
+        // 3. BUT ONLY if merging won't exceed a reasonable max duration (12s) 
+        // 4. AND ONLY if it doesn't create severe "atropelamento" (> 3.2 wps)
+        const isTooShort = last.duration < 5.0;
+        const isTooEmpty = lastWords < 10;
+        const canAbsorb = projectedDuration <= 12.0 && projectedWps <= 3.2;
+
+        if ((isTooShort || isTooEmpty) && canAbsorb) {
           last.endSeconds = item.endSeconds;
           last.endTimestamp = item.endTimestamp;
           last.duration = last.endSeconds - last.startSeconds;
@@ -725,15 +748,10 @@ export const enrichSrtWithVisuals = async (
             last.srtSegments = Array.from(uniqueSrt.values()).sort((a: any, b: any) => a.start - b.start);
           }
 
-          // Combine metadata text simply
-          const itemSym = item.symbolism || "";
-          const lastSym = last.symbolism || "";
-          if (itemSym && !lastSym.includes(itemSym)) last.symbolism = (lastSym + " " + itemSym).trim();
-
           continue; // Successfully merged, skip pushing item
         }
       }
-    finalMergedItems.push(item);
+      finalMergedItems.push(item);
     }
 
     // POST-PROCESS 2: FORCE-MERGE SCENES TOO SHORT TO RENDER (< 5s)
@@ -790,7 +808,7 @@ export const enrichSrtWithVisuals = async (
     // Se a IA cuspir uma cena gigante sozinha, fatiamos de volta para respeitar a regra dos ~10s
     const ultimateItems: any[] = [];
     for (const item of finalMergedItems) {
-      if (item.duration > 11.0) {
+      if (item.duration > 10.0) {
         const numParts = Math.ceil(item.duration / 10.0);
         const partDuration = item.duration / numParts;
         
@@ -838,16 +856,27 @@ export const enrichSrtWithVisuals = async (
       ...(globalAssets.detectedProps || [])
     ];
 
-    // POST-PROCESS 4: WORD DENSITY ENFORCEMENT (Regra Anti-Atropelamento)
-    // Se a cena ainda tiver mais de 2.5 palavras por segundo, forçamos a divisão para garantir legibilidade.
+    // POST-PROCESS 4: WORD DENSITY ENFORCEMENT (Regra Anti-Atropelamento da Tabela de Ouro)
+    // Se a cena gerada violar os top rates indicados pelo usuário, dividimos para resgatar a leitura orgânica.
     const strictDensityItems: any[] = [];
     for (const item of ultimateItems) {
       const words = item.text ? item.text.split(/\s+/).filter(Boolean) : [];
       const duration = item.endSeconds - item.startSeconds;
-      const wps = words.length / (duration || 1);
+      
+      const getMaxWords = (dur: number) => {
+         if (dur <= 5.5) return 13;
+         if (dur <= 6.5) return 15;
+         if (dur <= 7.5) return 18;
+         if (dur <= 8.5) return 20;
+         if (dur <= 9.5) return 23;
+         return 26; // >= 10s (banda de tolerância estrita baseada no 10s=25 max)
+      };
 
-      if (wps > 3.0 && words.length > 10) { // Tolerância de até 3.0 WPS antes de forçar split
-        const numParts = Math.ceil(words.length / 15); // Almeja ~15 palavras por cena (~6s a 2.5 WPS)
+      const maxAllowed = getMaxWords(duration);
+
+      // Divisão ativada se forçar a vista E se o texto divido for suficiente para sustentar legibilidade visual (>13)
+      if (words.length > maxAllowed && words.length > 13) { 
+        const numParts = Math.ceil(words.length / 13); // Fatiamento cravado mirando blocos de ~13 palavras (equivalente a 5s cravado da tabela)
         const partDuration = duration / numParts;
         
         for (let p = 0; p < numParts; p++) {
@@ -880,7 +909,181 @@ export const enrichSrtWithVisuals = async (
       }
     }
 
-    const sanitizedItems = strictDensityItems.map(item => {
+    // POST-PROCESS 5: DURATION SAFEGUARD (MERGE SHORT SCENES)
+    // Cenas com menos de 5 segundos são fundidas com a cena seguinte ou anterior, protegendo a timeline de stutters.
+    const durationSafeItems: any[] = [];
+    for (let i = 0; i < strictDensityItems.length; i++) {
+      let currentItem = strictDensityItems[i];
+      let currentDuration = currentItem.endSeconds - currentItem.startSeconds;
+
+      // Se a cena for menor que 5s e não for a última, tenta fundir com a próxima
+      while (currentDuration < 5.0 && i < strictDensityItems.length - 1) {
+        let nextItem = strictDensityItems[i + 1];
+        let nextDuration = nextItem.endSeconds - nextItem.startSeconds;
+        
+        // FUSÃO OBRIGATÓRIA: Qualquer cena com menos de 5s é brutalmente fundida com a vizinha.
+        // Aceitamos que a cena fundida chegue a até 15.0s, porque evitar flashes curtos é a prioridade absoluta.
+        if (currentDuration + nextDuration <= 15.0 || currentDuration < 5.0) {
+          currentItem.endSeconds = nextItem.endSeconds;
+          currentItem.duration = currentItem.endSeconds - currentItem.startSeconds;
+          const formatTimeLocal = (secs: number) => {
+            const m = Math.floor(secs / 60);
+            const s = Math.floor(secs % 60);
+            const ms = Math.floor((secs % 1) * 100);
+            return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(2, '0')}`;
+          };
+          currentItem.endTimestamp = formatTimeLocal(currentItem.endSeconds);
+          currentItem.text = (currentItem.text + " " + nextItem.text).trim();
+          
+          currentDuration = currentItem.duration;
+          i++; // Skip the next item since it's merged
+        } else {
+          break; // Stop merging
+        }
+      }
+      durationSafeItems.push(currentItem);
+    }
+
+    // Tail Guard
+    if (durationSafeItems.length > 1) {
+      let lastSeg = durationSafeItems[durationSafeItems.length - 1];
+      if (lastSeg.endSeconds - lastSeg.startSeconds < 5.0) {
+         let prevItem = durationSafeItems[durationSafeItems.length - 2];
+         prevItem.endSeconds = lastSeg.endSeconds;
+         prevItem.duration = prevItem.endSeconds - prevItem.startSeconds;
+         const formatTimeLocal = (secs: number) => {
+            const m = Math.floor(secs / 60);
+            const s = Math.floor(secs % 60);
+            const ms = Math.floor((secs % 1) * 100);
+            return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(2, '0')}`;
+         };
+         prevItem.endTimestamp = formatTimeLocal(prevItem.endSeconds);
+         prevItem.text = (prevItem.text + " " + lastSeg.text).trim();
+         durationSafeItems.pop();
+      }
+    }
+
+    // POST-PROCESS 6: TIMELINE GAP FILLER (Music/Silence Autocomplete)
+    const gapFilledItems: any[] = [];
+    let expectedStart = 0;
+    const formatTimeForGap = (secs: number) => {
+      const m = Math.floor(secs / 60);
+      const s = Math.floor(secs % 60);
+      const ms = Math.floor((secs % 1) * 100);
+      return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(2, '0')}`;
+    };
+
+    for (let i = 0; i < durationSafeItems.length; i++) {
+        let currentItem = durationSafeItems[i];
+        if (currentItem.startSeconds > expectedStart + 0.5) { // Tolerância de 500ms
+            const gapDuration = currentItem.startSeconds - expectedStart;
+            if (gapDuration >= 5.0) { // Cria filler se buraco > 5s
+               const slices = Math.ceil(gapDuration / 8.0);
+               const sliceDur = gapDuration / slices;
+               for (let j = 0; j < slices; j++) {
+                   const sliceStart = expectedStart + (j * sliceDur);
+                   const sliceEnd = expectedStart + ((j+1) * sliceDur);
+                   gapFilledItems.push({
+                       startSeconds: sliceStart,
+                       endSeconds: sliceEnd,
+                       duration: sliceDur,
+                       startTimestamp: formatTimeForGap(sliceStart),
+                       endTimestamp: formatTimeForGap(sliceEnd),
+                       text: "(🎵)",
+                       subject: "",
+                       cenario: "",
+                       characterIds: [],
+                       locationIds: [],
+                       propIds: [],
+                       action: "Cinematic atmospheric shot. Highly dramatic lighting, surreal empty space. Wide shot.",
+                       animation: "Dynamic Zoom-In Drift"
+                   });
+               }
+            }
+        }
+        gapFilledItems.push(currentItem);
+        expectedStart = currentItem.endSeconds;
+    }
+
+    // Tail Gap Filler for Music Outro
+    if (totalDuration - expectedStart >= 5.0) {
+        const tailGap = totalDuration - expectedStart;
+        const slices = Math.ceil(tailGap / 8.0);
+        const sliceDur = tailGap / slices;
+        for (let j = 0; j < slices; j++) {
+            const sliceStart = expectedStart + (j * sliceDur);
+            const sliceEnd = expectedStart + ((j+1) * sliceDur);
+             gapFilledItems.push({
+                 startSeconds: sliceStart,
+                 endSeconds: sliceEnd,
+                 duration: sliceDur,
+                 startTimestamp: formatTimeForGap(sliceStart),
+                 endTimestamp: formatTimeForGap(sliceEnd),
+                 text: "(🎵)",
+                 subject: "",
+                 cenario: "",
+                 characterIds: [],
+                 locationIds: [],
+                 propIds: [],
+                 isGapFiller: true,
+                 action: "Cinematic trailing shot, atmospheric closing mood. Highly dramatic lighting, surreal empty space. Wide shot.",
+                 animation: "Contextual Zoom-Out Reveal"
+             });
+        }
+    }
+
+    // POST-PROCESS 7: RIGOROUS SRT ALIGNMENT (SNAP TO TEXT BOUNDARIES)
+    for (let i = 0; i < gapFilledItems.length; i++) {
+      let item = gapFilledItems[i];
+      if (item.srtSegments && item.srtSegments.length > 0) {
+        // Resolve cross-scene duplicate SRT segments caused by AI hallucinated boundaries
+        if (i > 0 && gapFilledItems[i - 1].srtSegments && gapFilledItems[i - 1].srtSegments.length > 0) {
+          const prev = gapFilledItems[i - 1];
+          const prevLastSrt = prev.srtSegments[prev.srtSegments.length - 1];
+          const currFirstSrt = item.srtSegments[0];
+          
+          if (prevLastSrt.start === currFirstSrt.start) {
+            // The segment leaked into both scenes. We remove it from the current scene to kill the duplicate audio.
+            item.srtSegments.shift();
+          }
+        }
+        
+        if (item.srtSegments.length > 0) {
+          const firstSrt = item.srtSegments[0];
+          
+          // Descontos temporais milimétricos (50ms) para que a primeira sílaba não seja cortada pelo botão Play
+          const exactStart = Math.max(0, firstSrt.start - 0.05);
+
+          // Force the scene to start exactly at the beginning of its first exclusive subtitle word
+          item.startSeconds = exactStart;
+
+          if (i > 0) {
+            const prev = gapFilledItems[i - 1];
+            // Estica a cena anterior para terminar exatamente onde esta começa (previne black screens)
+            prev.endSeconds = item.startSeconds;
+            prev.duration = prev.endSeconds - prev.startSeconds;
+            const formatTimeLocal = (secs: number) => {
+              const m = Math.floor(secs / 60);
+              const s = Math.floor(secs % 60);
+              const ms = Math.floor((secs % 1) * 100);
+              return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(2, '0')}`;
+            };
+            prev.endTimestamp = formatTimeLocal(prev.endSeconds);
+          }
+          
+          item.duration = item.endSeconds - item.startSeconds;
+          const formatTimeLocal = (secs: number) => {
+            const m = Math.floor(secs / 60);
+            const s = Math.floor(secs % 60);
+            const ms = Math.floor((secs % 1) * 100);
+            return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(2, '0')}`;
+          };
+          item.startTimestamp = formatTimeLocal(item.startSeconds);
+        }
+      }
+    }
+
+    const sanitizedItems = gapFilledItems.map(item => {
       let subject = item.subject || "";
       let action = item.action || "";
       let cenario = item.cenario || "";
@@ -915,5 +1118,125 @@ export const enrichSrtWithVisuals = async (
         console.warn("[Gemini] Failed to delete file:", e);
       }
     }
+  }
+};
+/**
+ * Performs Magic Sync (Audio-Text Forced Alignment) using Gemini Pro Multimodal.
+ */
+export const syncScenesWithAudio = async (
+  audioFile: File,
+  scenes: { id: string | number, text: string }[]
+): Promise<{ index: number, start: number, end: number }[]> => {
+  console.log(`[Gemini Sync] 🚀 Iniciando Sincronia Robusta para ${scenes.length} cenas...`);
+  
+  try {
+    // 1. Particionar áudio para evitar estoiro de payload (limite ~60s por chunk)
+    const audioChunks = await splitAudioFile(audioFile, 60);
+    console.log(`[Gemini Sync] Áudio particionado em ${audioChunks.length} blocos.`);
+
+    const allSyncResults: { index: number, start: number, end: number }[] = [];
+
+    // 2. Processar cada chunk
+    for (let c = 0; c < audioChunks.length; c++) {
+      const chunk = audioChunks[c];
+      const chunkStart = chunk.startSeconds;
+      const chunkEnd = chunkStart + chunk.durationSeconds;
+
+      // Filtrar cenas que pertencem a este intervalo (com margem de 1s)
+      const chunkScenes = scenes.filter((s, idx) => {
+        // Obter timestamp estimativo da cena (se não tiver, estimamos 5s por cena)
+        const sceneEstimatedStart = (s as any).startSeconds ?? (idx * 5);
+        return sceneEstimatedStart >= chunkStart - 1 && sceneEstimatedStart < chunkEnd + 1;
+      });
+
+      if (chunkScenes.length === 0) continue;
+
+      console.log(`[Gemini Sync] Sincronizando Bloco ${c + 1}/${audioChunks.length} (${chunkScenes.length} cenas)...`);
+
+      const audioBase64 = await fileToBase64(chunk.file);
+      const audioPart = { inlineData: { mimeType: 'audio/mpeg', data: audioBase64 } };
+
+      const prompt = `ALinhamento Forçado de Áudio e Texto (Bloco ${c + 1}).
+        Este áudio começa em ${chunkStart.toFixed(2)}s e termina em ${chunkEnd.toFixed(2)}s.
+        Ajuste os tempos das seguintes cenas para que batam EXATAMENTE com a locução.
+        
+        Cenas neste bloco:
+        ${chunkScenes.map((s, i) => `CENA ${i+1}: "${s.text.substring(0, 100)}${s.text.length > 100 ? '...' : ''}"`).join('\n')}
+        
+        REGRAS CRÍTICAS:
+      1. Os valores de 'start' e 'end' devem ser ABSOLUTOS (contados desde o início do arquivo original).
+      2. 'start' no início da fala, 'end' no fim da fala. Seja milimétrico.
+      3. O campo 'text' deve ser 100% IDÊNTICO (Verbatim) ao que é falado.
+      4. Retorne JSON: { "syncResults": [ { "index": original_index, "start": number, "end": number } ] }
+      5. O 'index' deve corresponder à ordem destas cenas na lista (1, 2, 3...).
+      `;
+
+      let retries = 2;
+      let success = false;
+
+      while (retries >= 0 && !success) {
+        try {
+          const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+          const response = await ai.models.generateContent({
+            model: "gemini-1.5-pro",
+            contents: { parts: [audioPart, { text: prompt }] },
+            config: {
+              maxOutputTokens: 2048,
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: "object",
+                properties: {
+                  syncResults: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        index: { type: "number" },
+                        start: { type: "number" },
+                        end: { type: "number" }
+                      },
+                      required: ["index", "start", "end"]
+                    }
+                  }
+                },
+                required: ["syncResults"]
+              }
+            }
+          });
+
+          const rawJson = response.text || '{"syncResults":[]}';
+          const data = JSON.parse(rawJson);
+          
+          // Mapear resultados relativos/locais para globais e associar aos IDs originais
+          (data.syncResults || []).forEach((res: any, i: number) => {
+            if (chunkScenes[i]) {
+                allSyncResults.push({
+                    index: scenes.indexOf(chunkScenes[i]), // Índice absoluto na lista original
+                    start: res.start,
+                    end: res.end
+                });
+            }
+          });
+          
+          success = true;
+        } catch (err: any) {
+          console.warn(`[Gemini Sync] Falha no bloco ${c + 1}, retentativa ${retries}...`, err);
+          retries--;
+          if (retries < 0) console.error(`[Gemini Sync] Bloco ${c + 1} falhou definitivamente.`);
+          else await new Promise(r => setTimeout(r, 3000));
+        }
+      }
+    }
+
+    // Ordenar resultados e logs
+    allSyncResults.sort((a, b) => a.index - b.index);
+    console.log(`[Gemini Sync] ✅ Sincronia concluída. Total de cenas processadas: ${allSyncResults.length}`);
+    
+    logApiCost('text', "gemini-1.5-pro", 0.05, { sceneCount: scenes.length });
+    return allSyncResults;
+
+  } catch (err: any) {
+    console.error("[Gemini Sync] Erro Crítico:", err);
+    throw err;
   }
 };

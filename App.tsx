@@ -102,6 +102,16 @@ const App: React.FC = () => {
     initApp();
   }, []);
 
+  // Auto-save debounced whenever items or project structure changes
+  useEffect(() => {
+    if (status === ProcessingStatus.COMPLETED && currentProject) {
+      const timer = setTimeout(() => {
+        handleSaveProject(currentProject);
+      }, 2000); // 2s debounce
+      return () => clearTimeout(timer);
+    }
+  }, [items, currentProject?.characters, currentProject?.locations, currentProject?.props]);
+
   const refreshUsage = async () => {
     try {
       const u = await getDailyUsage();
@@ -544,6 +554,10 @@ const App: React.FC = () => {
                   newItems[index] = { ...newItems[index], ...update };
                   return { ...prevProject, items: newItems };
                 });
+              }}
+              onUpdateAllItems={(newItems) => {
+                setItems(newItems);
+                setCurrentProject(prev => prev ? { ...prev, items: newItems } : prev);
               }}
               onForceSave={() => {
                 setCurrentProject(prevProject => {

@@ -38,10 +38,11 @@ const getPresetWeightedChunks = (
     srtSegments?: { start: number; end: number; text: string }[]
 ): WeightedChunk[] => {
     if (srtSegments && srtSegments.length > 0) {
+        const SRT_ANTICIPATION_OFFSET = -0.5; // instructions.md §3.7: antecipação de 500ms
         return srtSegments.map(seg => ({
             text: seg.text,
-            startSeconds: seg.start,
-            endSeconds: seg.end
+            startSeconds: Math.max(0, seg.start + SRT_ANTICIPATION_OFFSET),
+            endSeconds: Math.max(0.1, seg.end + SRT_ANTICIPATION_OFFSET)
         }));
     }
     if (!text) return [];
@@ -322,6 +323,7 @@ export const generateTimelineVideo = async (
             if (hasGlobalSrtData) {
                 // Modo Estrito: Se um SRT foi providenciado, APENAS legendas vindas do SRT serão renderizadas.
                 // Cenas de silêncio absoluto (sem srtSegments atrelados) NÃO vão gerar blocos de texto matemáticos alucinados.
+                const SRT_OFFSET = -0.5; // instructions.md §3.7: antecipação de 500ms
                 sortedItems.forEach(it => {
                     if (it.srtSegments) {
                         it.srtSegments.forEach(seg => {
@@ -329,8 +331,8 @@ export const generateTimelineVideo = async (
                             if (!seenSegments.has(key)) {
                                 allSubtitleChunks.push({
                                     text: seg.text,
-                                    startSeconds: seg.start,
-                                    endSeconds: seg.end
+                                    startSeconds: Math.max(0, seg.start + SRT_OFFSET),
+                                    endSeconds: Math.max(0.1, seg.end + SRT_OFFSET)
                                 });
                                 seenSegments.add(key);
                             }
@@ -441,72 +443,82 @@ export const generateTimelineVideo = async (
                 if (isFinished) return;
 
                 // CRITICAL FIX: Use the exact audio hardware clock to avoid sync drift
-                const elapsed = audioContext.currentTime - audioStartTime;
-
-                if (elapsed >= audioDuration) {
-                    isFinished = true;
-                    if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
-                    if (recorder.state === 'recording') {
-                        setTimeout(() => recorder.stop(), 200); // small buffer for encoder to flush
-                    }
-                    return;
+                // Also auto-resume AudioContext if browser suspended it (e.g. tab lost focus)
+                if (audioContext.state === 'suspended') {
+                    audioContext.resume().catch(() => {});
                 }
 
-                let activeIdx = -1;
-                for (let i = 0; i < sortedItems.length; i++) {
-                    if (elapsed >= sortedItems[i].startSeconds && elapsed < sortedItems[i].endSeconds) {
-                        activeIdx = i;
-                        break;
-                    }
-                }
+                try {
+                    const elapsed = audioContext.currentTime - audioStartTime;
 
-                if (activeIdx === -1) {
-                    // Use the last known scene to keep the canvas alive instead of going black
-                    for (let i = sortedItems.length - 1; i >= 0; i--) {
-                        if (elapsed >= sortedItems[i].endSeconds) {
+                    if (elapsed >= audioDuration) {
+                        isFinished = true;
+                        if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
+                        if (recorder.state === 'recording') {
+                            setTimeout(() => recorder.stop(), 200); // small buffer for encoder to flush
+                        }
+                        return;
+                    }
+
+                    let activeIdx = -1;
+                    for (let i = 0; i < sortedItems.length; i++) {
+                        if (elapsed >= sortedItems[i].startSeconds && elapsed < sortedItems[i].endSeconds) {
                             activeIdx = i;
                             break;
                         }
                     }
-                }
 
-                if (activeIdx !== -1) {
-                    const currentItem = sortedItems[activeIdx];
-                    const nextItem = sortedItems[activeIdx + 1];
-                    const sceneElapsed = elapsed - currentItem.startSeconds;
-                    const sceneDuration = currentItem.endSeconds - currentItem.startSeconds;
-                    const progress = Math.min(1, Math.max(0, sceneElapsed / Math.max(sceneDuration, 0.01)));
-
-                    ctx.fillStyle = "#000";
-                    ctx.fillRect(0, 0, width, height);
-
-                    const timeLeft = currentItem.endSeconds - elapsed;
-                    if (timeLeft < transitionDuration && nextItem) {
-                        const fadeProgress = 1.0 - (timeLeft / transitionDuration);
-                        drawSingleSource(ctx, loadedAssets.get(activeIdx) || null, width, height, activeIdx, progress, 1.0 - fadeProgress, effectMap.get(activeIdx));
-                        const nextSceneProgress = Math.max(0, (elapsed - nextItem.startSeconds) / Math.max(nextItem.endSeconds - nextItem.startSeconds, 0.01));
-                        drawSingleSource(ctx, loadedAssets.get(activeIdx + 1) || null, width, height, activeIdx + 1, nextSceneProgress, fadeProgress, effectMap.get(activeIdx + 1));
-                    } else {
-                        drawSingleSource(ctx, loadedAssets.get(activeIdx) || null, width, height, activeIdx, progress, 1.0, effectMap.get(activeIdx));
-                    }
-
-                    if (subtitleStyle) {
-                        // FIX: Removido offset de +0.5s que causava adiantamento das legendas.
-                        // Agora usamos o elapsed real para garantir que a legenda espere o áudio.
-                        // Adicionamos uma pequena tolerância de 50ms para garantir que a legenda apareça no frame exato.
-                        const subtitleElapsed = elapsed + 0.05; 
-                        const currentChunk = allSubtitleChunks.find(c => subtitleElapsed >= c.startSeconds && subtitleElapsed < c.endSeconds);
-                        if (currentChunk) {
-                            drawSubtitle(ctx, currentChunk.text, width, height, subtitleStyle);
+                    if (activeIdx === -1) {
+                        // Use the last known scene to keep the canvas alive instead of going black
+                        for (let i = sortedItems.length - 1; i >= 0; i--) {
+                            if (elapsed >= sortedItems[i].endSeconds) {
+                                activeIdx = i;
+                                break;
+                            }
                         }
                     }
+
+                    if (activeIdx !== -1) {
+                        const currentItem = sortedItems[activeIdx];
+                        const nextItem = sortedItems[activeIdx + 1];
+                        const sceneElapsed = elapsed - currentItem.startSeconds;
+                        const sceneDuration = currentItem.endSeconds - currentItem.startSeconds;
+                        const progress = Math.min(1, Math.max(0, sceneElapsed / Math.max(sceneDuration, 0.01)));
+
+                        ctx.fillStyle = "#000";
+                        ctx.fillRect(0, 0, width, height);
+
+                        const timeLeft = currentItem.endSeconds - elapsed;
+                        if (timeLeft < transitionDuration && nextItem) {
+                            const fadeProgress = 1.0 - (timeLeft / transitionDuration);
+                            drawSingleSource(ctx, loadedAssets.get(activeIdx) || null, width, height, activeIdx, progress, 1.0 - fadeProgress, effectMap.get(activeIdx));
+                            const nextSceneProgress = Math.max(0, (elapsed - nextItem.startSeconds) / Math.max(nextItem.endSeconds - nextItem.startSeconds, 0.01));
+                            drawSingleSource(ctx, loadedAssets.get(activeIdx + 1) || null, width, height, activeIdx + 1, nextSceneProgress, fadeProgress, effectMap.get(activeIdx + 1));
+                        } else {
+                            drawSingleSource(ctx, loadedAssets.get(activeIdx) || null, width, height, activeIdx, progress, 1.0, effectMap.get(activeIdx));
+                        }
+
+                        if (subtitleStyle) {
+                            const subtitleElapsed = elapsed + 0.05;
+                            const currentChunk = allSubtitleChunks.find(c => subtitleElapsed >= c.startSeconds && subtitleElapsed < c.endSeconds);
+                            if (currentChunk) {
+                                drawSubtitle(ctx, currentChunk.text, width, height, subtitleStyle);
+                            }
+                        }
+                    }
+
+                    if (Date.now() - lastProgressUpdate > 500) {
+                        onProgress(Math.floor((elapsed / audioDuration) * 100), `Renderizando Master (${elapsed.toFixed(1)}s / ${audioDuration.toFixed(1)}s)`);
+                        lastProgressUpdate = Date.now();
+                    }
+                } catch (renderError) {
+                    // RESILIENCE: Absorb any render frame error silently.
+                    // The rAF will still be scheduled below, keeping the loop alive.
+                    console.warn('[VideoService] RenderLoop frame error (loop continues):', renderError);
                 }
 
-                if (Date.now() - lastProgressUpdate > 500) {
-                    onProgress(Math.floor((elapsed / audioDuration) * 100), `Renderizando Master (${elapsed.toFixed(1)}s / ${audioDuration.toFixed(1)}s)`);
-                    lastProgressUpdate = Date.now();
-                }
-
+                // CRITICAL: requestAnimationFrame is ALWAYS called, even on errors above.
+                // Moving it outside the try-catch ensures the loop NEVER dies silently.
                 animationFrameId = requestAnimationFrame(renderLoop);
             };
 
