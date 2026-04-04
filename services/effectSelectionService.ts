@@ -202,15 +202,6 @@ export const selectEffectForScene = async (
     return randomEffect;
 };
 
-/**
- * Parseia a instrução técnica do efeito e retorna parâmetros numéricos
- * 
- * Formato esperado: "zoom:START-END,move:DIRECTION"
- * Exemplos:
- * - "zoom:1.15-1.35,move:left-up"
- * - "zoom:1.35-1.15,move:right-down"
- * - "zoom:1.0-1.2,move:none"
- */
 export const parseEffectInstruction = (instruction: string): EffectParams => {
     const defaultParams: EffectParams = {
         scaleStart: 1.15,
@@ -227,82 +218,59 @@ export const parseEffectInstruction = (instruction: string): EffectParams => {
         const text = instruction.toLowerCase();
         const params: Partial<EffectParams> = {};
 
-        // 1. Extrair Escalas (Ex: "from 1.12 to 1.22")
+        // 1. Extrair Escalas (Ex: "from 1.12 to 1.22" ou "scale from 1.12 to 1.22")
         const scaleMatch = text.match(/scale\s+from\s+([\d.]+)\s+to\s+([\d.]+)/i);
         if (scaleMatch) {
             params.scaleStart = parseFloat(scaleMatch[1]);
             params.scaleEnd = parseFloat(scaleMatch[2]);
         }
 
-        // 2. Detectar Tags de Movimento (Ex: "move:right", "move:left-up")
+        // 2. Detectar Tags de Movimento explicíticas (Ex: "move:right")
         let moveTag = 'none';
         const tagMatch = text.match(/move:([a-z-]+)/i);
-        if (tagMatch) {
-            moveTag = tagMatch[1];
-        }
+        if (tagMatch) moveTag = tagMatch[1];
 
-        // 3. Extrair Shifts/Ranges (Ex: "shift from -3% to +3%")
-        // Pegamos todos os matches de porcentagem na string
-        const shiftMatches = [...text.matchAll(/from\s+([+-]?\d+)%\s+to\s+([+-]?\d+)%/g)];
+        // 3. Extrair Eixos Nomeados (Prioridade Máxima)
+        const hMatch = text.match(/horizontal axis.*?from\s+([+-]?\d+)%\s+to\s+([+-]?\d+)%/i);
+        const vMatch = text.match(/vertical axis.*?from\s+([+-]?\d+)%\s+to\s+([+-]?\d+)%/i);
         
         let hStart = 0, hEnd = 0, vStart = 0, vEnd = 0;
 
-        if (shiftMatches.length > 0) {
-            // Lógica refinada: Procuramos o range específico que vem logo após a tag de movimento detectada
-            // Ex: "for move:right shift from -3% to +3%"
-            const specificHMatch = text.match(new RegExp(`move:${moveTag}.*?from\\s+([+-]?\\d+)%\\s+to\\s+([+-]?\\d+)%`, 'i'));
-            
-            if (specificHMatch) {
-                const start = parseFloat(specificHMatch[1]) / 100;
-                const end = parseFloat(specificHMatch[2]) / 100;
-                
-                // Atribuir ao eixo correto baseado no contexto da frase
-                // Se a frase próxima ao match fala em "horizontal" ou se moveTag é apenas left/right
-                const contextFragment = text.substring(Math.max(0, specificHMatch.index! - 100), specificHMatch.index!);
-                
-                if (contextFragment.includes('horizontal') || ['left', 'right'].includes(moveTag)) {
-                    hStart = start;
-                    hEnd = end;
-                } else if (contextFragment.includes('vertical') || ['up', 'down'].includes(moveTag)) {
-                    vStart = start;
-                    vEnd = end;
-                } else if (moveTag.includes('-')) {
-                    // Diagonais (ex: right-up): o range costuma ser aplicado a ambos ou houveram múltiplos matches
-                    // No instructions.md atual, diagonais tendem a ter uma instrução simplificada ou eixos explícitos
-                    hStart = start; hEnd = end;
-                    vStart = start; vEnd = end;
-                }
-            } else {
-                // Fallback para mapeamento genérico por eixo se não encontrar o match específico da tag
-                if (text.includes('horizontal axis')) {
-                    const hMatch = text.match(/horizontal axis.*?from\s+([+-]?\d+)%\s+to\s+([+-]?\d+)%/i);
-                    if (hMatch) { hStart = parseFloat(hMatch[1]) / 100; hEnd = parseFloat(hMatch[2]) / 100; }
-                }
-                if (text.includes('vertical axis')) {
-                    const vMatch = text.match(/vertical axis.*?from\s+([+-]?\d+)%\s+to\s+([+-]?\d+)%/i);
-                    if (vMatch) { vStart = parseFloat(vMatch[1]) / 100; vEnd = parseFloat(vMatch[2]) / 100; }
-                }
+        if (hMatch) {
+            hStart = parseFloat(hMatch[1]) / 100;
+            hEnd = parseFloat(hMatch[2]) / 100;
+        }
+        if (vMatch) {
+            vStart = parseFloat(vMatch[1]) / 100;
+            vEnd = parseFloat(vMatch[2]) / 100;
+        }
+
+        // 4. Fallback: Se não encontrou eixos nomeados, busca por range atrelado a moveTag
+        if (!hMatch && !vMatch) {
+            const specificPattern = new RegExp(`move:${moveTag}.*?from\\s+([+-]?\\d+)%\\s+to\\s+([+-]?\\d+)%`, 'i');
+            const specificMatch = text.match(specificPattern);
+            if (specificMatch) {
+                const s = parseFloat(specificMatch[1]) / 100;
+                const e = parseFloat(specificMatch[2]) / 100;
+                if (['left', 'right'].includes(moveTag)) { hStart = s; hEnd = e; }
+                else if (['up', 'down'].includes(moveTag)) { vStart = s; vEnd = e; }
+                else { hStart = s; hEnd = e; vStart = s; vEnd = e; }
             }
         }
 
         const finalParams = { ...defaultParams, ...params };
-
-        // Aplicar os offsets detectados
         finalParams.moveXStart = hStart;
         finalParams.moveXEnd = hEnd;
         finalParams.moveYStart = vStart;
         finalParams.moveYEnd = vEnd;
 
-        // Fallback Legado se o parser de linguagem natural falhar em detectar eixos mas encontrar moveTag
+        // 5. Fallback Legado Geométrico
         if (hStart === 0 && hEnd === 0 && vStart === 0 && vEnd === 0 && moveTag !== 'none') {
-            const xRange = 0.05; // 5% default
-            const yRange = 0.05;
-
-            if (moveTag === 'right') { finalParams.moveXStart = -xRange; finalParams.moveXEnd = xRange; }
-            else if (moveTag === 'left') { finalParams.moveXStart = xRange; finalParams.moveXEnd = -xRange; }
-            
-            if (moveTag.includes('up')) { finalParams.moveYStart = yRange; finalParams.moveYEnd = -yRange; }
-            else if (moveTag.includes('down')) { finalParams.moveYStart = -yRange; finalParams.moveYEnd = yRange; }
+            const range = 0.05;
+            if (moveTag === 'right') { finalParams.moveXStart = -range; finalParams.moveXEnd = range; }
+            else if (moveTag === 'left') { finalParams.moveXStart = range; finalParams.moveXEnd = -range; }
+            if (moveTag.includes('up')) { finalParams.moveYStart = range; finalParams.moveYEnd = -range; }
+            else if (moveTag.includes('down')) { finalParams.moveYStart = -range; finalParams.moveYEnd = range; }
         }
 
         return finalParams;
@@ -328,17 +296,34 @@ export const preselectEffectsForScenes = async (
     const effectMap = new Map<number, MotionEffect>();
 
     if (availableEffects.length === 0) {
-        console.warn("Nenhum efeito disponível, usando efeitos padrão");
+        console.warn("Nenhum efeio disponível, usando efeitos padrão");
         return effectMap;
     }
 
-    let previousEffect: MotionEffect | undefined;
+    // Histórico de efeitos para evitar repetição excessiva
+    const effectHistory: MotionEffect[] = [];
+    const MAX_HISTORY = Math.min(3, availableEffects.length - 1);
 
     for (let index = 0; index < scenes.length; index++) {
         const scene = scenes[index];
-        const selectedEffect = await selectEffectForScene(scene, availableEffects, previousEffect, useAI);
+        
+        // No selectEffectForScene, agora passamos o último efeito para compatibilidade, 
+        // mas a lógica local aqui vai forçar a variedade baseada no histórico.
+        const previousEffect = effectHistory.length > 0 ? effectHistory[effectHistory.length - 1] : undefined;
+        
+        // Filtramos os candidatos localmente para garantir variedade maior que 1 cena
+        const candidates = availableEffects.filter(e => !effectHistory.some(h => h.id === e.id));
+        const pool = candidates.length > 0 ? candidates : availableEffects;
+
+        const selectedEffect = await selectEffectForScene(scene, pool, previousEffect, useAI);
+        
         effectMap.set(index, selectedEffect);
-        previousEffect = selectedEffect;
+        
+        // Atualiza histórico
+        effectHistory.push(selectedEffect);
+        if (effectHistory.length > MAX_HISTORY) {
+            effectHistory.shift();
+        }
     }
 
     return effectMap;

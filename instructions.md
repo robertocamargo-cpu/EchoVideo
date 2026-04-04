@@ -17,7 +17,7 @@ O objetivo fundamental da criação de Tokens (Personagens, Cenários e Objetos)
 
 Este módulo controla a segmentação do áudio e a carga cognitiva visual para garantir a legibilidade.
 
-- **Duração por Cena**: Mínimo de 3.0 segundos | Máximo de 10 segundos.
+- **Duração por Cena**: Mínimo de 5.0 segundos | Máximo de 10 segundos.
 - **Segmentação**: O Gemini deve segmentar o áudio respeitando estes limites. Se uma cena natural ultrapassar 10s, deve ser dividida em duas ou mais cenas.
 - **Sincronia de Fala (Densidade)**: Respeite o ritmo natural de fala (aprox. 3.0 palavras por segundo).
 - **CRITICAL TIMING (Regra Anti-Atropelamento)**: O texto agora tem precedência sobre o tempo. A IA foi treinada para extrair blocos de 12 a 25 palavras. O limite de "Atropelado" é 3.0 WPS.

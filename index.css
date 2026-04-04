@@ -1,6 +1,12 @@
 /* EchoGEN Global Styles */
 html {
-  font-size: 21px;
+  font-size: 16px; /* rem = 16px → max-w-7xl = 1280px */
+}
+
+/* Força 12px e Poppins em TODOS os textos dentro do body */
+body, body *, body *::before, body *::after {
+  font-size: 12px !important;
+  font-family: 'Poppins', ui-sans-serif, system-ui, -apple-system, sans-serif !important;
 }
 
 * {
@@ -10,7 +16,8 @@ html {
 }
 
 body {
-  font-family: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+  font-family: 'Poppins', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  font-size: 12px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }

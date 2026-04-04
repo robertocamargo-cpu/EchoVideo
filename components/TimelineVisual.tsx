@@ -1,22 +1,33 @@
 
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useImperativeHandle, forwardRef } from 'react';
 import { TranscriptionItem } from '../types';
 import { Play, Square, Volume2, PlayCircle } from 'lucide-react';
+
+export interface TimelineVisualHandle {
+    startPreview: () => void;
+    stopPreview: () => void;
+}
 
 interface TimelineVisualProps {
     items: TranscriptionItem[];
     onImageClick: (index: number) => void;
     audioFile: File | null;
     videoUrl: string | null;
+    onPreviewStateChange?: (isActive: boolean) => void;
 }
 
-export const TimelineVisual: React.FC<TimelineVisualProps> = ({ items, onImageClick, audioFile, videoUrl }) => {
+export const TimelineVisual = forwardRef<TimelineVisualHandle, TimelineVisualProps>(({ items, onImageClick, audioFile, videoUrl, onPreviewStateChange }, ref) => {
     const [playingIndex, setPlayingIndex] = useState<number | null>(null);
     const [isFullPreview, setIsFullPreview] = useState(false);
     const [globalProgress, setGlobalProgress] = useState(0);
 
     const audioRef = useRef<HTMLAudioElement | null>(null);
     const animationRef = useRef<number | null>(null);
+
+    useImperativeHandle(ref, () => ({
+        startPreview: () => handleFullPreview(),
+        stopPreview: () => stopPlayback(),
+    }));
 
     // Proteção contra array vazio
     if (!items || items.length === 0) {
@@ -59,6 +70,7 @@ export const TimelineVisual: React.FC<TimelineVisualProps> = ({ items, onImageCl
         setPlayingIndex(null);
         setIsFullPreview(false);
         setGlobalProgress(0);
+        if (onPreviewStateChange) onPreviewStateChange(false);
     };
 
     const handlePlayPreview = (e: React.MouseEvent, index: number, start: number, end: number) => {
@@ -91,6 +103,7 @@ export const TimelineVisual: React.FC<TimelineVisualProps> = ({ items, onImageCl
         audioRef.current.currentTime = 0;
         audioRef.current.play();
         setIsFullPreview(true);
+        if (onPreviewStateChange) onPreviewStateChange(true);
 
         const checkFullTime = () => {
             if (!audioRef.current) return;
@@ -121,16 +134,8 @@ export const TimelineVisual: React.FC<TimelineVisualProps> = ({ items, onImageCl
 
     return (
         <div className="w-full mb-8 animate-in fade-in duration-700">
-            {isFullPreview && (
-                <div className="flex justify-end items-center mb-2 px-1">
-                    <span className="text-brand-400 animate-pulse mr-2 flex items-center gap-1 text-[10px] uppercase font-black tracking-widest bg-brand-500/10 px-2 py-0.5 rounded shadow-sm">
-                        <Volume2 size={12} /> Preview Ativo
-                    </span>
-                    <button onClick={stopPlayback} className="bg-red-500 text-white px-3 py-1 rounded text-[10px] font-black uppercase tracking-tighter hover:bg-red-400 transition-colors">
-                        Parar
-                    </button>
-                </div>
-            )}
+            {/* O cabeçalho flex anterior com o botão de preview local foi removido 
+                conforme solicitação de "subir" o botão para a toolbar principal */}
 
             <div className="relative w-full">
                 {/* Rótulos de duração acima da barra */}
@@ -146,7 +151,7 @@ export const TimelineVisual: React.FC<TimelineVisualProps> = ({ items, onImageCl
                     })}
                 </div>
 
-                <div className={`w-full bg-slate-900 rounded-xl overflow-hidden flex relative border border-slate-800 shadow-inner transition-all duration-500 ease-in-out ${isFullPreview ? 'h-56' : 'h-28'}`}>
+                <div className={`w-full bg-slate-900 rounded-xl flex relative border border-slate-800 shadow-inner transition-all duration-500 ease-in-out ${isFullPreview ? 'h-56' : 'h-28'}`}>
                     {items.map((item, index) => {
                         const totalTime = items[items.length - 1].endSeconds || 1;
                         const widthPercent = (item.duration / totalTime) * 100;
@@ -155,7 +160,7 @@ export const TimelineVisual: React.FC<TimelineVisualProps> = ({ items, onImageCl
                         const isEmpty = !imageUrl;
 
                         return (
-                            <div key={index} style={{ width: `${widthPercent}%` }} onClick={() => onImageClick(index)} className={`h-full relative border-r border-slate-950/20 transition-all cursor-pointer group ${isPlaying ? 'ring-2 ring-brand-500 z-10' : 'opacity-80 hover:opacity-100'}`}>
+                            <div key={index} style={{ width: `${widthPercent}%` }} onClick={() => onImageClick(index)} className={`h-full relative border-r border-slate-950/20 transition-all cursor-pointer group ${isPlaying ? 'ring-2 ring-brand-500 z-50' : 'opacity-80 hover:opacity-100 hover:z-40'}`}>
                                 {imageUrl ? (
                                     imageUrl.match(/\.(mp4|webm|mov)(\?|$)/i) || item.importedVideoUrl
                                         ? <video src={imageUrl} className="w-full h-full object-cover pointer-events-none" muted autoPlay loop playsInline />
@@ -165,13 +170,15 @@ export const TimelineVisual: React.FC<TimelineVisualProps> = ({ items, onImageCl
                                         <div className="w-2 h-2 rounded-full bg-[#b026ff] animate-pulse"></div>
                                     </div>
                                 )}
-                                <div className={`absolute inset-0 flex flex-col items-center justify-center transition-opacity ${isPlaying ? 'bg-brand-500/20' : 'opacity-0 group-hover:opacity-100 bg-black/40 backdrop-blur-[2px]'}`}>
-                                    <div className="bg-black/80 px-4 py-2 rounded-xl border border-white/20 flex flex-col items-center shadow-2xl min-w-[80px]">
-                                        <span className="text-brand-400 font-mono text-[10px] md:text-xs font-black mb-1 drop-shadow-md">{item.duration.toFixed(1)}s</span>
-                                        <span className="text-white font-black text-[11px] md:text-sm lg:text-base tracking-[0.2em] uppercase whitespace-nowrap drop-shadow-lg">CENA {index + 1}</span>
+                                <div className={`absolute inset-0 flex flex-col items-center justify-center transition-opacity z-50 ${isPlaying ? 'bg-brand-500/20' : 'opacity-0 group-hover:opacity-100 bg-black/75 backdrop-blur-[2px]'}`}>
+                                    <div className={`bg-slate-950 px-2 py-1 md:px-4 md:py-2 rounded-xl border border-white/30 flex flex-col items-center shadow-2xl transition-all ${widthPercent < 4 ? 'scale-75 origin-center' : ''}`}>
+                                        <span className="text-brand-400 font-mono text-[9px] md:text-xs font-black mb-1 drop-shadow-md">{item.duration.toFixed(1)}s</span>
+                                        <span className="text-white font-black text-[10px] md:text-sm tracking-wider uppercase whitespace-nowrap drop-shadow-lg">
+                                            {widthPercent < 4 ? `${index + 1}` : `CENA ${index + 1}`}
+                                        </span>
                                     </div>
-                                    <button onClick={(e) => handlePlayPreview(e, index, item.startSeconds, item.endSeconds)} className="mt-3 p-2.5 bg-brand-600 text-white rounded-full shadow-xl hover:scale-110 active:scale-95 transition-all">
-                                        {isPlaying ? <Square size={12} fill="currentColor" /> : <Play size={12} fill="currentColor" />}
+                                    <button onClick={(e) => handlePlayPreview(e, index, item.startSeconds, item.endSeconds)} className={`mt-2 md:mt-3 p-1.5 md:p-2.5 bg-brand-600 text-white rounded-full shadow-xl hover:scale-110 active:scale-95 transition-all ${widthPercent < 4 ? 'scale-75' : ''}`}>
+                                        {isPlaying ? <Square size={10} md:size={12} fill="currentColor" /> : <Play size={10} md:size={12} fill="currentColor" />}
                                     </button>
                                 </div>
                             </div>
@@ -191,4 +198,4 @@ export const TimelineVisual: React.FC<TimelineVisualProps> = ({ items, onImageCl
             </div>
         </div>
     );
-};
+});

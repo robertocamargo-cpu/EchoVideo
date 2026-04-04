@@ -39,6 +39,12 @@ const App: React.FC = () => {
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
   const [editingProjectName, setEditingProjectName] = useState<string>('');
   const [supabaseStatus, setSupabaseStatus] = useState<'connecting' | 'stable' | 'error'>('connecting');
+  // Estado de renderização global — persistente entre navegações de tela
+  const [isAppVideoGenerating, setIsAppVideoGenerating] = useState(false);
+  const [appVideoProgress, setAppVideoProgress] = useState(0);
+  const [appVideoStatus, setAppVideoStatus] = useState('');
+  const [appRenderElapsed, setAppRenderElapsed] = useState(0);
+  const appRenderTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const transcriptionTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isSavingRef = useRef<boolean>(false); // Mutex: previne race condition de saves concorrentes
 
@@ -277,10 +283,6 @@ const App: React.FC = () => {
       console.log("[App] Saving project to DB:", updatedProject.id);
       await saveProject(updatedProject, file ?? undefined);
 
-      // Sincronizar estados locais SEM disparar novos saves
-      setCurrentProject(updatedProject);
-      setItems(updatedProject.items);
-
       // Refresh list
       const list = await getProjects();
       setProjects(list);
@@ -391,6 +393,44 @@ const App: React.FC = () => {
     <div className="min-h-screen bg-slate-950 text-slate-200 flex flex-col font-sans">
       <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} settings={settings} onSave={(s) => setSettings(s)} />
 
+      {/* OVERLAY DE RENDERIZAÇÃO GLOBAL — aparece em qualquer tela enquanto renderiza */}
+      {isAppVideoGenerating && (
+        <div className="fixed bottom-0 left-0 right-0 z-[200] bg-slate-950/98 backdrop-blur-2xl border-t border-brand-500/40 p-5 shadow-2xl">
+          <div className="max-w-5xl mx-auto flex items-center gap-8">
+            <div className="bg-brand-500/10 p-3 rounded-2xl text-brand-400 border border-brand-500/20"><Activity className="animate-pulse" size={28} /></div>
+            <div className="flex-1 space-y-2">
+              <div className="flex justify-between items-end">
+                <div className="flex flex-col">
+                  <span className="text-xs font-black uppercase text-brand-400 tracking-[0.3em] mb-0.5">Renderizador Master</span>
+                  <span className="text-sm font-bold text-white uppercase">{appVideoStatus}</span>
+                </div>
+                <div className="flex flex-col items-end">
+                  <span className="text-3xl font-black text-brand-400">{appVideoProgress}%</span>
+                  <span className="text-xs font-mono text-slate-500">
+                    {(() => {
+                      const e = Math.floor(appRenderElapsed);
+                      const mm = String(Math.floor(e / 60)).padStart(2, '0');
+                      const ss = String(e % 60).padStart(2, '0');
+                      if (appVideoProgress > 2) {
+                        const totalEst = appRenderElapsed / (appVideoProgress / 100);
+                        const remaining = Math.max(0, totalEst - appRenderElapsed);
+                        const rm = String(Math.floor(remaining / 60)).padStart(2, '0');
+                        const rs = String(Math.floor(remaining % 60)).padStart(2, '0');
+                        return `${mm}:${ss} dec. · ~${rm}:${rs} rest.`;
+                      }
+                      return `${mm}:${ss} decorridos`;
+                    })()}
+                  </span>
+                </div>
+              </div>
+              <div className="w-full bg-slate-800 h-3 rounded-full overflow-hidden border border-slate-700 shadow-inner">
+                <div className="bg-gradient-to-r from-brand-600 to-brand-400 h-full transition-all duration-300 rounded-full" style={{ width: `${appVideoProgress}%` }}></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="h-16 border-b border-slate-800 bg-slate-900/50 backdrop-blur-xl flex items-center justify-between px-6 sticky top-0 z-40">
         <div className="flex items-center space-x-4">
@@ -401,7 +441,7 @@ const App: React.FC = () => {
             <div className="w-10 h-10 bg-gradient-to-br from-brand-600 to-brand-400 rounded-xl flex items-center justify-center shadow-lg shadow-brand-500/20 group-hover:shadow-brand-500/40 transition-all">
               <Zap className="w-6 h-6 text-white fill-white" />
             </div>
-            <h1 className="text-xl font-bold tracking-tight text-white uppercase italic">echo<span className="text-brand-400">VID</span> <span className="ml-2 text-[10px] font-mono bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full border border-slate-700 align-middle not-italic">v2.1.5</span></h1>
+            <h1 className="text-xl font-bold tracking-tight text-white uppercase italic">echo<span className="text-brand-400">VID</span> <span className="ml-2 text-[10px] font-mono bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full border border-slate-700 align-middle not-italic">v4.2.6</span></h1>
           </button>
           {currentProject && (
             <div className="flex items-center gap-2 mr-4 max-w-[280px]">
@@ -436,11 +476,6 @@ const App: React.FC = () => {
         </div>
 
         <div className="flex items-center space-x-3">
-          <div className="flex items-center space-x-1 mr-4 bg-slate-950/50 px-3 py-1.5 rounded-lg border border-slate-800">
-            <Cpu className="w-3.5 h-3.5 text-brand-400" />
-            <span className="text-xs font-mono text-slate-400 uppercase tracking-widest">{TEXT_MODEL_NAME}</span>
-          </div>
-
           <button onClick={() => setIsProjectsOpen(true)} className="p-2.5 rounded-xl bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition-all border border-slate-700/50">
             <FolderOpen className="w-5 h-5" />
           </button>
@@ -576,15 +611,22 @@ const App: React.FC = () => {
               projectProps={currentProject?.props || []}
               activeStylePrompt={settings.items.find(s => s.id === selectedStyle)?.prompt || ''}
               onUpdateProjectInfo={(field, value) => {
-                // IMPORTANTE: Captura o estado atual, aplica a mudança e SALVA
-                // Não usamos setter funcional aqui para evitar race conditions com o salvamento assíncrono
-                if (currentProject) {
-                  const updatedProject = { ...currentProject, [field]: value };
-                  // O setItems é necessário se o campo for 'items'
-                  if (field === 'items') setItems(value);
-                  setCurrentProject(updatedProject);
+                // IMPORTANTE: Usa o setter funcional do setCurrentProject para garantir que
+                // o fechamento léxico de funções assíncronas (como gerações de imagem longas)
+                // não sobreponha modificações feitas pelo usuário durante o tempo de espera.
+                setCurrentProject(prevProject => {
+                  if (!prevProject) return prevProject;
+                  
+                  const prevFieldList = (prevProject as any)[field] || [];
+                  const resolvedValue = typeof value === 'function' ? value(prevFieldList) : value;
+                  const updatedProject = { ...prevProject, [field]: resolvedValue };
+                  
+                  if (field === 'items') setItems(resolvedValue);
+                  
+                  // Dispara salvamento em plano de fundo com os dados perfeitamente atualizados
                   handleSaveProject(updatedProject);
-                }
+                  return updatedProject;
+                });
               }}
               onUpdateGlobalSetting={(field, value) => {
                 setSettings({ ...settings, [field]: value });
@@ -604,6 +646,23 @@ const App: React.FC = () => {
                   handleSaveProject(updatedProject);
                   return updatedProject;
                 });
+              }}
+              externalRenderState={{
+                isGenerating: isAppVideoGenerating,
+                progress: appVideoProgress,
+                status: appVideoStatus,
+                elapsed: appRenderElapsed,
+                setIsGenerating: (v) => {
+                    setIsAppVideoGenerating(v);
+                    if (!v && appRenderTimerRef.current) { clearInterval(appRenderTimerRef.current); appRenderTimerRef.current = null; }
+                    if (v) {
+                        setAppRenderElapsed(0);
+                        appRenderTimerRef.current = setInterval(() => setAppRenderElapsed(prev => prev + 1), 1000);
+                    }
+                },
+                setProgress: setAppVideoProgress,
+                setStatus: setAppVideoStatus,
+                setElapsed: setAppRenderElapsed,
               }}
             />
           )
@@ -722,10 +781,14 @@ const App: React.FC = () => {
           {supabaseStatus === 'stable' && <span className="flex items-center"><ShieldCheck className="w-3 h-3 mr-1.5 text-emerald-500" /> Supabase Connected</span>}
           {supabaseStatus === 'connecting' && <span className="flex items-center"><Loader2 className="w-3 h-3 mr-1.5 text-yellow-400 animate-spin" /> Conectando ao Supabase...</span>}
           {supabaseStatus === 'error' && <span className="flex items-center"><AlertCircle className="w-3 h-3 mr-1.5 text-red-400" /> Supabase Offline</span>}
+          <div className="flex items-center space-x-1 mr-4 bg-slate-950/50 px-3 py-1.5 rounded-lg border border-slate-800">
+            <Cpu className="w-3.5 h-3.5 text-brand-400" />
+            <span className="text-[10px] font-mono text-slate-400 uppercase tracking-widest">{TEXT_MODEL_NAME}</span>
+          </div>
           <span className="flex items-center"><Activity className="w-3 h-3 mr-1.5 text-brand-400" /> API Latency: 42ms</span>
         </div>
         <div className="flex items-center space-x-4">
-          <button onClick={() => setIsChangelogOpen(true)} className="hover:text-brand-400 transition-colors cursor-pointer">v1.9.89 Build 2026.03.07</button>
+          <button onClick={() => setIsChangelogOpen(true)} className="hover:text-brand-400 transition-colors cursor-pointer">v4.2.6 Build 2026.03.07</button>
         </div>
       </footer>
     </div>

@@ -1,13 +1,13 @@
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Clapperboard, Download, Edit3, FileArchive, FileSpreadsheet, FileText, Image as ImageIcon, Loader2, MapPin, Monitor, Play, PlayCircle, RefreshCw, Sparkles, Type, Upload, Users, Video, X, Zap, Ban, Activity, Wallet, Target, Layers, Video as VideoIcon, HelpCircle, Box, Plus, Trash2, AlertTriangle, Clock, AlertCircle } from 'lucide-react';
+import { Clapperboard, Download, Edit3, FileArchive, FileSpreadsheet, FileText, Image as ImageIcon, Loader2, MapPin, Monitor, Play, PlayCircle, RefreshCw, Sparkles, Square, Type, Upload, Users, Video, X, Zap, Ban, Activity, Wallet, Target, Layers, Video as VideoIcon, HelpCircle, Box, Plus, Trash2, AlertTriangle, Clock, AlertCircle } from 'lucide-react';
 import { TranscriptionItem, AppSettings, TransitionType, ViralTitle, MasterAsset, MotionEffect } from '../types';
 import { generateImage, generateViralTitles, getApiInfrastructure, generateText, TEXT_MODEL_NAME, IMAGEN_MODEL_NAME, IMAGE_MODEL_NAME, syncScenesWithAudio } from '../services/geminiService';
 import { generatePollinationsImage } from '../services/pollinationsService';
 import { logApiCost } from '../services/usageService';
 import { generateTimelineVideo, generatePreviewVideo, generatePresetSRT } from '../services/videoService';
 import { uploadProjectFile, getMotionEffects } from '../services/storageService';
-import { TimelineVisual } from './TimelineVisual';
+import { TimelineVisual, TimelineVisualHandle } from './TimelineVisual';
 import { ImageViewer } from './ImageViewer';
 import { ColoredPrompt } from './ColoredPrompt';
 import JSZip from 'jszip';
@@ -25,7 +25,7 @@ interface TranscriptionTableProps {
     projectCharacters: MasterAsset[];
     projectLocations: MasterAsset[];
     activeStylePrompt: string;
-    onUpdateProjectInfo: (field: 'characters' | 'locations' | 'props', value: MasterAsset[]) => void;
+    onUpdateProjectInfo: (field: 'characters' | 'locations' | 'props', value: MasterAsset[] | ((prev: MasterAsset[]) => MasterAsset[])) => void;
     onUpdateGlobalSetting: (field: keyof AppSettings, value: any) => void;
     projectName?: string;
     projectId?: string;
@@ -33,18 +33,41 @@ interface TranscriptionTableProps {
     selectedStyleId: string;
     onStyleChange: (id: string) => void;
     onForceSave?: () => void;
-    project?: any; // Adicionado para persistência correta
+    project?: any;
+    // Estado de renderização persistente (elevado ao App.tsx)
+    externalRenderState?: {
+        isGenerating: boolean;
+        progress: number;
+        status: string;
+        elapsed: number;
+        setIsGenerating: (v: boolean) => void;
+        setProgress: (v: number) => void;
+        setStatus: (v: string) => void;
+        setElapsed: (v: number) => void;
+    };
 }
 
 type TabMode = 'scenes' | 'characters' | 'locations' | 'props' | 'titles';
 
 export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
-    data, onUpdateItem, onUpdateAllItems, audioFile, audioDuration, settings, onSave, project, context, projectCharacters, projectLocations, projectProps, activeStylePrompt, onUpdateProjectInfo, onUpdateGlobalSetting, projectName = 'projeto-sem-nome', projectId, selectedStyleId, onStyleChange, onForceSave
+    data, onUpdateItem, onUpdateAllItems, audioFile, audioDuration, settings, onSave, project, context, projectCharacters, projectLocations, projectProps, activeStylePrompt, onUpdateProjectInfo, onUpdateGlobalSetting, projectName = 'projeto-sem-nome', projectId, selectedStyleId, onStyleChange, onForceSave, externalRenderState
 }) => {
     const [activeTab, setActiveTab] = useState<TabMode>('scenes');
-    const [isVideoGenerating, setIsVideoGenerating] = useState(false);
-    const [videoProgress, setVideoProgress] = useState(0);
-    const [videoStatus, setVideoStatus] = useState('');
+    // Estado de render: usa o externo (do App.tsx) se fornecido, senão usa local
+    const [_isVideoGenerating, _setIsVideoGenerating] = useState(false);
+    const [_videoProgress, _setVideoProgress] = useState(0);
+    const [_videoStatus, _setVideoStatus] = useState('');
+    const [_renderElapsed, _setRenderElapsed] = useState(0);
+
+    const isVideoGenerating = externalRenderState?.isGenerating ?? _isVideoGenerating;
+    const setIsVideoGenerating = externalRenderState?.setIsGenerating ?? _setIsVideoGenerating;
+    const videoProgress = externalRenderState?.progress ?? _videoProgress;
+    const setVideoProgress = externalRenderState?.setProgress ?? _setVideoProgress;
+    const videoStatus = externalRenderState?.status ?? _videoStatus;
+    const setVideoStatus = externalRenderState?.setStatus ?? _setVideoStatus;
+    const renderElapsed = externalRenderState?.elapsed ?? _renderElapsed;
+    const setRenderElapsed = externalRenderState?.setElapsed ?? _setRenderElapsed;
+
     const [videoUrl, setVideoUrl] = useState<string | null>(null);
     const [showVideoSettings, setShowVideoSettings] = useState(false);
     const [includeSubtitles, setIncludeSubtitles] = useState<boolean>(true);
@@ -55,10 +78,11 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
     const [generatingThumbnailMap, setGeneratingThumbnailMap] = useState<Record<number, boolean>>({});
     const [previewVideoUrl, setPreviewVideoUrl] = useState<string | null>(null);
     const [isPreviewing, setIsPreviewing] = useState(false);
+    const [isTimelinePreviewActive, setIsTimelinePreviewActive] = useState(false);
     const [isGeneratingAll, setIsGeneratingAll] = useState(false);
     const [motionEffects, setMotionEffects] = useState<MotionEffect[]>([]);
     const [selectedSubtitlePresetId, setSelectedSubtitlePresetId] = useState<string>('');
-    const [renderElapsed, setRenderElapsed] = useState(0);
+    const timelineRef = useRef<TimelineVisualHandle>(null);
     const [isSaving, setIsSaving] = useState(false);
     const [comparisonAsset, setComparisonAsset] = useState<{ asset: MasterAsset, type: 'characters' | 'locations' | 'props' } | null>(null);
     const [isComparing, setIsComparing] = useState(false);
@@ -101,7 +125,7 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         return data.reduce((acc, item) => acc + (item.duration || 0), 0);
     }, [data]);
 
-    const isSyncError = totalDurationSum > (audioDuration + 0.1); // Tolerância de 100ms
+    const isSyncError = totalDurationSum > (audioDuration + 15.0); // Tolerância relaxada para 15s dados os travamentos de 5s mínimos
 
     const formatTime = (seconds: number): string => {
         const hrs = Math.floor(seconds / 3600);
@@ -280,8 +304,7 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
             cenario = cenario ? `${cenario}. Objects: ${propsText}` : `Objects: ${propsText}`;
         }
 
-        // Quantidade de personagens explícita (para imagem)
-        const charCountPrompt = relevantChars.length > 1 ? `Quantity: ${relevantChars.length} characters` : '';
+        // Quantidade de personagens: não exportar no prompt, removido por redução de ruído
 
         // --- SISTEMA ANTI-NOMES REAIS (AGRESSIVO v2.1.1) ---
         const allAssets = [...projectCharacters, ...projectLocations, ...projectProps];
@@ -337,7 +360,9 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         // Se houver um estilo mestre selecionado na galeria do projeto, USAMOS ELE COM PRIORIDADE.
         // Omitimos o item.style e item.medium gerados pela IA para evitar contradições e misturas visuais.
         if (activeStylePrompt) {
-            finalPrompt += `${styleName} - ${activeStylePrompt}. `;
+            // Remove "Generic - " do prefixo do estilo para reduzir ruído no prompt
+            const cleanStyle = activeStylePrompt.replace(/^generic\s*[-–]\s*/i, '');
+            finalPrompt += `${styleName} - ${cleanStyle}. `;
         } else if (stylePrompt || medium) {
             finalPrompt += `${styleName} - ${stylePrompt} ${medium ? `(${medium})` : ''}. `;
         }
@@ -353,7 +378,8 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
                 .trim();
         };
 
-        if (subject) finalPrompt += `Subject: ${cleanText(subject)} ${charCountPrompt}. `;
+        // Personagens: apelido (descrição física), sem palavra-chave "Subject:"
+        if (subject) finalPrompt += `${cleanText(subject)}. `;
         if (action) finalPrompt += `${cleanText(action)}. `;
         if (camera) finalPrompt += `Camera: ${cleanText(camera)}. `;
         if (cenario) finalPrompt += `${cleanText(cenario)}. `;
@@ -405,6 +431,7 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         const exportedContent = data.map((item, index) => {
             const promptData = getPromptData(index);
             const animationIdea = item.animation?.trim();
+            // Prompt imagem + animacao na MESMA linha, continuando após o ponto final do prompt de imagem
             const base = promptData.finalPrompt.replace(/\.\s*$/, '');
             return animationIdea ? `${base}. ${animationIdea}` : base;
         }).join('\n\n');
@@ -413,7 +440,7 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         const link = document.createElement('a');
         link.href = url;
         const sanitizedName = sanitizeFilename(projectName);
-        link.download = `${sanitizedName}_prompts_animacao.txt`;
+        link.download = `${sanitizedName}_prompts_imagem_mais_anim.txt`;
         link.click();
         URL.revokeObjectURL(url);
     };
@@ -439,13 +466,20 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         const promptsContent = data.map((_, index) => getPromptData(index).finalPrompt).join('\n\n');
         zip.file(`${sanitizeFilename(projectName)}_prompts_imagem.txt`, promptsContent);
 
-        // 2. Ideias de Animação (Combinadas com Prompt de Imagem)
-        const animationContent = data.map((item, index) => {
+        // 2a. Prompts de Imagem + Animação (mesma linha, após ponto final)
+        const animComboContent = data.map((item, index) => {
             const promptData = getPromptData(index);
-            const animationIdea = item.animation || 'Nenhuma ideia de animação gerada';
-            return `${promptData.finalPrompt}\nMovement Instruction: ${animationIdea}`;
+            const animationIdea = item.animation?.trim();
+            const base = promptData.finalPrompt.replace(/\.\s*$/, '');
+            return animationIdea ? `${base}. ${animationIdea}` : base;
         }).join('\n\n');
-        zip.file(`${sanitizeFilename(projectName)}_prompts_animacao.txt`, animationContent);
+        zip.file(`${sanitizeFilename(projectName)}_prompts_imagem_mais_anim.txt`, animComboContent);
+
+        // 2b. Somente animação (nada mais)
+        const soloAnimContent = data.map((item) => {
+            return (item.animation?.trim()) || '(sem animação)';
+        }).join('\n\n');
+        zip.file(`${sanitizeFilename(projectName)}_somente_animacao.txt`, soloAnimContent);
 
         // 3. Planilha CSV
         const headers = ["Número da Cena", "Total de Segundos", "Nome da Imagem", "Texto da Legenda"];
@@ -668,14 +702,17 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
     };
 
     const handleGenerateAssetImage = async (asset: MasterAsset, type: 'characters' | 'locations' | 'props') => {
-        // Usar o modelo preferencial se existir, senão usa o globalProvider
-        const provider = project?.preferredImageModel || globalProvider;
+        // Obrigatório: Usar a API do dropdown global e o aspect ratio definido do projeto
+        const provider = globalProvider;
         const updateList = (update: Partial<MasterAsset>) => {
-            const list = type === 'characters' ? [...projectCharacters] : type === 'locations' ? [...projectLocations] : [...projectProps];
-            const newList: MasterAsset[] = list.map(a => a.id === asset.id ? { ...a, ...update } : a);
-            onUpdateProjectInfo(type, newList);
+            onUpdateProjectInfo(type, (prevList: MasterAsset[]) => {
+                return prevList.map(a => a.id === asset.id ? { ...a, ...update } : a);
+            });
         };
-        updateList({ [!provider.startsWith('pollinations') ? 'isGeneratingGoogle' : 'isGeneratingPollinations']: true });
+        updateList({ 
+            imageUrl: '', 
+            [!provider.startsWith('pollinations') ? 'isGeneratingGoogle' : 'isGeneratingPollinations']: true 
+        });
         try {
             const realWorldNote = type === 'characters'
                 ? `IMPORTANT: If the character "${asset.name}" is a real-world person (celebrity, historical figure, athlete, politician, etc.), you MUST faithfully reproduce their known physical characteristics: face, skin tone, hair color/style, body type, and their most iconic/default outfit or uniform. Do not invent or stylize beyond what the style dictates.`
@@ -691,11 +728,29 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
             const geminiModel = isGoogleImagen ? IMAGEN_MODEL_NAME : IMAGE_MODEL_NAME;
 
             const result = assetFinalProvider === 'google'
-                ? await generateImage(assetPrompt, '1:1' as any, geminiModel)
-                : await generatePollinationsImage(assetPrompt, polModel, "", '16:9');
+                ? await generateImage(assetPrompt, settings.aspectRatio, geminiModel)
+                : await generatePollinationsImage(assetPrompt, polModel, "", settings.aspectRatio);
 
-            // Se a imagem for uma URL (ex: Pollinations), adiciona cache buster para forçar a atualização visual
-            const finalImageUrl = result.image.startsWith('data:') ? result.image : `${result.image}?v=${Date.now()}`;
+            let finalImageUrl = result.image;
+            if (projectId && result.image.startsWith('data:')) {
+                try {
+                    const [meta, base64Data] = result.image.split(',');
+                    const mimeType = meta.match(/:(.*?);/)?.[1] || 'image/png';
+                    const byteString = atob(base64Data);
+                    const byteArray = new Uint8Array(byteString.length);
+                    for (let j = 0; j < byteString.length; j++) byteArray[j] = byteString.charCodeAt(j);
+                    const blob = new Blob([byteArray], { type: mimeType });
+                    // Save file identically to how scene images are preserved in storage to avoid breaking base64 JSON saves.
+                    const assetFilename = `asset_${asset.id}_${Date.now()}.png`;
+                    const publicUrl = await uploadProjectFile(projectId, blob, 'image', assetFilename);
+                    if (publicUrl) finalImageUrl = `${publicUrl}?v=${Date.now()}`;
+                } catch (uploadErr) {
+                    console.warn('[TranscriptionTable] Falha no upload da imagem do asset ao Storage, usando base64:', uploadErr);
+                }
+            } else if (!result.image.startsWith('data:')) {
+                finalImageUrl = `${result.image}?v=${Date.now()}`;
+            }
+
             const isPol = provider.startsWith('pollinations');
             updateList({ imageUrl: finalImageUrl, [!isPol ? 'isGeneratingGoogle' : 'isGeneratingPollinations']: false });
         } catch (e: any) {
@@ -790,10 +845,16 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
         setGeneratingThumbnailMap(prev => ({ ...prev, [idx]: true }));
         try {
             const prompt = `${title.thumbnailVisual} style: ${activeStylePrompt}`;
-            const provider = globalProvider;
-            const result = provider === 'google'
-                ? await generateImage(prompt, settings.aspectRatio)
-                : await generatePollinationsImage(prompt, "", "", settings.aspectRatio);
+            const provider = (project?.preferredImageModel as any) || globalProvider;
+            const isPol = provider.startsWith('pollinations');
+            const isPollinationsZ = provider === 'pollinations-zimage';
+            const isGoogleImagen = provider === 'google-imagen';
+            const polModel = isPollinationsZ ? 'zimage' : 'flux';
+            const geminiModel = isGoogleImagen ? IMAGEN_MODEL_NAME : IMAGE_MODEL_NAME;
+
+            const result = !isPol
+                ? await generateImage(prompt, settings.aspectRatio, geminiModel)
+                : await generatePollinationsImage(prompt, polModel, "", settings.aspectRatio);
 
             const updatedTitlesList = [...generatedTitles];
             (updatedTitlesList[idx] as any).imageUrl = result.image; // Extensão temporária para exibição
@@ -943,10 +1004,11 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
             const url = URL.createObjectURL(blob);
             setVideoUrl(url);
 
-            const sanitizedName = sanitizeFilename(projectName);
+            const extension = blob.type.split('/')[1]?.split(';')[0] || 'webm';
+            const sanitizedName = projectName ? projectName.replace(/[^a-z0-9]/gi, '_').toLowerCase() : 'video';
             const link = document.createElement('a');
             link.href = url;
-            link.download = `${sanitizedName}.webm`;
+            link.download = `${sanitizedName}.${extension === 'x-matroska' ? 'mkv' : extension}`;
             link.click();
         } catch (e: any) {
             if (renderTimerRef.current) clearInterval(renderTimerRef.current);
@@ -954,48 +1016,49 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
         } finally { setIsVideoGenerating(false); }
     };
 
+    const handleTestExport = async () => {
+        if (!audioFile) return alert("Áudio global necessário para o teste.");
+        
+        setIsVideoGenerating(true);
+        setVideoProgress(0);
+        setVideoStatus("Iniciando Exportação Teste (1 min)...");
+
+        try {
+            const sub = includeSubtitles ? settings.subtitleStyles.find(s => s.id === (selectedSubtitlePresetId || (settings.aspectRatio === '16:9' ? 'horizontal-16-9' : 'vertical-9-16'))) : undefined;
+            const testBlob = await generateTimelineVideo(
+                audioFile, 
+                data, 
+                settings.transitionType, 
+                (p, msg) => { 
+                    setVideoProgress(p); 
+                    setVideoStatus(msg); 
+                },
+                settings.aspectRatio,
+                sub,
+                settings.motionEffects,
+                60 // maxDuration: 60 segundos
+            );
+            
+            const url = URL.createObjectURL(testBlob);
+            const extension = testBlob.type.split('/')[1]?.split(';')[0] || 'webm';
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `TESTE_1MIN_${project?.name || 'video'}.${extension === 'x-matroska' ? 'mkv' : extension}`;
+            a.click();
+            URL.revokeObjectURL(url);
+        } catch (e: any) {
+            console.error("Erro na exportação teste:", e);
+            alert("Erro ao realizar exportação rápida.");
+        } finally {
+            setIsVideoGenerating(false);
+            setVideoStatus("");
+        }
+    };
+
     return (
         <div className="w-full max-w-[1600px] mx-auto mt-3 flex flex-col gap-3 relative">
 
-            {isVideoGenerating && (
-                <div className="fixed bottom-0 left-0 right-0 z-[120] bg-slate-950/95 backdrop-blur-2xl border-t border-brand-500/40 p-5 shadow-2xl">
-                    <div className="max-w-5xl mx-auto flex items-center gap-8">
-                        <div className="bg-brand-500/10 p-3 rounded-2xl text-brand-400 border border-brand-500/20"><Activity className="animate-pulse" size={28} /></div>
-                        <div className="flex-1 space-y-2">
-                            <div className="flex justify-between items-end">
-                                <div className="flex flex-col">
-                                    <span className="text-xs font-black uppercase text-brand-400 tracking-[0.3em] mb-0.5">Renderizador Master</span>
-                                    <span className="text-sm font-bold text-white uppercase">{videoStatus}</span>
-                                </div>
-                                <div className="flex flex-col items-end">
-                                    <span className="text-3xl font-black text-brand-400">{videoProgress}%</span>
-                                    <span className="text-sm font-mono text-slate-600">
-                                        {(() => {
-                                            const e = Math.floor(renderElapsed);
-                                            const mm = String(Math.floor(e / 60)).padStart(2, '0');
-                                            const ss = String(e % 60).padStart(2, '0');
-                                            // ETA: se temos progresso, calcula tempo restante
-                                            if (videoProgress > 2) {
-                                                const totalEst = renderElapsed / (videoProgress / 100);
-                                                const remaining = Math.max(0, totalEst - renderElapsed);
-                                                const rm = String(Math.floor(remaining / 60)).padStart(2, '0');
-                                                const rs = String(Math.floor(remaining % 60)).padStart(2, '0');
-                                                return `${mm}:${ss} dec. · ~${rm}:${rs} rest.`;
-                                            }
-                                            return `${mm}:${ss} decorridos`;
-                                        })()}
-                                    </span>
-                                </div>
-                            </div>
-                            <div className="w-full bg-slate-800 h-3 rounded-full overflow-hidden border border-slate-700 shadow-inner">
-                                <div className="bg-gradient-to-r from-brand-600 to-brand-400 h-full transition-all duration-300 rounded-full" style={{ width: `${videoProgress}%` }}></div>
-                            </div>
-                        </div>
-                        <button onClick={() => { if (renderTimerRef.current) clearInterval(renderTimerRef.current); setIsVideoGenerating(false); }} className="bg-slate-800 hover:bg-slate-700 p-3 rounded-xl text-slate-400 hover:text-white transition-all"><X size={24} /></button>
-                    </div>
-                </div>
-            )
-            }
+            {/* O overlay de renderização agora é gerenciado globalmente pelo App.tsx */}
 
             {
                 showVideoSettings && (
@@ -1029,7 +1092,14 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                             ))}
                                         </select>
                                     )}
-                                    <button onClick={handleFinalRender} disabled={isVideoGenerating} className="mt-auto w-full py-4 bg-brand-500 hover:bg-brand-400 text-white rounded-2xl font-black uppercase text-sm tracking-[0.2em] shadow-xl shadow-brand-500/20 transition-all flex items-center justify-center active:scale-95">RENDERIZAR</button>
+                                    <button 
+                                        onClick={handleTestExport} 
+                                        disabled={isVideoGenerating} 
+                                        className="mt-auto w-full py-3 bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-white rounded-xl border border-emerald-500/30 font-black uppercase text-[10px] tracking-widest transition-all flex items-center justify-center gap-2 active:scale-95 disabled:opacity-50"
+                                    >
+                                        <Zap size={14} /> Exportação Teste (1 Min)
+                                    </button>
+                                    <button onClick={handleFinalRender} disabled={isVideoGenerating} className="w-full py-4 bg-brand-500 hover:bg-brand-400 text-white rounded-2xl font-black uppercase text-xs tracking-[0.2em] shadow-xl shadow-brand-500/20 transition-all flex items-center justify-center active:scale-95">RENDERIZAR</button>
                                 </div>
                                 {/* Coluna direita: preview */}
                                 <div className="flex-1 flex flex-col gap-2">
@@ -1051,15 +1121,15 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                 <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                     <div className="bg-slate-950/40 px-4 py-2 rounded-2xl border border-slate-800/50 flex flex-col md:flex-row items-center gap-4 shadow-inner flex-1 shadow-lg">
                         <div className="flex items-center gap-3 w-full lg:w-auto">
-                            <span className="text-xs font-black uppercase text-brand-400 tracking-[0.2em] italic pr-2 border-r border-slate-800">Direção</span>
-                            <select value={settings.aspectRatio} onChange={(e) => onUpdateGlobalSetting('aspectRatio', e.target.value as '16:9' | '9:16')} className="bg-slate-950 border border-slate-800/60 rounded-lg px-2 py-1 text-xs text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white hover:border-slate-700 transition-colors">
+                            <span className="text-[11px] font-bold uppercase text-brand-400 tracking-wider italic pr-2 border-r border-slate-800">Direção</span>
+                            <select value={settings.aspectRatio} onChange={(e) => onUpdateGlobalSetting('aspectRatio', e.target.value as '16:9' | '9:16')} className="bg-slate-950 border border-slate-800/60 rounded-lg px-2 py-1 text-[11px] text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white hover:border-slate-700 transition-colors">
                                 <option value="16:9">16:9</option>
                                 <option value="9:16">9:16</option>
                             </select>
-                            <select value={selectedStyleId} onChange={(e) => onStyleChange(e.target.value)} className="bg-slate-950 border border-slate-800/60 rounded-lg px-2 py-1 text-xs text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white hover:border-slate-700 transition-colors min-w-[140px]">
+                            <select value={selectedStyleId} onChange={(e) => onStyleChange(e.target.value)} className="bg-slate-950 border border-slate-800/60 rounded-lg px-2 py-1 text-[11px] text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white hover:border-slate-700 transition-colors min-w-[140px]">
                                 {settings.items.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
                             </select>
-                            <select value={globalProvider} onChange={e => setGlobalProvider(e.target.value as any)} className="bg-slate-950 border border-slate-800/60 rounded-lg px-2 py-1 text-xs text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white hover:border-slate-700 transition-colors min-w-[160px]">
+                            <select value={globalProvider} onChange={e => setGlobalProvider(e.target.value as any)} className="bg-slate-950 border border-slate-800/60 rounded-lg px-2 py-1 text-[11px] text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white hover:border-slate-700 transition-colors min-w-[160px]">
                                 <option value="google-nano">GEMINI NANO</option>
                                 <option value="google-imagen">IMAGEN 4</option>
                                 <option value="pollinations">POLLINATIONS FLUX</option>
@@ -1067,27 +1137,12 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                             </select>
                         </div>
                         <div className="flex items-center gap-3 ml-auto w-full md:w-auto overflow-x-auto scrollbar-hide shrink-0 pb-1">
+                            <span className="text-[11px] font-bold uppercase tracking-wider text-brand-400 mr-2 border-r border-slate-800 pr-4 mt-1">
+                                {data.filter(i => i.imageUrl || i.importedVideoUrl || i.importedImageUrl).length} / {data.length}
+                            </span>
                             <div className="flex items-center gap-1.5 h-full">
-                                <div className="flex flex-col items-center gap-1 w-[80px]">
-                                    <button 
-                                        onClick={handleMagicSync} 
-                                        disabled={isSyncing || !audioFile}
-                                        className={`w-full h-8 rounded-xl transition-all border flex items-center justify-center shadow-lg ${isSyncing ? 'bg-purple-500/20 border-purple-500/40 text-purple-400 animate-pulse' : 'bg-slate-900 border-slate-700 text-brand-400 hover:bg-brand-500 hover:text-white hover:border-brand-500 shadow-brand-500/5'}`}
-                                    >
-                                        {isSyncing ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} fill="currentColor" />}
-                                    </button>
-                                    <span className="text-[10px] font-black uppercase text-slate-500 tracking-widest text-center mt-0.5">Sintonia</span>
-                                </div>
-
-                                <div className="flex flex-col items-center gap-1 w-[80px]">
-                                    <button 
-                                        onClick={handleAutoAdjustTimings} 
-                                        className="w-full h-8 bg-slate-900 border border-slate-700 rounded-xl text-slate-400 hover:text-white hover:border-brand-500 transition-all flex items-center justify-center shadow-lg group"
-                                    >
-                                        <Clock size={14} className="text-slate-500 group-hover:text-brand-400 transition-colors" />
-                                    </button>
-                                    <span className="text-[10px] font-black uppercase text-slate-500 tracking-widest text-center mt-0.5">Ajustar</span>
-                                </div>
+                                {/* SINTONIA oculto por ora */}
+                                {/* AJUSTAR oculto por ora */}
 
                                 <div className="flex flex-col items-center gap-1 w-[80px]">
                                     <button 
@@ -1097,7 +1152,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                     >
                                         {isGeneratingAll ? <Loader2 size={14} className="animate-spin" /> : <Layers size={14} />}
                                     </button>
-                                    <span className="text-[10px] font-black uppercase text-slate-500 tracking-widest text-center mt-0.5">Faltas</span>
+                                    <span className="text-[11px] font-bold uppercase text-slate-500 tracking-wider text-center mt-0.5">Faltas</span>
                                 </div>
 
                                 <div className="flex flex-col items-center gap-1 w-[80px]">
@@ -1108,7 +1163,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                     >
                                         {isGeneratingAll ? <Ban size={16} /> : <RefreshCw size={16} />}
                                     </button>
-                                    <span className="text-[10px] font-black uppercase text-slate-500 tracking-widest text-center mt-0.5">Tudo</span>
+                                    <span className="text-[11px] font-bold uppercase text-slate-500 tracking-wider text-center mt-0.5">Tudo</span>
                                 </div>
                             </div>
 
@@ -1121,7 +1176,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                 <button 
                                     onClick={() => !isSyncError && setShowVideoSettings(true)} 
                                     disabled={isSyncError}
-                                    className={`h-8 flex items-center justify-center gap-1.5 px-4 rounded-r-xl border border-l-0 text-xs font-black uppercase tracking-[0.15em] shadow-lg transition-all active:scale-95 ${isSyncError ? 'bg-slate-800 text-slate-500 cursor-not-allowed border-red-500/20' : 'bg-brand-500 hover:bg-brand-400 text-white border-brand-400/30'}`}
+                                    className={`h-8 flex items-center justify-center gap-1.5 px-4 rounded-r-xl border border-l-0 text-[11px] font-bold uppercase tracking-wider shadow-lg transition-all active:scale-95 ${isSyncError ? 'bg-slate-800 text-slate-500 cursor-not-allowed border-red-500/20' : 'bg-brand-500 hover:bg-brand-400 text-white border-brand-400/30'}`}
                                 >
                                     VIDEO
                                 </button>
@@ -1133,7 +1188,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
         <div className="flex flex-col lg:flex-row lg:items-center justify-between border-b border-slate-800 pb-0 gap-2">
                 <div className="flex items-center gap-1 overflow-x-auto whitespace-nowrap scrollbar-hide">
                     {['scenes', 'characters', 'locations', 'props', 'titles'].map(tab => (
-                        <button key={tab} onClick={() => setActiveTab(tab as TabMode)} className={`px-3 py-4 text-[11px] font-black uppercase tracking-widest border-b-2 transition-all ${activeTab === tab ? 'text-brand-400 border-brand-500 bg-brand-500/5' : 'text-slate-500 border-transparent hover:text-slate-300'}`}>
+                        <button key={tab} onClick={() => setActiveTab(tab as TabMode)} className={`px-3 py-4 text-[11px] font-bold uppercase tracking-wider border-b-2 transition-all ${activeTab === tab ? 'text-brand-400 border-brand-500 bg-brand-500/5' : 'text-slate-500 border-transparent hover:text-slate-300'}`}>
                             {tab === 'scenes' ? 'Story Board' : tab === 'characters' ? 'Personagens' : tab === 'locations' ? 'Cenários' : tab === 'props' ? 'Objetos' : 'CTR Ninja'}
                         </button>
                     ))}
@@ -1147,25 +1202,32 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                             finally { setIsSaving(false); }
                         }}
                         disabled={isSaving || !project}
-                        className={`text-[11px] font-black uppercase px-3 py-1.5 rounded-lg border transition-all flex items-center gap-1.5 ${isSaving ? 'bg-slate-800 text-slate-500 border-slate-700' : 'bg-brand-500/10 text-brand-400 border-brand-500/30 hover:bg-brand-500 hover:text-white'}`}
+                        className={`text-[11px] font-bold uppercase px-3 py-1.5 rounded-lg border transition-all flex items-center gap-1.5 ${isSaving ? 'bg-slate-800 text-slate-500 border-slate-700' : 'bg-brand-500/10 text-brand-400 border-brand-500/30 hover:bg-brand-500 hover:text-white'}`}
                     >
                         {isSaving ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
                         {isSaving ? 'SALVANDO...' : 'SALVAR'}
                     </button>
-                    <button onClick={handleExportPrompts} className="text-[11px] font-black uppercase text-slate-400 hover:text-brand-400 flex items-center gap-1.5 transition-colors pr-3 border-r border-slate-800/50 min-w-max"><FileText size={12} /> Prompts</button>
-                    <button onClick={handleExportAnimationPrompts} className="text-[11px] font-black uppercase text-slate-400 hover:text-sky-400 flex items-center gap-1.5 transition-colors pr-3 border-r border-slate-800/50 min-w-max"><Video size={12} /> Anim</button>
-                    <button onClick={handleExportCSV} className="text-[11px] font-black uppercase text-slate-400 hover:text-brand-400 flex items-center gap-1.5 transition-colors pr-3 border-r border-slate-800/50 min-w-max"><FileSpreadsheet size={12} /> CSV</button>
-                    <button onClick={handleExportAllImages} className="text-[11px] font-black uppercase text-slate-400 hover:text-brand-400 flex items-center gap-1.5 transition-colors pr-4 min-w-max"><FileArchive size={12} /> ZIP</button>
-                    <button onClick={handlePreview} className={`group relative flex items-center gap-3 px-6 py-2 ${isPreviewing ? 'bg-slate-700' : 'bg-slate-800 hover:bg-slate-700'} text-white rounded-[1.5rem] text-[11px] font-black uppercase tracking-widest transition-all shadow-xl active:scale-95`}>
-                        {isPreviewing ? <Loader2 className="animate-spin" size={12} /> : null}
-                        <span>Preview</span>
+                    <button onClick={handleExportPrompts} className="text-[11px] font-bold uppercase text-slate-400 hover:text-brand-400 flex items-center gap-1.5 transition-colors pr-3 border-r border-slate-800/50 min-w-max"><FileText size={12} /> Prompts</button>
+                    <button onClick={handleExportAnimationPrompts} className="text-[11px] font-bold uppercase text-slate-400 hover:text-sky-400 flex items-center gap-1.5 transition-colors pr-3 border-r border-slate-800/50 min-w-max"><Video size={12} /> Anim</button>
+                    <button onClick={handleExportCSV} className="text-[11px] font-bold uppercase text-slate-400 hover:text-brand-400 flex items-center gap-1.5 transition-colors pr-3 border-r border-slate-800/50 min-w-max"><FileSpreadsheet size={12} /> CSV</button>
+                    <button onClick={handleExportAllImages} className="text-[11px] font-bold uppercase text-slate-400 hover:text-brand-400 flex items-center gap-1.5 transition-colors pr-4 border-r border-slate-800/50 min-w-max"><FileArchive size={12} /> ZIP</button>
+                    
+                    <button
+                        onClick={() => isTimelinePreviewActive ? timelineRef.current?.stopPreview() : timelineRef.current?.startPreview()}
+                        disabled={!audioFile}
+                        className={`text-[11px] font-bold uppercase px-3 py-1.5 rounded-lg border transition-all flex items-center gap-1.5 shadow-sm active:scale-95 ${isTimelinePreviewActive ? 'bg-red-500 text-white border-red-400 animate-pulse hover:bg-red-600' : 'bg-slate-800 text-white border-slate-700 hover:bg-brand-500 hover:border-brand-400'}`}
+                    >
+                        {isTimelinePreviewActive ? <Square size={12} fill="currentColor" /> : <PlayCircle size={12} />}
+                        PREVIEW
                     </button>
+
+
                 </div>
             </div>
         </div>
 
         <div className="px-3">
-                <TimelineVisual items={data} onImageClick={(idx) => {
+                <TimelineVisual ref={timelineRef} items={data} onPreviewStateChange={setIsTimelinePreviewActive} onImageClick={(idx) => {
                     const el = document.getElementById(`scene-card-${idx}`);
                     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 }} audioFile={audioFile} videoUrl={videoUrl} />
@@ -1199,15 +1261,26 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                         return;
                                                     }
                                                 }
-                                                if (!audioFile) { alert("Áudio original não encontrado na memória."); return; }
-                                                if (!(window as any).projectAudioUrl) {
-                                                    (window as any).projectAudioUrl = URL.createObjectURL(audioFile);
+                                                let effectiveAudioUrl = (window as any).projectAudioUrl;
+                                                if (!effectiveAudioUrl && audioFile) {
+                                                    effectiveAudioUrl = URL.createObjectURL(audioFile);
+                                                    (window as any).projectAudioUrl = effectiveAudioUrl;
                                                 }
-                                                const audio = new Audio((window as any).projectAudioUrl);
+                                                if (!effectiveAudioUrl && project?.audioUrl) {
+                                                    effectiveAudioUrl = project.audioUrl;
+                                                }
+                                                if (!effectiveAudioUrl) {
+                                                    alert("Áudio não encontrado. Salve ou reinsira o áudio.");
+                                                    return;
+                                                }
+                                                const audio = new Audio(effectiveAudioUrl);
                                                 (window as any).sceneAudioPlayer = audio;
                                                 (window as any).sceneAudioPlayerPlayingIndex = index;
                                                 audio.currentTime = item.startSeconds;
-                                                audio.play();
+                                                audio.play().catch(e => {
+                                                    console.error("Audio playback error:", e);
+                                                    alert("Não foi possível reproduzir o áudio.");
+                                                });
                                                 const checkStop = () => {
                                                     if (audio.currentTime >= item.endSeconds) { audio.pause(); (window as any).sceneAudioPlayerPlayingIndex = null; }
                                                     else if (!audio.paused) requestAnimationFrame(checkStop);
@@ -1239,12 +1312,12 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                             return null;
                                         })()}
                                     </div>
-                                    <div className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-6 flex flex-col gap-5 shadow-lg group hover:border-brand-500/30 transition-all">
-                                        {/* Linha de metadados alinhada à largura da imagem */}
-                                        <div className="flex items-center gap-2 text-base font-black uppercase text-brand-400">
-                                            <span className="bg-brand-500/10 text-brand-400 px-3 py-1.5 rounded-xl text-[14px] font-black whitespace-nowrap shrink-0">{index + 1}</span>
-                                            <span className="bg-slate-950 px-3 py-1.5 rounded-full border border-slate-800 font-mono text-[13px] whitespace-nowrap flex-1 text-center">{item.startTimestamp} – {item.endTimestamp}</span>
-                                            <span className="text-[14px] font-black text-blue-500 whitespace-nowrap bg-slate-950 px-3 py-1.5 rounded-full border border-slate-800 shrink-0">{item.text.split(/\s+/).filter(Boolean).length}</span>
+                                    <div className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-5 flex flex-col gap-4 shadow-lg group hover:border-brand-500/30 transition-all">
+                                        {/* Linha de metadados alinhada à largura da imagem - Otimizado para 4 colunas em 1280px */}
+                                        <div className="flex items-center gap-1.5 text-xs font-black uppercase text-brand-400">
+                                            <span className="bg-brand-500/10 text-brand-400 px-2 py-1 rounded-xl whitespace-nowrap shrink-0 min-w-[2rem] text-center">{index + 1}</span>
+                                            <span className="bg-slate-950 px-2 py-1 rounded-full border border-slate-800 font-mono whitespace-nowrap shrink-0 flex-1 text-center text-xs leading-none py-1.5">{item.startTimestamp} – {item.endTimestamp}</span>
+                                            <span className="text-blue-400 whitespace-nowrap bg-slate-950 px-2 py-1 rounded-full border border-slate-700/50 shrink-0 min-w-[2.5rem] text-center text-xs">{item.text.split(/\s+/).filter(Boolean).length}</span>
                                         </div>
                                         <div className={`bg-black rounded-3xl overflow-hidden relative shadow-inner ${settings.aspectRatio === '9:16' ? 'aspect-[9/16]' : 'aspect-video'}`}>
                                             {item.imageUrl || item.importedVideoUrl ? (
@@ -1274,7 +1347,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                 const char = projectCharacters.find(c => c.id === charId);
                                                 if (!char) return null;
                                                 return (
-                                                    <div key={charId} className="bg-fuchsia-500/10 border border-fuchsia-500/30 px-2.5 py-1 rounded-lg flex items-center gap-1.5 text-xs font-black text-fuchsia-400 uppercase tracking-widest">
+                                                    <div key={charId} className="bg-fuchsia-500/10 border border-fuchsia-500/30 px-2.5 py-1 rounded-lg flex items-center gap-1.5 text-[10px] font-black text-fuchsia-400 uppercase tracking-widest">
                                                         <Users size={10} /> {char.name}
                                                     </div>
                                                 );
@@ -1283,7 +1356,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                 const loc = projectLocations.find(l => l.id === locId);
                                                 if (!loc) return null;
                                                 return (
-                                                    <div key={locId} className="bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg flex items-center gap-1.5 text-xs font-black text-emerald-400 uppercase tracking-widest">
+                                                    <div key={locId} className="bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg flex items-center gap-1.5 text-[10px] font-black text-emerald-400 uppercase tracking-widest">
                                                         <MapPin size={10} /> {loc.name}
                                                     </div>
                                                 );
@@ -1296,7 +1369,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                 onChange={e => onUpdateItem(index, { text: e.target.value })}
                                                 onBlur={() => onForceSave()}
                                                 rows={3}
-                                                className="bg-slate-950 p-2 rounded-xl border border-slate-800 text-[13px] text-slate-300 w-full resize-none focus:outline-none focus:border-brand-500/50 transition-all leading-relaxed [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-slate-800/80 [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-slate-700"
+                                                className="bg-slate-950 p-2 rounded-xl border border-slate-800 text-xs text-slate-300 w-full resize-none focus:outline-none focus:border-brand-500/50 transition-all leading-relaxed [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-slate-800/80 [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-slate-700"
                                                 placeholder="Texto da cena..."
                                             />
                                             <div className="space-y-3">
@@ -1353,7 +1426,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                             <RefreshCw size={11} />
                                                         </button>
                                                     </div>
-                                                    <textarea value={item.action || ''} onChange={e => onUpdateItem(index, { action: e.target.value })} className="w-full h-12 bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-300 outline-none focus:border-white/20 resize-none custom-scrollbar" placeholder="Ação criativa (Surrealismo, Simbolismo, Metáforas)..." />
+                                                    <textarea value={item.action || ''} onChange={e => onUpdateItem(index, { action: e.target.value })} rows={6} className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-300 outline-none focus:border-white/20 resize-none custom-scrollbar" placeholder="Ação criativa (Surrealismo, Simbolismo, Metáforas)..." />
                                                 </div>
 
                                                 <div className="space-y-1">
@@ -1379,7 +1452,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
 
                                                 <div className="space-y-2 pt-2 border-t border-white/5">
                                                     <label className="text-xs font-black text-slate-600 uppercase tracking-widest px-1">Preview Visual (Cores)</label>
-                                                    <ColoredPrompt promptData={getPromptData(index)} className="w-full h-auto min-h-16 bg-slate-950/50 border border-slate-800 rounded-2xl p-4 text-[11.2px] font-mono shadow-inner" />
+                                                    <ColoredPrompt promptData={getPromptData(index)} className="w-full h-auto min-h-16 bg-slate-950/50 border border-slate-800 rounded-2xl p-4 text-xs font-mono shadow-inner" />
                                                 </div>
                                             </div>
                                         </div>
@@ -1395,12 +1468,12 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                 (activeTab === 'characters' || activeTab === 'locations') && (
                     <div className="flex flex-col gap-6 pb-32">
                         <div className="flex justify-between items-center">
-                            <h2 className="text-xl font-bold text-white uppercase tracking-tight">
+                            <h2 className="text-xs font-black text-white uppercase tracking-tight">
                                 {activeTab === 'characters' ? 'Gerenciar Personagens' : 'Gerenciar Cenários'}
                             </h2>
                             <button 
                                 onClick={() => handleAddAsset(activeTab as any)}
-                                className="px-4 py-2 bg-brand-500 hover:bg-brand-400 text-white rounded-xl text-sm font-black uppercase flex items-center gap-2 shadow-lg transition-all active:scale-95"
+                                className="px-4 py-2 bg-brand-500 hover:bg-brand-400 text-white rounded-xl text-xs font-black uppercase flex items-center gap-2 shadow-lg transition-all active:scale-95"
                             >
                                 <Plus size={16} /> Adicionar {activeTab === 'characters' ? 'Personagem' : 'Cenário'}
                             </button>
@@ -1408,12 +1481,12 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
                         {(activeTab === 'characters' ? projectCharacters : projectLocations).map((asset, index) => (
                             <div key={asset.id} className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-6 flex flex-col gap-5 shadow-lg group hover:border-brand-500/30 transition-all">
-                                <div className="flex justify-between items-center text-sm font-black uppercase text-brand-400">
+                                <div className="flex justify-between items-center text-xs font-black uppercase text-brand-400">
                                     <span className={`px-2 py-1 rounded text-xs font-black ${activeTab === 'characters' ? 'bg-fuchsia-500/10 text-fuchsia-400' : 'bg-emerald-500/10 text-emerald-400'}`}>
                                         {activeTab === 'characters' ? 'PERSONAGEM' : 'CENÁRIO'} #{index + 1}
                                     </span>
                                     <div className="flex items-center gap-3">
-                                        <span className="text-xs font-black text-slate-600 tracking-widest">{getAssetOccurrence(asset.id, activeTab === 'characters' ? 'char' : 'loc')} CENAS</span>
+                                        <span className="text-xs font-black text-slate-600 tracking-widest">{getAssetOccurrence(asset.id, activeTab === 'characters' ? 'char' : 'loc')}</span>
                                         <button 
                                             onClick={() => handleDeleteAsset(asset.id, activeTab as any)}
                                             className="text-slate-600 hover:text-red-500 transition-colors"
@@ -1468,7 +1541,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                     const list = activeTab === 'characters' ? [...projectCharacters] : [...projectLocations];
                                                     onUpdateProjectInfo(activeTab as any, list.map(a => a.id === asset.id ? { ...a, name: e.target.value } : a));
                                                 }}
-                                                className="bg-transparent text-sm font-black text-white uppercase tracking-tight italic outline-none border-b border-transparent focus:border-brand-500/30"
+                                                className="bg-transparent text-xs font-black text-white uppercase tracking-tight italic outline-none border-b border-transparent focus:border-brand-500/30"
                                             />
                                         </div>
                                         <div className="flex flex-col gap-0.5 mt-1">
@@ -1480,7 +1553,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                     const list = activeTab === 'characters' ? [...projectCharacters] : [...projectLocations];
                                                     onUpdateProjectInfo(activeTab as any, list.map(a => a.id === asset.id ? { ...a, realName: e.target.value } : a));
                                                 }}
-                                                className="bg-transparent text-sm font-bold text-slate-400 uppercase tracking-widest outline-none border-b border-transparent focus:border-brand-500/30"
+                                                className="bg-transparent text-xs font-bold text-slate-400 uppercase tracking-widest outline-none border-b border-transparent focus:border-brand-500/30"
                                             />
                                         </div>
                                     </div>
@@ -1518,10 +1591,10 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                 activeTab === 'props' && (
                     <div className="flex flex-col gap-6 pb-32">
                         <div className="flex justify-between items-center">
-                            <h2 className="text-xl font-bold text-white uppercase tracking-tight">Gerenciar Objetos (Props)</h2>
+                            <h2 className="text-xs font-black text-white uppercase tracking-tight">Gerenciar Objetos (Props)</h2>
                             <button 
                                 onClick={() => handleAddAsset('props')}
-                                className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-white rounded-xl text-sm font-black uppercase flex items-center gap-2 shadow-lg transition-all active:scale-95"
+                                className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-white rounded-xl text-xs font-black uppercase flex items-center gap-2 shadow-lg transition-all active:scale-95"
                             >
                                 <Plus size={16} /> Adicionar Objeto
                             </button>
@@ -1532,8 +1605,8 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                     <Box size={40} className="text-amber-500/30" />
                                 </div>
                                 <div className="text-center space-y-2">
-                                    <p className="text-base font-black uppercase tracking-widest text-slate-500">Nenhum Objeto Detectado</p>
-                                    <p className="text-sm text-slate-600 max-w-sm">
+                                    <p className="text-xs font-black uppercase tracking-widest text-slate-500">Nenhum Objeto Detectado</p>
+                                    <p className="text-xs text-slate-600 max-w-sm">
                                         Objetos/itens com destaque narrativo (armas, relíquias, etc.) são detectados automaticamente na próxima geração de cenas.
                                     </p>
                                 </div>
@@ -1542,7 +1615,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
                                 {projectProps.map((prop, index) => (
                                     <div key={prop.id} className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-6 flex flex-col gap-5 shadow-lg group hover:border-amber-500/30 transition-all">
-                                        <div className="flex justify-between items-center text-sm font-black uppercase">
+                                        <div className="flex justify-between items-center text-xs font-black uppercase">
                                             <span className="bg-amber-500/10 text-amber-400 px-2 py-1 rounded text-xs font-black">
                                                 OBJETO #{index + 1}
                                             </span>
@@ -1600,7 +1673,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                         onChange={e => {
                                                             onUpdateProjectInfo('props', projectProps.map(p => p.id === prop.id ? { ...p, name: e.target.value } : p));
                                                         }}
-                                                        className="bg-transparent text-sm font-black text-white uppercase tracking-tight italic outline-none border-b border-transparent focus:border-amber-500/30"
+                                                        className="bg-transparent text-xs font-black text-white uppercase tracking-tight italic outline-none border-b border-transparent focus:border-amber-500/30"
                                                     />
                                                 </div>
                                                 <div className="flex flex-col gap-0.5 mt-1">
@@ -1611,7 +1684,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                         onChange={e => {
                                                             onUpdateProjectInfo('props', projectProps.map(p => p.id === prop.id ? { ...p, realName: e.target.value } : p));
                                                         }}
-                                                        className="bg-transparent text-sm font-bold text-slate-400 uppercase tracking-widest outline-none border-b border-transparent focus:border-amber-500/30"
+                                                        className="bg-transparent text-xs font-bold text-slate-400 uppercase tracking-widest outline-none border-b border-transparent focus:border-amber-500/30"
                                                     />
                                                 </div>
                                             </div>
@@ -1650,8 +1723,8 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                     <div className="space-y-12 pb-32">
                         <div className="bg-slate-900/50 p-12 rounded-[3rem] border border-slate-800 text-center space-y-8 shadow-2xl relative overflow-hidden group">
                             <div className="bg-brand-500/10 w-24 h-24 rounded-full flex items-center justify-center mx-auto border border-brand-500/20 shadow-inner"><Target className="text-brand-400" size={48} /></div>
-                            <div className="space-y-4 max-w-2xl mx-auto"><h2 className="text-4xl font-black text-white uppercase tracking-tighter">Engenharia de <span className="text-brand-400">CTR Ninja</span></h2></div>
-                            <button onClick={handleGenerateTitles} disabled={isGeneratingTitles} className="bg-brand-500 hover:bg-brand-400 text-white px-12 py-5 rounded-[2rem] font-black uppercase text-sm tracking-[0.2em] shadow-2xl transition-all flex items-center gap-4 mx-auto active:scale-95">{isGeneratingTitles ? <Loader2 size={24} className="animate-spin" /> : <Zap size={24} />} Gerar Títulos Magnéticos</button>
+                            <div className="space-y-4 max-w-2xl mx-auto"><h2 className="text-xs font-black text-white uppercase tracking-tighter">Engenharia de <span className="text-brand-400">CTR Ninja</span></h2></div>
+                            <button onClick={handleGenerateTitles} disabled={isGeneratingTitles} className="bg-brand-500 hover:bg-brand-400 text-white px-12 py-5 rounded-[2rem] font-black uppercase text-xs tracking-[0.2em] shadow-2xl transition-all flex items-center gap-4 mx-auto active:scale-95">{isGeneratingTitles ? <Loader2 size={24} className="animate-spin" /> : <Zap size={24} />} Gerar Títulos Magnéticos</button>
                         </div>
                         {generatedTitles.length > 0 && (
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -1662,27 +1735,27 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                     return (
                                         <div key={idx} className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-8 flex flex-col gap-6 hover:border-brand-500/30 transition-all shadow-xl group relative">
                                             <div className="flex justify-between items-start">
-                                                <div className="bg-slate-950 px-4 py-2 rounded-xl text-brand-400 font-black text-sm uppercase border border-slate-800">Rank #{idx + 1}</div>
-                                                <span className="text-slate-500 font-black text-sm">{item.viralityScore}% CTR</span>
+                                                <div className="bg-slate-950 px-4 py-2 rounded-xl text-brand-400 font-black text-xs uppercase border border-slate-800">Rank #{idx + 1}</div>
+                                                <span className="text-slate-500 font-black text-xs">{item.viralityScore}% CTR</span>
                                             </div>
-                                            <h3 className="text-2xl leading-tight uppercase tracking-tight text-slate-200 font-medium whitespace-pre-line">{item.title}</h3>
+                                            <h3 className="text-xs font-black uppercase tracking-tight text-slate-200 whitespace-pre-line leading-tight">{item.title}</h3>
 
                                             {currentImageUrl && (
                                                 <div className={`w-full rounded-2xl overflow-hidden border border-slate-800 shadow-2xl relative group-hover:border-brand-500 transition-all cursor-zoom-in ${settings.aspectRatio === '9:16' ? 'aspect-[9/16] w-1/2 mx-auto' : 'aspect-video'}`} onClick={() => setViewingImageState({ imageUrl: currentImageUrl, promptData: { action: item.thumbnailVisual, style: activeStylePrompt }, filename: `thumbnail_${idx + 1}.png` })}>
                                                     <img src={currentImageUrl} className="w-full h-full object-cover" />
                                                     <div className="absolute inset-x-0 bottom-0 bg-black/60 backdrop-blur-md p-3 text-center">
-                                                        <span className="text-white font-black italic uppercase text-sm tracking-tight">"{item.thumbnailText}"</span>
+                                                        <span className="text-white font-black italic uppercase text-xs tracking-tight">"{item.thumbnailText}"</span>
                                                     </div>
                                                 </div>
                                             )}
 
                                             <div className="bg-slate-950/40 p-4 rounded-2xl border border-slate-800 space-y-3">
-                                                <p className="text-brand-400 text-sm font-black uppercase tracking-widest flex items-center gap-2"><Layers size={12} /> Gatilho & Lógica</p>
+                                                <p className="text-brand-400 text-xs font-black uppercase tracking-widest flex items-center gap-2"><Layers size={12} /> Gatilho & Lógica</p>
                                                 <p className="text-slate-500 text-xs italic">"{item.explanation}"</p>
                                             </div>
                                             <div className="bg-slate-950/40 p-4 rounded-2xl border border-slate-800 space-y-4">
                                                 <div className="flex justify-between items-center">
-                                                    <p className="text-emerald-400 text-sm font-black uppercase tracking-widest flex items-center gap-2"><ImageIcon size={12} /> Sugestão de Thumbnail</p>
+                                                    <p className="text-emerald-400 text-xs font-black uppercase tracking-widest flex items-center gap-2"><ImageIcon size={12} /> Sugestão de Thumbnail</p>
                                                     <button
                                                         onClick={() => handleGenerateThumbnail(idx)}
                                                         disabled={isGenerating}
@@ -1693,16 +1766,16 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                     </button>
                                                 </div>
                                                 <div className="space-y-2">
-                                                    <p className="text-sm text-slate-500 uppercase font-black tracking-widest">Visual:</p>
+                                                    <p className="text-xs text-slate-500 uppercase font-black tracking-widest">Visual:</p>
                                                     <p className="text-slate-300 text-xs">{item.thumbnailVisual}</p>
                                                 </div>
                                                 <div className="space-y-2">
-                                                    <p className="text-sm text-slate-500 uppercase font-black tracking-widest">Texto na Imagem:</p>
-                                                    <p className="text-emerald-300 font-black uppercase text-sm italic">"{item.thumbnailText}"</p>
+                                                    <p className="text-xs text-slate-500 uppercase font-black tracking-widest">Texto na Imagem:</p>
+                                                    <p className="text-emerald-300 font-black uppercase text-xs italic">"{item.thumbnailText}"</p>
                                                 </div>
                                             </div>
                                             <div className="flex justify-between items-center pt-2 border-t border-slate-800/50">
-                                                <button onClick={() => { navigator.clipboard.writeText(item.title); alert("Copiado!"); }} className="text-brand-400 text-sm font-black uppercase">Copiar Título</button>
+                                                <button onClick={() => { navigator.clipboard.writeText(item.title); alert("Copiado!"); }} className="text-brand-400 text-xs font-black uppercase">Copiar Título</button>
                                                 {item.abWinnerReason && <span className="text-xs font-black text-slate-700 uppercase">A/B Winner Priority</span>}
                                             </div>
                                         </div>
@@ -1750,11 +1823,11 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                     <div className="bg-slate-900 border border-slate-800 rounded-[3rem] w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
                         <div className="p-8 border-b border-slate-800 flex justify-between items-center bg-slate-900/80">
                             <div>
-                                <h3 className="text-2xl font-black text-white uppercase tracking-tighter flex items-center gap-3">
+                                <h3 className="text-xs font-black text-white uppercase tracking-tighter flex items-center gap-3">
                                     <Sparkles className="text-brand-400" size={24} /> 
                                     Comparar Modelos de IA
                                 </h3>
-                                <p className="text-slate-500 text-sm font-bold uppercase tracking-widest mt-1">
+                                <p className="text-slate-500 text-xs font-bold uppercase tracking-widest mt-1">
                                     Escolha o melhor visual para definir o padrão do projeto
                                 </p>
                             </div>

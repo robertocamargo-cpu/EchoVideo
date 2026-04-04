@@ -215,7 +215,8 @@ const drawSingleSource = (
     if (sWidth === 0 || sHeight === 0) { ctx.restore(); return; }
 
     const coverScale = Math.max(width / sWidth, height / sHeight);
-    let finalScale = coverScale;
+    // Aplicar zoom de 15% em TODOS os vídeos para cortar marcas d'água (como a do Veo)
+    let finalScale = isVideo ? coverScale * 1.15 : coverScale;
     let offsetX = 0;
     let offsetY = 0;
 
@@ -261,16 +262,14 @@ const drawSingleSource = (
 
     if (isVideo) {
         const v = source as HTMLVideoElement;
-        const targetTime = (progress * v.duration) % v.duration;
-        
-        // Otimização de Seek: Se a diferença for menor que 100ms, deixa o vídeo rodar naturalmente.
-        // 100ms é o "sweet spot" entre precisão de sincronia e fluidez de animação.
-        if (Math.abs(v.currentTime - targetTime) > 0.100) {
-            v.currentTime = targetTime;
+        // NÃO fazer seek por frame - isso causa o efeito de "sopapo".
+        // Apenas garantir que o vídeo está tocando. O seek inicial é feito ao ativar a cena.
+        v.muted = true;
+        if (v.paused) {
+            // Seek suave: só busca posicão inicial se o vídeo acabou de ser ativado (currentTime == 0)
+            if (v.currentTime < 0.05) v.currentTime = 0;
+            v.play().catch(() => {});
         }
-        
-        v.muted = true; // Garante silêncio absoluto durante a renderização de frames
-        if (v.paused) v.play().catch(() => { });
     }
 
     ctx.drawImage(source, x, y, targetWidth, targetHeight);
@@ -284,7 +283,8 @@ export const generateTimelineVideo = async (
     onProgress: (progress: number, message: string) => void,
     aspectRatio: '16:9' | '9:16' = '16:9',
     subtitleStyle?: SubtitleStyleOption,
-    motionEffects?: MotionEffect[]
+    motionEffects?: MotionEffect[],
+    maxDuration?: number
 ): Promise<Blob> => {
     return new Promise(async (resolve, reject) => {
         try {
@@ -360,59 +360,71 @@ export const generateTimelineVideo = async (
             allSubtitleChunks.sort((a, b) => a.startSeconds - b.startSeconds);
 
             const loadedAssets = new Map<number, HTMLImageElement | HTMLVideoElement>();
-            await Promise.all(sortedItems.map((item, idx) => {
-                const url = item.importedVideoUrl || item.imageUrl || item.googleImageUrl || item.pollinationsImageUrl || item.importedImageUrl;
-                if (!url) return Promise.resolve();
-                return new Promise<void>((res) => {
-                    if (item.importedVideoUrl) {
-                        const v = document.createElement('video');
-                        v.src = url; v.muted = true; v.crossOrigin = "anonymous"; v.playsInline = true; v.loop = true;
-                        v.onloadeddata = () => { loadedAssets.set(idx, v); res(); };
-                        v.onerror = () => res();
-                        v.load();
-                    } else {
-                        const img = new Image();
-                        img.onload = () => { loadedAssets.set(idx, img); res(); };
-                        img.onerror = () => { console.warn(`[VideoService] Falha ao carregar imagem da cena ${idx + 1}`); res(); };
+            let loadedCount = 0;
+            const totalToLoad = sortedItems.filter(item => item.importedVideoUrl || item.imageUrl || item.googleImageUrl || item.pollinationsImageUrl || item.importedImageUrl).length;
 
-                        if (url.includes('data:')) {
-                            // data: URLs (base64): usar diretamente, não suportam query strings
-                            img.src = url;
+            if (totalToLoad > 0) {
+                onProgress(0, `Preparando Mídias (0/${totalToLoad})...`);
+                await Promise.all(sortedItems.map((item, idx) => {
+                    const url = item.importedVideoUrl || item.imageUrl || item.googleImageUrl || item.pollinationsImageUrl || item.importedImageUrl;
+                    if (!url) return Promise.resolve();
+                    return new Promise<void>((res) => {
+                        const timeout = setTimeout(() => {
+                            console.warn(`[VideoService] Timeout carregando mídia da cena ${idx + 1}`);
+                            res(); 
+                        }, 15000); // 15s timeout por asset
+
+                        const handleLoadSuccess = (asset: HTMLImageElement | HTMLVideoElement) => {
+                            clearTimeout(timeout);
+                            loadedAssets.set(idx, asset);
+                            loadedCount++;
+                            onProgress(Math.floor((loadedCount / totalToLoad) * 5), `Preparando Mídias (${loadedCount}/${totalToLoad})...`);
+                            res();
+                        };
+
+                        if (item.importedVideoUrl) {
+                            const v = document.createElement('video');
+                            v.src = url; v.muted = true; v.volume = 0; v.crossOrigin = "anonymous"; v.playsInline = true; v.loop = true;
+                            v.onloadeddata = () => { v.volume = 0; handleLoadSuccess(v); };
+                            v.onerror = () => { clearTimeout(timeout); res(); };
+                            v.load();
                         } else {
-                            // URLs externas (Supabase Storage): carregar via fetch → blob URL
-                            // Isso resolve dois problemas:
-                            // 1. Canvas taint: blob:// é same-origin, não tainta o canvas nem quebra captureStream()
-                            // 2. CORS cache: imagens carregadas no <img> da UI sem crossOrigin ficam cacheadas
-                            //    sem headers CORS — o fetch faz uma requisição fresca e independente
-                            const cleanUrl = `${url.split('?')[0]}?cb=${Date.now()}_${idx}`;
-                            fetch(cleanUrl)
-                                .then(r => {
-                                    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-                                    return r.blob();
-                                })
-                                .then(blob => {
-                                    const blobUrl = URL.createObjectURL(blob);
-                                    const origOnload = img.onload;
-                                    img.onload = (e) => { URL.revokeObjectURL(blobUrl); if(origOnload) (origOnload as any)(e); };
-                                    img.src = blobUrl;
-                                })
-                                .catch(() => {
-                                    // Fallback: tentativa direta com crossOrigin e cache-busting
-                                    console.warn(`[VideoService] fetch falhou para cena ${idx + 1}, tentando carregamento direto...`);
-                                    img.crossOrigin = "anonymous";
-                                    img.src = cleanUrl;
-                                });
+                            const img = new Image();
+                            img.onload = () => handleLoadSuccess(img);
+                            img.onerror = () => { clearTimeout(timeout); console.warn(`[VideoService] Falha ao carregar imagem da cena ${idx + 1}`); res(); };
+
+                            if (url.includes('data:')) {
+                                img.src = url;
+                            } else {
+                                const cleanUrl = `${url.split('?')[0]}?cb=${Date.now()}_${idx}`;
+                                fetch(cleanUrl)
+                                    .then(r => {
+                                        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                                        return r.blob();
+                                    })
+                                    .then(blob => {
+                                        const blobUrl = URL.createObjectURL(blob);
+                                        const origOnload = img.onload;
+                                        img.onload = (e) => { URL.revokeObjectURL(blobUrl); if(origOnload) (origOnload as any)(e); };
+                                        img.src = blobUrl;
+                                    })
+                                    .catch(() => {
+                                        console.warn(`[VideoService] fetch falhou para cena ${idx + 1}, tentando carregamento direto...`);
+                                        img.crossOrigin = "anonymous";
+                                        img.src = cleanUrl;
+                                    });
+                            }
                         }
-                    }
-                });
-            }));
+                    });
+                }));
+            }
 
             const streamDestination = audioContext.createMediaStreamDestination();
             const supportedType = getSupportedMimeType();
 
             // Reduzindo o bitrate para 12Mbps para maior estabilidade e compatibilidade
             const recorder = new MediaRecorder(new MediaStream([
-                ...canvas.captureStream(30).getVideoTracks(),
+                ...canvas.captureStream(30).getVideoTracks(), // Volta para 30 FPS fixos para estabilidade de gravação
                 ...streamDestination.stream.getAudioTracks()
             ]), {
                 mimeType: supportedType || undefined,
@@ -423,21 +435,26 @@ export const generateTimelineVideo = async (
             recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
             recorder.onstop = () => {
                 audioContext.close();
-                // Usar o tipo exato detectado pelo recorder no Blob final
-                resolve(new Blob(chunks, { type: recorder.mimeType || 'video/webm' }));
+                const mime = recorder.mimeType || 'video/webm';
+                resolve(new Blob(chunks, { type: mime }));
             };
             const sourceNode = audioContext.createBufferSource();
             sourceNode.buffer = audioBuffer;
-            sourceNode.connect(streamDestination);
+            // GainNode como buffer intermediário para evitar glitches/chiados de áudio
+            const gainNode = audioContext.createGain();
+            gainNode.gain.setValueAtTime(1.0, audioContext.currentTime);
+            sourceNode.connect(gainNode);
+            gainNode.connect(streamDestination);
+            // gainNode.connect(audioContext.destination); // MUDO DURANTE RENDER: Monitor local desativado para evitar áudio duplo/travado
 
             if (audioContext.state === 'suspended') await audioContext.resume();
 
-            const transitionDuration = 0.5;
             let isFinished = false;
-
             let audioStartTime = 0;
+
             let lastProgressUpdate = 0;
             let animationFrameId: number | null = null;
+            let lastActiveIdx = -1; // Rastreia a cena ativa anterior para seek de entrada único
 
             const renderLoop = () => {
                 if (isFinished) return;
@@ -450,8 +467,11 @@ export const generateTimelineVideo = async (
 
                 try {
                     const elapsed = audioContext.currentTime - audioStartTime;
+                    
+                    const transitionDuration = 0.5;
+                    const effectiveDuration = maxDuration ? Math.min(audioDuration, maxDuration) : audioDuration;
 
-                    if (elapsed >= audioDuration) {
+                    if (elapsed >= effectiveDuration) {
                         isFinished = true;
                         if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
                         if (recorder.state === 'recording') {
@@ -485,17 +505,74 @@ export const generateTimelineVideo = async (
                         const sceneDuration = currentItem.endSeconds - currentItem.startSeconds;
                         const progress = Math.min(1, Math.max(0, sceneElapsed / Math.max(sceneDuration, 0.01)));
 
+                        // SYNC DETERMINÍSTICO PARA VÍDEOS COM THRESHOLD (Evita Jitter/Engasgos):
+                        // Só forçamos o seek se o vídeo se desviar mais de 50ms do tempo alvo do áudio.
+                        // Isso permite que o decodificador do navegador rode mais solto e fluido.
+                        const activeAsset = loadedAssets.get(activeIdx);
+                        let activeLoopAlpha = 1.0;
+                        const LOOP_FADE = 0.3; // 300ms de suavização no loop
+
+                        if (activeAsset instanceof HTMLVideoElement) {
+                            if (activeAsset.paused) activeAsset.play().catch(() => {});
+                            
+                            const vDur = activeAsset.duration || 0.1;
+                            const vTime = sceneElapsed % vDur;
+
+                            // SYNC DETERMINÍSTICO PARA VÍDEOS COM THRESHOLD:
+                            // Só forçamos o seek se o vídeo se desviar mais de 100ms do tempo alvo do áudio.
+                            const drift = Math.abs(activeAsset.currentTime - vTime);
+                            if (drift > 0.1) {
+                                activeAsset.currentTime = vTime;
+                            }
+
+                            // Efeito simples de transição no loop (Dip-to-Black suave)
+                            if (vDur > LOOP_FADE * 2) {
+                                if (vTime < LOOP_FADE) {
+                                    activeLoopAlpha = vTime / LOOP_FADE;
+                                } else if (vTime > vDur - LOOP_FADE) {
+                                    activeLoopAlpha = (vDur - vTime) / LOOP_FADE;
+                                }
+                            }
+                        }
+
+                        // Se houver transição de cena, sincronizar o próximo vídeo com a mesma lógica de loop
+                        const timeLeft = currentItem.endSeconds - elapsed;
+                        let nextLoopAlpha = 1.0;
+
+                        if (timeLeft < transitionDuration && nextItem) {
+                            const nextAsset = loadedAssets.get(activeIdx + 1);
+                            if (nextAsset instanceof HTMLVideoElement) {
+                                if (nextAsset.paused) nextAsset.play().catch(() => {});
+                                
+                                const nDur = nextAsset.duration || 0.1;
+                                const nextSceneElapsed = Math.max(0, elapsed - nextItem.startSeconds);
+                                const nextVTime = nextSceneElapsed % nDur;
+
+                                const driftNext = Math.abs(nextAsset.currentTime - nextVTime);
+                                if (driftNext > 0.1) {
+                                    nextAsset.currentTime = nextVTime;
+                                }
+
+                                if (nDur > LOOP_FADE * 2) {
+                                    if (nextVTime < LOOP_FADE) {
+                                        nextLoopAlpha = nextVTime / LOOP_FADE;
+                                    } else if (nextVTime > nDur - LOOP_FADE) {
+                                        nextLoopAlpha = (nDur - nextVTime) / LOOP_FADE;
+                                    }
+                                }
+                            }
+                        }
+
                         ctx.fillStyle = "#000";
                         ctx.fillRect(0, 0, width, height);
 
-                        const timeLeft = currentItem.endSeconds - elapsed;
                         if (timeLeft < transitionDuration && nextItem) {
                             const fadeProgress = 1.0 - (timeLeft / transitionDuration);
-                            drawSingleSource(ctx, loadedAssets.get(activeIdx) || null, width, height, activeIdx, progress, 1.0 - fadeProgress, effectMap.get(activeIdx));
+                            drawSingleSource(ctx, loadedAssets.get(activeIdx) || null, width, height, activeIdx, progress, (1.0 - fadeProgress) * activeLoopAlpha, effectMap.get(activeIdx));
                             const nextSceneProgress = Math.max(0, (elapsed - nextItem.startSeconds) / Math.max(nextItem.endSeconds - nextItem.startSeconds, 0.01));
-                            drawSingleSource(ctx, loadedAssets.get(activeIdx + 1) || null, width, height, activeIdx + 1, nextSceneProgress, fadeProgress, effectMap.get(activeIdx + 1));
+                            drawSingleSource(ctx, loadedAssets.get(activeIdx + 1) || null, width, height, activeIdx + 1, nextSceneProgress, fadeProgress * nextLoopAlpha, effectMap.get(activeIdx + 1));
                         } else {
-                            drawSingleSource(ctx, loadedAssets.get(activeIdx) || null, width, height, activeIdx, progress, 1.0, effectMap.get(activeIdx));
+                            drawSingleSource(ctx, loadedAssets.get(activeIdx) || null, width, height, activeIdx, progress, 1.0 * activeLoopAlpha, effectMap.get(activeIdx));
                         }
 
                         if (subtitleStyle) {
@@ -505,6 +582,8 @@ export const generateTimelineVideo = async (
                                 drawSubtitle(ctx, currentChunk.text, width, height, subtitleStyle);
                             }
                         }
+                        
+                        lastActiveIdx = activeIdx;
                     }
 
                     if (Date.now() - lastProgressUpdate > 500) {
@@ -522,10 +601,20 @@ export const generateTimelineVideo = async (
                 animationFrameId = requestAnimationFrame(renderLoop);
             };
 
-            // 1. Pre-render initial frame
+            // 1. Pre-render initial frame with warm-up for videos
+            const firstAsset = loadedAssets.get(0);
+            if (firstAsset instanceof HTMLVideoElement) {
+                firstAsset.currentTime = 0;
+                // Aguarda o vídeo estar pronto para o primeiro frame (readyState >= 2)
+                await new Promise<void>(res => {
+                    if (firstAsset.readyState >= 2) res();
+                    else firstAsset.onseeked = () => res();
+                });
+            }
+
             ctx.fillStyle = "#000";
             ctx.fillRect(0, 0, width, height);
-            drawSingleSource(ctx, loadedAssets.get(0) || null, width, height, 0, 0, 1.0, effectMap.get(0));
+            drawSingleSource(ctx, firstAsset || null, width, height, 0, 0, 1.0, effectMap.get(0));
 
             // 2. Start exact clock
             audioStartTime = audioContext.currentTime;

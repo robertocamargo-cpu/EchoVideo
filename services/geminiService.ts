@@ -221,12 +221,6 @@ export const enrichSrtWithVisuals = async (
     2. LOCATIONS/PROPS: O 'name' pode ser o nome real (ex: 'Quarto 12', 'Relógio de Ouro').
     3. SECURITY: Nomes reais de pessoas devem ficar APENAS no campo 'realName'.
     
-    🗣️ SCRIPT ALIGNMENT (ABSOLUTE PRIORITY - DO NOT SKIP):
-    If a script is provided, you MUST provide a 'scriptMap'. 
-    Divide the ENTIRE script into segments of roughly 15 seconds (NEVER EXCEED 20S).
-    CRITICAL: YOU MUST INCLUDE 100% OF THE WORDS FROM THE SCRIPT. DO NOT SKIP, SUMMARIZE, OR OMIT ANY SENTENCES.
-    Each segment must accurately match the timing in the audio.
-    
     FIELD RULES FOR GENERATION (ENGLISH ONLY in description fields):
     CHARACTER description — one paragraph, ALL fields mandatory.
     LOCATION description — exactly 4 parts, max 60 words.
@@ -237,8 +231,7 @@ export const enrichSrtWithVisuals = async (
     Return JSON: { 
       detectedCharacters: [...], 
       detectedLocations: [...], 
-      detectedProps: [...],
-      scriptMap: [ { text: "segment words here", startSeconds: 0, endSeconds: 15 }, ... ]
+      detectedProps: [...]
     }`;
 
     let globalAssets: any;
@@ -290,14 +283,20 @@ export const enrichSrtWithVisuals = async (
                       description: { type: "string" } 
                     }, 
                     required: ["id", "name", "description"] 
-                  } 
+                  }
                 }
               },
               required: ["detectedCharacters", "detectedLocations", "detectedProps"]
             }
           }
         });
-        globalAssets = JSON.parse(inventoryResponse.text || '{"detectedCharacters":[], "detectedLocations":[], "detectedProps":[]}');
+        
+        let rawInventory = inventoryResponse.text || '{"detectedCharacters":[], "detectedLocations":[], "detectedProps":[]}';
+        rawInventory = rawInventory.replace(/```json/gi, '').replace(/```/gi, '').trim();
+        rawInventory = rawInventory.replace(/\n|\r/g, " "); // Fix raw newlines causing Unterminated String
+        rawInventory = rawInventory.replace(/,\s*([\]}])/g, "$1"); // Resolve trailing commas
+        
+        globalAssets = JSON.parse(rawInventory);
         if (!globalAssets.detectedProps) globalAssets.detectedProps = [];
         break;
       } catch (e: any) {
@@ -360,7 +359,7 @@ export const enrichSrtWithVisuals = async (
     console.log(`[Gemini] Processing ${audioChunks.length} chunks with concurrency...`);
     
     let completedChunks = 0;
-    const processChunk = async (chunk: any, i: number) => {
+    const processChunk = async (chunk: any, i: number, previousContextStr: string = "") => {
       const start = chunk.startSeconds;
       const end = chunk.startSeconds + chunk.durationSeconds;
 
@@ -388,31 +387,30 @@ export const enrichSrtWithVisuals = async (
       const chunkAudioBase64 = await fileToBase64(chunk.file);
       const chunkAudioPart = { inlineData: { mimeType: 'audio/mpeg', data: chunkAudioBase64 } };
 
-      // Slice the script for this specific chunk based on scriptMap if available
       let relativeScriptContext = scriptText || '';
-      if (globalAssets.scriptMap && globalAssets.scriptMap.length > 0) {
-        const relevantParts = globalAssets.scriptMap.filter((m: any) => 
-          (m.endSeconds > start && m.startSeconds < start + chunk.durationSeconds)
-        );
-        if (relevantParts.length > 0) {
-          relativeScriptContext = relevantParts.map((p: any) => p.text).join('\n');
-        }
-      }
-
       const chunkPrompt = `MASTER PROMPT — AUDIO-TEXT SYNCHRONIZATION ENGINE
-    Divide this audio into multiple short scenes (STRICTLY 5-10s AND AT LEAST 12 WORDS EACH).
-    CRITICAL: A 30-second chunk SHOULD generate roughly 3 to 6 scenes. NEVER return a single scene for the entire chunk. If a scene has few words, merge it with the adjacent one to respect the 12-word minimum.
-    
-    🗣️ FIELD RULES (STRICT, 'subject', 'action', 'cenario', 'props', and 'animation' MUST be in ENGLISH ONLY):
-    - action: The ONLY creative field. Use Conceptual Surrealism or Magical Realism (Surrealismo Conceitual ou Realismo Mágico) as the core aesthetic. Make the action intensely cinematic and visually stunning. Use dramatic verbs, dynamic volumetric lighting cues, extreme composition, and highly evocative visual symbolism (English ONLY). 
+    Divide this audio into multiple short scenes (STRICTLY 5.0 to 10.0 SECONDS EACH).
+    ABSOLUTE LIMIT: NO SCENE CAN OVERLAP 10.0 SECONDS. IF A SCENE IS LONGER THAN 10 SECONDS, YOU MUST SPLIT IT INTO TWO SCENES. THIS IS A CRITICAL FAILURE IN YOUR RULESET IF VIOLATED.
+    CRITICAL: A 30-second chunk MUST generate exactly 3 to 6 scenes. The density of words usually follows 3.0 words per second. NEVER return a single scene for the entire chunk. Se houver poucas palavras, distribua visualmente ou mescle até 10s máximo.
+    ${previousContextStr}
+    🗣️ FIELD RULES (STRICT, 'text', 'subject', 'action', 'cenario', 'props', and 'animation'):
+    - text: MANDATORY FIELD! You MUST write the EXACT 100% VERBATIM transcription of the audio segment. DO NOT LEAVE EMPTY. DO NOT SUMMARIZE. It is strictly forbidden to omit any words spoken.
+    - action: The ONLY creative field. You MUST use Conceptual Surrealism or Magical Realism (Surrealismo Conceitual ou Realismo Mágico) as the absolute core aesthetic. Make the action intensely cinematic, visually stunning, and highly symbolic. Use dramatic verbs, dynamic volumetric lighting cues, extreme composition, and evocative visual metaphors (English ONLY). 
+    CRITICAL RULE ON NAMES: NEVER USE THE REAL NAME OF ANY CHARACTER OR OBJECT IN THE ACTION FIELD. ALWAYS use their nickname/ID AND their physical description (e.g., 'c1, a tall man in a black suit, runs...'). NO REAL NAMES EVER.
+    CRITICAL RULE ON CONTINUITY: "CONTINUATION" DOES NOT EXIST. DO NOT CREATE SCENES THAT LOOK LIKE A CONTINUATION OF THE PREVIOUS ONE. EACH SCENE IS A BRAND NEW DRAMATIC CUT. ACTION MUST CHANGE ENTIRELY.
     CRITICAL: AVOID REPETITIVE FRAMING! Every scene MUST feel visually unique from the previous one. Use a mix of abstract concepts, extreme close-ups, and giant-scale landscapes. NEVER repeat the same visual setup twice in a row.
     - subject: Return a string mentioning ONLY character nicknames or IDs (English ONLY). NO CHARACTERISTICS HERE.
     - cenario: Return a string mentioning ONLY location/prop names or IDs (English ONLY). PHYSICAL ANCHORING ONLY. NO SYMBOLISM OR CREATIVITY.
     - camera: Pick a camera angle from: [Wide shot, Close-up, Low angle, Eye level, Bird's eye view, Dutch angle, Extreme Close-up, High Angle]. YOU MUST VARY THE CAMERA ANGLE WILDLY! Never repeat the same angle consecutively. Avoid boring head-on eye-level shots.
-    - animation: Create a short, highly cinematic animation idea in English (max 15 words) for this scene. Based on scenario, subject, props, and 'action', describe how elements move (e.g., parallax, slow-motion drift, particles floating, or character-specific motion). Make it feel like an epic animated clip. YOU MUST VARY THE IDEAS!
-    - DO NOT SKIP TEXT: The 'text' field MUST be 100% identical to the words spoken in the audio. VERBATIM transcription only. Do NOT summarize, do NOT paraphrase, and do NOT improve the language. It is strictly forbidden to omit any words.
-    - SYNC: O início e fim devem bater com a fala real (Exatamente no início da primeira palavra e no fim da última).
-    - MUSIC/SILENCE: Se não houver fala, gere 1 cena de música/silêncio.
+    - animation: YOU MUST strictly choose EXACTLY ONE of the following 5 predefined animation effects for this scene, passing ONLY its exact name in English (do NOT create new effects):
+      1. Dynamic Zoom-In Drift
+      2. Contextual Zoom-Out Reveal
+      3. Cinematic Dolly Slide
+      4. Elegant Diagonal Lift
+      5. Fluid Descending Sweep
+      NEVER repeat the same effect in consecutive scenes!
+    - SYNC: O início e fim devem bater com a locução exata no áudio.
+    - MUSIC/SILENCE: Use "(🎵)" apenas se não houver NENHUMA VOZ narrada num trecho superior a 5 segundos. MAS SE HOUVER LOCUÇÃO, a transcrição é absoluta.
     
     ${srtReference}
     ${relativeScriptContext ? `\nORIGINAL TEXT REFERENCE (MANDATORY VERBATIM CONTENT):\n${relativeScriptContext}\nRule: Use strictly the EXACT words from the provided text for the 'text' field. Word-for-word synchronization is mandatory. Do NOT skip any words.\n` : ''}
@@ -483,24 +481,18 @@ export const enrichSrtWithVisuals = async (
       return { index: i, items: chunkData.items, start, duration: chunk.durationSeconds };
     };
 
-    // Use a simple pool-based concurrency (3 chunks at a time)
+    // Process chunks sequentially to pass context forward and prevent repetitive scenes
     const allChunkResults: any[] = [];
-    const queue = [...audioChunks.map((c, idx) => ({ ...c, originalIndex: idx }))];
-    const poolSize = 3;
-    const activeTasks: Promise<any>[] = [];
+    let previousChunkContext = "";
 
-    while (queue.length > 0 || activeTasks.length > 0) {
-      while (activeTasks.length < poolSize && queue.length > 0) {
-        const chunk = queue.shift()!;
-        const task = processChunk(chunk, chunk.originalIndex);
-        activeTasks.push(task);
-        task.then(res => {
-          allChunkResults.push(res);
-          activeTasks.splice(activeTasks.indexOf(task), 1);
-        });
-      }
-      if (activeTasks.length > 0) {
-        await Promise.race(activeTasks);
+    for (let idx = 0; idx < audioChunks.length; idx++) {
+      const chunk = audioChunks[idx];
+      const res = await processChunk(chunk, idx, previousChunkContext);
+      allChunkResults.push(res);
+      
+      if (res.items && res.items.length > 0) {
+        const lastScene = res.items[res.items.length - 1];
+        previousChunkContext = `\n[CRITICAL CONTEXT] THE FINAL SCENE OF THE PREVIOUS CHUNK HAD:\n- Action: "${lastScene.action}"\n- Camera: "${lastScene.camera || "N/A"}"\n- Animation: "${lastScene.animation}"\nYOU MUST MAKE THE FIRST SCENE OF THIS CURRENT CHUNK COMPLETELY DIFFERENT IN ACTION, CAMERA, AND ANIMATION TO AVOID REPETITIVE FRAMING!\n`;
       }
     }
 
@@ -559,7 +551,7 @@ export const enrichSrtWithVisuals = async (
 
           // Compute required minimum duration based on text length (approx 3.0 words per second)
           const wordCount = item.text ? item.text.split(' ').length : 0;
-          const textMinDuration = Math.max(3.0, wordCount / 3.0); // Restaurado para 3.0w/s para evitar atropelamento visual
+          const textMinDuration = Math.max(5.0, wordCount / 3.0); // Restaurado para 5.0w/s para evitar atropelamento visual
 
           // Ensure end is always after start
           if (gEnd <= gStart + 0.5) {
@@ -725,16 +717,14 @@ export const enrichSrtWithVisuals = async (
         const projectedDuration = (item.endSeconds - last.startSeconds);
         const projectedWps = (lastWords + itemWords) / (projectedDuration || 1);
 
-        // MERGE CRITERIA: 
+        // MERGE CRITERIA (Aligned with instructions.md): 
         // 1. If last scene is too short in duration (< 5.0s)
-        // 2. If last scene has too few words (< 10 words - User Golden Rule)
-        // 3. BUT ONLY if merging won't exceed a reasonable max duration (12s) 
-        // 4. AND ONLY if it doesn't create severe "atropelamento" (> 3.2 wps)
+        // 2. BUT ONLY if merging won't exceed the strict max duration (10s) 
+        // 3. AND ONLY if it doesn't create severe "atropelamento" (> 3.2 wps)
         const isTooShort = last.duration < 5.0;
-        const isTooEmpty = lastWords < 10;
-        const canAbsorb = projectedDuration <= 12.0 && projectedWps <= 3.2;
+        const canAbsorb = projectedDuration <= 10.0 && projectedWps <= 3.2;
 
-        if ((isTooShort || isTooEmpty) && canAbsorb) {
+        if (isTooShort && canAbsorb) {
           last.endSeconds = item.endSeconds;
           last.endTimestamp = item.endTimestamp;
           last.duration = last.endSeconds - last.startSeconds;
@@ -909,59 +899,7 @@ export const enrichSrtWithVisuals = async (
       }
     }
 
-    // POST-PROCESS 5: DURATION SAFEGUARD (MERGE SHORT SCENES)
-    // Cenas com menos de 5 segundos são fundidas com a cena seguinte ou anterior, protegendo a timeline de stutters.
-    const durationSafeItems: any[] = [];
-    for (let i = 0; i < strictDensityItems.length; i++) {
-      let currentItem = strictDensityItems[i];
-      let currentDuration = currentItem.endSeconds - currentItem.startSeconds;
-
-      // Se a cena for menor que 5s e não for a última, tenta fundir com a próxima
-      while (currentDuration < 5.0 && i < strictDensityItems.length - 1) {
-        let nextItem = strictDensityItems[i + 1];
-        let nextDuration = nextItem.endSeconds - nextItem.startSeconds;
-        
-        // FUSÃO OBRIGATÓRIA: Qualquer cena com menos de 5s é brutalmente fundida com a vizinha.
-        // Aceitamos que a cena fundida chegue a até 15.0s, porque evitar flashes curtos é a prioridade absoluta.
-        if (currentDuration + nextDuration <= 15.0 || currentDuration < 5.0) {
-          currentItem.endSeconds = nextItem.endSeconds;
-          currentItem.duration = currentItem.endSeconds - currentItem.startSeconds;
-          const formatTimeLocal = (secs: number) => {
-            const m = Math.floor(secs / 60);
-            const s = Math.floor(secs % 60);
-            const ms = Math.floor((secs % 1) * 100);
-            return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(2, '0')}`;
-          };
-          currentItem.endTimestamp = formatTimeLocal(currentItem.endSeconds);
-          currentItem.text = (currentItem.text + " " + nextItem.text).trim();
-          
-          currentDuration = currentItem.duration;
-          i++; // Skip the next item since it's merged
-        } else {
-          break; // Stop merging
-        }
-      }
-      durationSafeItems.push(currentItem);
-    }
-
-    // Tail Guard
-    if (durationSafeItems.length > 1) {
-      let lastSeg = durationSafeItems[durationSafeItems.length - 1];
-      if (lastSeg.endSeconds - lastSeg.startSeconds < 5.0) {
-         let prevItem = durationSafeItems[durationSafeItems.length - 2];
-         prevItem.endSeconds = lastSeg.endSeconds;
-         prevItem.duration = prevItem.endSeconds - prevItem.startSeconds;
-         const formatTimeLocal = (secs: number) => {
-            const m = Math.floor(secs / 60);
-            const s = Math.floor(secs % 60);
-            const ms = Math.floor((secs % 1) * 100);
-            return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(2, '0')}`;
-         };
-         prevItem.endTimestamp = formatTimeLocal(prevItem.endSeconds);
-         prevItem.text = (prevItem.text + " " + lastSeg.text).trim();
-         durationSafeItems.pop();
-      }
-    }
+    const durationSafeItems: any[] = strictDensityItems;
 
     // POST-PROCESS 6: TIMELINE GAP FILLER (Music/Silence Autocomplete)
     const gapFilledItems: any[] = [];
@@ -1083,7 +1021,95 @@ export const enrichSrtWithVisuals = async (
       }
     }
 
-    const sanitizedItems = gapFilledItems.map(item => {
+    // POST-PROCESS 7.5: ABSOLUTE MINIMUM DURATION ELIMINATION
+    // Any scene under 5.0s left over from SRT snagging, Word Density, or AI quirks MUST be merged.
+    // If it exceeds 10s after merging, POST-PROCESS 8 will elegantly slice it back to >= 5.0s.
+    let j = 0;
+    while (j < gapFilledItems.length) {
+      const current = gapFilledItems[j];
+      const actualDuration = current.endSeconds - current.startSeconds;
+      
+      if (actualDuration < 5.0 && gapFilledItems.length > 1) {
+        const hasNext = j + 1 < gapFilledItems.length;
+        const targetIdx = hasNext ? j + 1 : j - 1;
+        const absorbTarget = gapFilledItems[targetIdx];
+        
+        const newStart = Math.min(current.startSeconds, absorbTarget.startSeconds);
+        const newEnd = Math.max(current.endSeconds, absorbTarget.endSeconds);
+        absorbTarget.startSeconds = newStart;
+        absorbTarget.endSeconds = newEnd;
+        absorbTarget.duration = newEnd - newStart;
+        
+        const fmtLocal = (secs: number) => {
+          const m = Math.floor(secs / 60);
+          const s = Math.floor(secs % 60);
+          const ms = Math.floor((secs % 1) * 100);
+          return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(2, '0')}`;
+        };
+        absorbTarget.startTimestamp = fmtLocal(absorbTarget.startSeconds);
+        absorbTarget.endTimestamp = fmtLocal(absorbTarget.endSeconds);
+        
+        if (hasNext) {
+          absorbTarget.text = (current.text + " " + absorbTarget.text).trim();
+        } else {
+          absorbTarget.text = (absorbTarget.text + " " + current.text).trim();
+        }
+
+        if (current.srtSegments) {
+          absorbTarget.srtSegments = [...(absorbTarget.srtSegments || []), ...current.srtSegments];
+          const uniq = new Map();
+          absorbTarget.srtSegments.forEach((s: any) => uniq.set(s.start, s));
+          absorbTarget.srtSegments = Array.from(uniq.values()).sort((a: any, b: any) => a.start - b.start);
+        }
+
+        gapFilledItems.splice(j, 1);
+      } else {
+        j++;
+      }
+    }
+
+    // POST-PROCESS 8: FINAL GUARANTEE BOUNDARY ENFORCER 
+    // To categorically prevent ANY scene from exceeding 10.0 seconds (e.g. from SRT offset snaps or gap fillers)
+    const strictBoundedItems: any[] = [];
+    for (const item of gapFilledItems) {
+      if (item.duration > 10.0) {
+        const numParts = Math.ceil(item.duration / 10.0);
+        const partDur = item.duration / numParts;
+        for (let p = 0; p < numParts; p++) {
+          const pStart = item.startSeconds + (p * partDur);
+          const pEnd = (p === numParts - 1) ? item.endSeconds : item.startSeconds + ((p + 1) * partDur);
+          const formatTimeLocal = (secs: number) => {
+            const m = Math.floor(secs / 60);
+            const s = Math.floor(secs % 60);
+            const ms = Math.floor((secs % 1) * 100);
+            return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(2, '0')}`;
+          };
+          
+          let partText = item.text;
+          // Subdivide text if it's not a gap filler
+          if (!item.isGapFiller && item.text && item.text !== "(🎵)") {
+            const words = item.text.split(' ');
+            const wordsPerPart = Math.ceil(words.length / numParts);
+            partText = words.slice(p * wordsPerPart, (p + 1) * wordsPerPart).join(' ');
+          }
+
+          strictBoundedItems.push({
+            ...item,
+            startSeconds: pStart,
+            endSeconds: pEnd,
+            duration: pEnd - pStart,
+            startTimestamp: formatTimeLocal(pStart),
+            endTimestamp: formatTimeLocal(pEnd),
+            text: partText || "(pausa)",
+            action: item.isGapFiller ? item.action : item.action + (numParts > 1 ? ` (Cut ${p+1})` : "")
+          });
+        }
+      } else {
+        strictBoundedItems.push(item);
+      }
+    }
+
+    const sanitizedItems = strictBoundedItems.map(item => {
       let subject = item.subject || "";
       let action = item.action || "";
       let cenario = item.cenario || "";
