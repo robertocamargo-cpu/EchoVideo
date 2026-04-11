@@ -75,7 +75,7 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
     const [showVideoSettings, setShowVideoSettings] = useState(false);
     const [includeSubtitles, setIncludeSubtitles] = useState<boolean>(true);
     const [viewingImageState, setViewingImageState] = useState<{ imageUrl: string, promptData: any, filename: string, sourceIndex?: number, sourceType?: 'scene' | 'thumbnail' } | null>(null);
-    const [globalProvider, setGlobalProvider] = useState<'google-nano' | 'google-imagen' | 'pollinations' | 'pollinations-zimage'>('google-nano');
+    const [globalProvider, setGlobalProvider] = useState<'google-nano' | 'google-fast' | 'google-ultra' | 'pollinations' | 'pollinations-zimage'>('google-fast');
     const [generatedTitles, setGeneratedTitles] = useState<ViralTitle[]>([]);
     const [isGeneratingTitles, setIsGeneratingTitles] = useState(false);
     const [generatingThumbnailMap, setGeneratingThumbnailMap] = useState<Record<number, boolean>>({});
@@ -515,7 +515,7 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         setIsVideoGenerating(false);
     };
 
-    const handleGenerateImage = async (index: number, providerParam?: 'google-nano' | 'google-imagen' | 'pollinations' | 'pollinations-zimage', overrideItem?: Partial<TranscriptionItem>) => {
+    const handleGenerateImage = async (index: number, providerParam?: 'google-nano' | 'google-fast' | 'google-ultra' | 'pollinations' | 'pollinations-zimage', overrideItem?: Partial<TranscriptionItem>) => {
         // Usar o modelo preferencial se existir, senão o parâmetro ou globalProvider
         const provider = providerParam || (project?.preferredImageModel as any) || globalProvider;
         // Limpar a imagem anterior para feedback visual de regeneração
@@ -533,9 +533,16 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
             const pData = getPromptData(index, overrideItem);
             const isPol = provider.startsWith('pollinations');
             const isPollinationsZ = provider === 'pollinations-zimage';
-            const isGoogleImagen = provider === 'google-imagen';
+            const isGoogleNano = provider === 'google-nano';
+            const isGoogleUltra = provider === 'google-ultra';
+            const isGoogleFast = provider === 'google-fast';
+
             const polModel = isPollinationsZ ? 'zimage' : 'flux';
-            const geminiModel = isGoogleImagen ? IMAGEN_MODEL_NAME : IMAGE_MODEL_NAME;
+            
+            let geminiModel = 'imagen-3.0-generate-002'; // default
+            if (isGoogleFast) geminiModel = 'imagen-3.0-generate-002';
+            if (isGoogleUltra) geminiModel = 'imagen-3.0-ultra-001';
+            if (isGoogleNano) geminiModel = 'gemini-nano';
 
             const result = !isPol
                 ? await generateImage(pData.finalPrompt, settings.aspectRatio, geminiModel)
@@ -683,15 +690,27 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
             const assetPrompt = `${realWorldNote ? realWorldNote + ' ' : ''}${asset.description} style: ${activeStylePrompt}, Visual Integrity: "Pure image only: all surfaces are blank and free of any text or letters."`;
 
             const isPollinationsZ = provider === 'pollinations-zimage';
-            const isGoogleImagen = provider === 'google-imagen';
             const isGoogleNano = provider === 'google-nano';
+            const isGoogleUltra = provider === 'google-ultra';
+            const isGoogleFast = provider === 'google-fast';
 
             const assetFinalProvider = (provider === 'pollinations' || provider === 'pollinations-zimage') ? 'pollinations' : 'google';
             const polModel = isPollinationsZ ? 'zimage' : 'flux';
-            const geminiModel = isGoogleImagen ? IMAGEN_MODEL_NAME : IMAGE_MODEL_NAME;
+            
+            let geminiModel = IMAGEN_MODEL_NAME; // default Imagen 3
+            if (isGoogleFast) geminiModel = 'imagen-3.0-generate-002'; // Ou o nome correto do Fast
+            if (isGoogleUltra) geminiModel = 'imagen-3.0-ultra-001';
+            if (isGoogleNano) geminiModel = 'gemini-nano'; // Se houver esse mapeamento no service
 
+            // Mas para garantir o mesmo código da galeria, vou usar as constantes do geminiService se estiverem lá
+            // Na galeria usa: IMAGEN_ULTRA_MODEL_NAME, IMAGEN_FAST_MODEL_NAME, NANO_MODEL_NAME
+            
             const result = assetFinalProvider === 'google'
-                ? await generateImage(assetPrompt, settings.aspectRatio, geminiModel)
+                ? await generateImage(assetPrompt, settings.aspectRatio, 
+                    isGoogleUltra ? 'imagen-3.0-ultra-001' : 
+                    isGoogleFast ? 'imagen-3.0-generate-002' : 
+                    isGoogleNano ? 'gemini-nano' : 'imagen-3.0-generate-002'
+                  )
                 : await generatePollinationsImage(assetPrompt, polModel, "", settings.aspectRatio);
 
             let finalImageUrl = result.image;
@@ -1202,12 +1221,24 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                             <select value={selectedStyleId} onChange={(e) => onStyleChange(e.target.value)} className="bg-slate-950 border border-slate-800/60 rounded-sm px-2 py-1 text-[11px] text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white hover:border-slate-700 transition-colors min-w-[140px]">
                                 {settings.items.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
                             </select>
-                            <select value={globalProvider} onChange={e => setGlobalProvider(e.target.value as any)} className="bg-slate-950 border border-slate-800/60 rounded-sm px-2 py-1 text-[11px] text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white hover:border-slate-700 transition-colors min-w-[160px]">
-                                <option value="google-nano">GEMINI NANO</option>
-                                <option value="google-imagen">IMAGEN 4</option>
-                                <option value="pollinations">POLLINATIONS FLUX</option>
-                                <option value="pollinations-zimage">POLLINATIONS ZIMAGE</option>
-                            </select>
+                            <div className="flex bg-slate-950 p-1 rounded-sm gap-1 border border-slate-800/60">
+                                {[
+                                    { id: 'google-fast', label: 'FAST', color: 'from-blue-400 to-cyan-500', title: 'Imagen 4 Fast' },
+                                    { id: 'google-nano', label: 'NANO', color: 'from-amber-400 to-orange-600', title: 'Nano Banana' },
+                                    { id: 'google-ultra', label: 'ULTRA', color: 'from-blue-600 to-indigo-700', title: 'Imagen 3 Ultra' },
+                                    { id: 'pollinations', label: 'FLUX', color: 'from-purple-500 to-pink-600', title: 'Flux Cinematic' },
+                                    { id: 'pollinations-zimage', label: 'ZIMG', color: 'from-emerald-500 to-teal-600', title: 'ZImage Magic' }
+                                ].map(p => (
+                                    <button 
+                                        key={p.id}
+                                        onClick={() => setGlobalProvider(p.id as any)}
+                                        title={p.title}
+                                        className={`px-2 py-1 rounded-sm text-[9px] font-black uppercase tracking-tighter transition-all border ${globalProvider === p.id ? `bg-gradient-to-r ${p.color} text-white border-transparent shadow-[0_0_10px_rgba(255,100,0,0.2)]` : 'bg-transparent text-slate-500 border-transparent hover:text-slate-300'}`}
+                                    >
+                                        {p.label}
+                                    </button>
+                                ))}
+                            </div>
                         </div>
                         <div className="flex items-center gap-3 ml-auto w-full md:w-auto overflow-x-auto scrollbar-hide shrink-0 pb-1">
                             <span className="text-[11px] font-bold uppercase tracking-wider text-brand-400 mr-2 border-r border-slate-800 pr-4 mt-1">
