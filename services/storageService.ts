@@ -1,37 +1,39 @@
 import { Project, TranscriptionItem, AppSettings, StyleExample, MasterAsset, ImageHistoryItem, ImageStyleOption, SubtitleStyleOption, MotionEffect } from "../types";
 import { DailyUsage } from "./usageService";
-import { supabase } from "./supabaseClient";
+import { db, storage } from "./firebaseClient";
+import { collection, doc, getDoc, getDocs, setDoc, deleteDoc, query, where, orderBy, limit, writeBatch } from "firebase/firestore";
+import { ref, uploadBytes, getDownloadURL, deleteObject, listAll } from "firebase/storage";
 
-export { supabase };
+const generateId = () => crypto.randomUUID();
 
 // ==================== PROJECTS ====================
 
 export const getProjects = async (): Promise<Project[]> => {
     try {
-        const { data, error } = await supabase
-            .from('projects')
-            .select(`
-                *,
-                transcription_items(count)
-            `)
-            .order('date', { ascending: false });
+        const q = query(collection(db, 'projects'), orderBy('date', 'desc'));
+        const querySnapshot = await getDocs(q);
+        const projects: Project[] = [];
 
-        if (error) throw error;
+        querySnapshot.forEach((docSnap) => {
+            const proj = docSnap.data();
+            projects.push({
+                id: docSnap.id,
+                name: proj.name,
+                date: proj.date,
+                context: proj.context,
+                projectStyle: proj.project_style,
+                customStylePrompt: proj.custom_style_prompt,
+                audioUrl: proj.audio_url,
+                updatedAt: proj.updated_at,
+                items: [],
+                itemsCount: proj.itemsCount || 0,
+                characters: [],
+                locations: [],
+                props: []
+            });
+        });
 
-        return (data || []).map((proj: any) => ({
-            id: proj.id,
-            name: proj.name,
-            date: proj.date,
-            context: proj.context,
-            projectStyle: proj.project_style,
-            customStylePrompt: proj.custom_style_prompt,
-            audioUrl: proj.audio_url,
-            updatedAt: proj.updated_at,
-            items: [],
-            itemsCount: proj.transcription_items?.[0]?.count || 0,
-            characters: [],
-            locations: []
-        }));
+        return projects;
     } catch (error) {
         console.error("Error loading projects", error);
         return [];
@@ -40,18 +42,16 @@ export const getProjects = async (): Promise<Project[]> => {
 
 export const findProjectByName = async (name: string): Promise<Project | null> => {
     try {
-        const { data, error } = await supabase
-            .from('projects')
-            .select('*')
-            .eq('name', name)
-            .limit(1)
-            .maybeSingle();
+        const q = query(collection(db, 'projects'), where('name', '==', name), limit(1));
+        const querySnapshot = await getDocs(q);
+        
+        if (querySnapshot.empty) return null;
 
-        if (error) throw error;
-        if (!data) return null;
+        const docSnap = querySnapshot.docs[0];
+        const data = docSnap.data();
 
         return {
-            id: data.id,
+            id: docSnap.id,
             name: data.name,
             date: data.date,
             context: data.context,
@@ -62,7 +62,8 @@ export const findProjectByName = async (name: string): Promise<Project | null> =
             updatedAt: data.updated_at,
             items: [],
             characters: [],
-            locations: []
+            locations: [],
+            props: []
         };
     } catch (error) {
         console.error("Error finding project by name", error);
@@ -72,21 +73,30 @@ export const findProjectByName = async (name: string): Promise<Project | null> =
 
 export const getProjectById = async (id: string): Promise<Project | null> => {
     try {
-        const { data, error } = await supabase
-            .from('projects')
-            .select(`
-                *,
-                transcription_items (*),
-                master_assets (*)
-            `)
-            .eq('id', id)
-            .single();
+        const docRef = doc(db, 'projects', id);
+        const docSnap = await getDoc(docRef);
 
-        if (error) throw error;
-        if (!data) return null;
+        if (!docSnap.exists()) return null;
+
+        const data = docSnap.data();
+
+        // Items
+        const itemsQuery = query(collection(db, 'projects', id, 'transcription_items'));
+        const itemsSnap = await getDocs(itemsQuery);
+        let items: any[] = [];
+        itemsSnap.forEach(snap => items.push(snap.data()));
+
+        // Sort items by start_seconds
+        items.sort((a, b) => parseFloat(a.start_seconds) - parseFloat(b.start_seconds));
+
+        // Assets
+        const assetsQuery = query(collection(db, 'projects', id, 'master_assets'));
+        const assetsSnap = await getDocs(assetsQuery);
+        let assets: any[] = [];
+        assetsSnap.forEach(snap => assets.push(snap.data()));
 
         const project: Project = {
-            id: data.id,
+            id,
             name: data.name,
             date: data.date,
             context: data.context,
@@ -94,51 +104,49 @@ export const getProjectById = async (id: string): Promise<Project | null> => {
             image_style_name: data.image_style_name,
             customStylePrompt: data.custom_style_prompt,
             audioUrl: data.audio_url,
-            items: data.transcription_items
-                .sort((a: any, b: any) => parseFloat(a.start_seconds) - parseFloat(b.start_seconds))
-                .map((item: any) => {
-                    let extraData = {};
-                    try {
-                        if (item.visual_summary && item.visual_summary.startsWith('{')) {
-                            extraData = JSON.parse(item.visual_summary);
-                        }
-                    } catch (e) { console.warn("Error unpacking visual_summary", e); }
+            items: items.map((item: any) => {
+                let extraData = {};
+                try {
+                    if (item.visual_summary && item.visual_summary.startsWith('{')) {
+                        extraData = JSON.parse(item.visual_summary);
+                    }
+                } catch (e) { console.warn("Error unpacking visual_summary", e); }
 
-                    return {
-                        filename: item.filename,
-                        startTimestamp: item.start_timestamp,
-                        endTimestamp: item.end_timestamp,
-                        startSeconds: parseFloat(item.start_seconds),
-                        endSeconds: parseFloat(item.end_seconds),
-                        duration: parseFloat(item.duration),
-                        text: item.text,
-                        imagePrompt: item.image_prompt,
-                        selectedProvider: item.selected_provider,
-                        imageUrl: item.image_url,
-                        googleImageUrl: item.google_image_url,
-                        pollinationsImageUrl: item.pollinations_image_url,
-                        importedImageUrl: item.imported_image_url,
-                        importedVideoUrl: item.imported_video_url,
-                        imageCost: item.imageCost ? parseFloat(item.imageCost) : undefined,
-                        characterIds: item.character_ids || [],
-                        locationIds: item.location_ids || [],
-                        propIds: item.prop_ids || [],
-                        ...extraData
-                    };
-                }),
-            characters: data.master_assets
+                return {
+                    filename: item.filename,
+                    startTimestamp: item.start_timestamp,
+                    endTimestamp: item.end_timestamp,
+                    startSeconds: parseFloat(item.start_seconds),
+                    endSeconds: parseFloat(item.end_seconds),
+                    duration: parseFloat(item.duration),
+                    text: item.text,
+                    imagePrompt: item.image_prompt,
+                    selectedProvider: item.selected_provider,
+                    imageUrl: item.image_url,
+                    googleImageUrl: item.google_image_url,
+                    pollinationsImageUrl: item.pollinations_image_url,
+                    importedImageUrl: item.imported_image_url,
+                    importedVideoUrl: item.imported_video_url,
+                    imageCost: item.image_cost ? parseFloat(item.image_cost) : undefined,
+                    characterIds: item.character_ids || [],
+                    locationIds: item.location_ids || [],
+                    propIds: item.prop_ids || [],
+                    ...extraData
+                };
+            }),
+            characters: assets
                 .filter((asset: any) => asset.asset_type === 'character')
                 .map((asset: any) => ({
                     id: asset.id, name: asset.name, realName: asset.real_name,
                     description: asset.description, imageUrl: asset.image_url, provider: asset.provider,
                 })),
-            locations: data.master_assets
+            locations: assets
                 .filter((asset: any) => asset.asset_type === 'location')
                 .map((asset: any) => ({
                     id: asset.id, name: asset.name, realName: asset.real_name,
                     description: asset.description, imageUrl: asset.image_url, provider: asset.provider,
                 })),
-            props: data.master_assets
+            props: assets
                 .filter((asset: any) => asset.asset_type === 'prop')
                 .map((asset: any) => ({
                     id: asset.id, name: asset.name, realName: asset.real_name,
@@ -156,26 +164,21 @@ export const getProjectById = async (id: string): Promise<Project | null> => {
 
 export const getProjectAudio = async (projectId: string): Promise<Blob | null> => {
     try {
-        // Tentar primeiro com .wav (padrão)
-        const { data, error } = await supabase.storage
-            .from('project-audio')
-            .download(`${projectId}.mp3`);
-
-        if (!error && data) return data;
-
-        // Tentar sem extensão (backup)
-        console.warn(`[Storage] Download .wav falhou para ${projectId}, tentando sem extensão...`);
-        const { data: data2, error: error2 } = await supabase.storage
-            .from('project-audio')
-            .download(`${projectId}`);
-
-        if (!error2 && data2) return data2;
-
-        if (error) throw error;
-        return null;
+        const fileRef = ref(storage, `project-audio/${projectId}.mp3`);
+        const response = await fetch(await getDownloadURL(fileRef));
+        if (!response.ok) throw new Error("Network response was not ok");
+        return await response.blob();
     } catch (e) {
         console.error("[Storage] Falha ao baixar áudio do projeto:", e);
-        return null;
+        try {
+            const backupRef = ref(storage, `project-audio/${projectId}`);
+            const response = await fetch(await getDownloadURL(backupRef));
+            if (!response.ok) throw new Error("Network response was not ok");
+            return await response.blob();
+        } catch(e2) {
+            console.error("[Storage] Backup áudio também falhou:", e2);
+            return null;
+        }
     }
 };
 
@@ -188,25 +191,35 @@ export const saveProject = async (
         console.log(`[Storage] Saving project ${projectId} (${project.name})...`);
 
         const projectData = {
-            id: projectId,
             name: project.name || `Projeto ${new Date().toLocaleString()}`,
             date: project.date || new Date().toISOString(),
-            context: project.context,
-            project_style: project.projectStyle,
-            image_style_name: project.image_style_name,
-            custom_style_prompt: project.customStylePrompt,
-            audio_url: project.audioUrl,
+            context: project.context || '',
+            project_style: project.projectStyle || '',
+            image_style_name: project.image_style_name || '',
+            custom_style_prompt: project.customStylePrompt || '',
+            audio_url: project.audioUrl || '',
             updated_at: new Date().toISOString(),
+            itemsCount: project.items?.length || 0
         };
 
-        const { error: projectError } = await supabase.from('projects').upsert(projectData);
-        if (projectError) throw projectError;
+        const docRef = doc(db, 'projects', projectId);
+        
+        // Assets e Items Batching
+        const batch = writeBatch(db);
+        
+        // Atomicity: put main project save into the batch!
+        batch.set(docRef, projectData, { merge: true });
 
-        console.log(`[Storage] Cleaning up old items...`);
-        await supabase.from('transcription_items').delete().eq('project_id', projectId);
-        await supabase.from('master_assets').delete().eq('project_id', projectId);
+        // Deletar antigos itens (Limitação do Firestore: precisa buscar primeiro)
+        const itemsQuery = query(collection(db, 'projects', projectId, 'transcription_items'));
+        const itemsSnap = await getDocs(itemsQuery);
+        itemsSnap.forEach(docSnap => batch.delete(docSnap.ref));
 
-        // (1) Extrair todos os assets para salvar e criar mapeamento de IDs
+        const assetsQuery = query(collection(db, 'projects', projectId, 'master_assets'));
+        const assetsSnap = await getDocs(assetsQuery);
+        assetsSnap.forEach(docSnap => batch.delete(docSnap.ref));
+
+        // Assets mapping
         const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
         const isValidUUID = (id: string | undefined) => !!id && UUID_REGEX.test(id);
 
@@ -216,21 +229,20 @@ export const saveProject = async (
             ...(project.props || []).map(prop => ({ ...prop, asset_type: 'prop' as const }))
         ];
 
-        // Mapeamento: ID_Antigo -> ID_Novo (UUID válido)
         const idMapping: Record<string, string> = {};
 
         const assetsToSave = assetsToProcess.map(asset => {
             if (!isValidUUID(asset.id)) {
-                const newId = crypto.randomUUID();
-                idMapping[asset.id] = newId;  // Guarda de onde veio e para onde vai
+                const newId = generateId();
+                idMapping[asset.id] = newId;  
                 return { ...asset, id: newId };
             }
             return asset;
         });
 
-        // (2) Preparar itens de transcrição, atualizando IDs antigos para novos UUIDs
+        // Add internal items to batch
         if (project.items && project.items.length > 0) {
-            const transcriptionData = project.items.map(item => {
+            project.items.forEach((item, index) => {
                 const extraData = {
                     medium: item.medium, subject: item.subject, action: item.action,
                     cenario: item.cenario, style: item.style, camera: item.camera,
@@ -238,17 +250,13 @@ export const saveProject = async (
                     selectedMotionEffect: item.selectedMotionEffect,
                 };
 
-                // Função helper para traduzir arrays de IDs usando o mapeamento
                 const translateIds = (ids: string[]) => ids.map(id => idMapping[id] || id);
-
-                // Função para limpar Base64 de URLs antes de salvar no Postgres
                 const cleanBase64 = (url: string | undefined): string | null => {
                     if (!url || url.startsWith('data:')) return null;
                     return url;
                 };
 
-                return {
-                    project_id: projectId,
+                let itemData: any = {
                     filename: item.filename,
                     start_timestamp: item.startTimestamp,
                     end_timestamp: item.endTimestamp,
@@ -269,42 +277,60 @@ export const saveProject = async (
                     location_ids: translateIds(item.locationIds || []),
                     prop_ids: translateIds(item.propIds || []),
                 };
+                
+                // Firestore recusa valores 'undefined', substituindo por 'null'
+                Object.keys(itemData).forEach(key => {
+                    if (itemData[key] === undefined) {
+                        itemData[key] = null;
+                    }
+                });
+
+                // USE DETERMINISTIC IDS to prevent duplication during concurrent auto-saves
+                const itemRef = doc(db, 'projects', projectId, 'transcription_items', `scene_${index}`);
+                batch.set(itemRef, itemData);
             });
-
-            const { error: itemsError } = await supabase.from('transcription_items').insert(transcriptionData);
-            if (itemsError) throw itemsError;
         }
 
-        // (3) Salvar Assets já com IDs corrigidos
         if (assetsToSave.length > 0) {
-            const assetData = assetsToSave.map(asset => ({
-                id: asset.id,
-                project_id: projectId, asset_type: asset.asset_type, name: asset.name,
-                real_name: asset.realName,
-                description: asset.description,
-                image_url: asset.imageUrl, provider: asset.provider || 'google',
-            }));
-            const { error: assetError } = await supabase.from('master_assets').insert(assetData);
-            if (assetError) throw assetError;
+            assetsToSave.forEach(asset => {
+                let assetData: any = {
+                    asset_type: asset.asset_type, 
+                    name: asset.name,
+                    real_name: asset.realName,
+                    description: asset.description,
+                    image_url: asset.imageUrl, 
+                    provider: asset.provider || 'google',
+                };
+                
+                Object.keys(assetData).forEach(key => {
+                    if (assetData[key] === undefined) {
+                        assetData[key] = null;
+                    }
+                });
+
+                const assetRef = doc(db, 'projects', projectId, 'master_assets', asset.id);
+                batch.set(assetRef, assetData);
+            });
         }
 
+        await batch.commit();
 
         if (audioFile && audioFile instanceof Blob) {
             console.log(`[Storage] Uploading audio file (${audioFile.size} bytes)...`);
-            const { error: uploadError } = await supabase.storage.from('project-audio').upload(`${projectId}.mp3`, audioFile, {
-                upsert: true, contentType: audioFile.type || 'audio/mpeg',
-            });
-            if (uploadError) {
+            const audioRef = ref(storage, `project-audio/${projectId}.mp3`);
+            
+            try {
+                await uploadBytes(audioRef, audioFile, {
+                    contentType: audioFile.type || 'audio/mpeg',
+                });
+                const url = await getDownloadURL(audioRef);
+                console.log(`[Storage] Audio public URL generated: ${url}`);
+                project.audioUrl = url;
+                await setDoc(docRef, { audio_url: url }, { merge: true });
+            } catch (uploadError: any) {
                 console.error("[Storage] Failed to upload audio:", uploadError);
-                if (uploadError.message.includes("size") || uploadError.message.includes("limit")) {
-                    alert(`Falha ao salvar o áudio na nuvem (${(audioFile.size / 1024 / 1024).toFixed(1)}MB). Provavelmente excede o limite do Supabase Free (50MB). O projeto foi salvo, mas o áudio original será perdido se fechar a página. Reduza o áudio gravando em .mp3.`);
-                }
-            } else {
-                const { data: urlData } = supabase.storage.from('project-audio').getPublicUrl(`${projectId}.mp3`);
-                if (urlData?.publicUrl) {
-                    console.log(`[Storage] Audio public URL generated: ${urlData.publicUrl}`);
-                    project.audioUrl = urlData.publicUrl;
-                    await supabase.from('projects').update({ audio_url: urlData.publicUrl }).eq('id', projectId);
+                if (uploadError.message?.includes("quota") || uploadError.message?.includes("limit")) {
+                    alert(`Falha ao salvar o áudio na nuvem (${(audioFile.size / 1024 / 1024).toFixed(1)}MB). O projeto foi salvo, mas o áudio original será perdido se fechar a página. Reduza o áudio gravando em .mp3.`);
                 }
             }
         }
@@ -321,31 +347,49 @@ export const deleteProject = async (id: string): Promise<boolean> => {
     try {
         console.log(`[Storage] Iniciando exclusão em cascata do projeto: ${id}`);
 
-        // 1. Limpar Banco de Dados (Filhos Primários via SQL)
-        await supabase.from('transcription_items').delete().eq('project_id', id);
-        await supabase.from('master_assets').delete().eq('project_id', id);
+        const batch = writeBatch(db);
 
-        // 2. Limpar Bucket de Áudio (project-audio)
-        await supabase.storage.from('project-audio').remove([`${id}.mp3`, `${id}.wav`, `${id}`]);
+        // Delete children
+        const itemsQuery = query(collection(db, 'projects', id, 'transcription_items'));
+        const itemsSnap = await getDocs(itemsQuery);
+        itemsSnap.forEach(docSnap => batch.delete(docSnap.ref));
+
+        const assetsQuery = query(collection(db, 'projects', id, 'master_assets'));
+        const assetsSnap = await getDocs(assetsQuery);
+        assetsSnap.forEach(docSnap => batch.delete(docSnap.ref));
+
+        // Delete main document
+        batch.delete(doc(db, 'projects', id));
+        await batch.commit();
+
+        // Delete audio
+        try {
+            await deleteObject(ref(storage, `project-audio/${id}.mp3`));
+        } catch(e) {}
+        try {
+            await deleteObject(ref(storage, `project-audio/${id}.wav`));
+        } catch(e) {}
+        try {
+            await deleteObject(ref(storage, `project-audio/${id}`));
+        } catch(e) {}
+
         console.log(`[Storage] Áudio removido.`);
 
-        // 3. Limpar Bucket de Imagens (project-images/[ID_DO_PROJETO]/*)
-        // O Supabase precisa que listemos os arquivos da pasta antes de apagar
-        const { data: files } = await supabase.storage.from('project-images').list(id);
-        if (files && files.length > 0) {
-            const filePaths = files.map(x => `${id}/${x.name}`);
-            const { error: storageErr } = await supabase.storage.from('project-images').remove(filePaths);
-            if (storageErr) {
-                console.error("[Storage] Falha ao esvaziar a pasta de imagens do projeto:", storageErr);
-            } else {
-                console.log(`[Storage] Imagens removidas: ${filePaths.length} arquivos deletados.`);
-            }
+        // Delete images
+        try {
+            const imagesRef = ref(storage, `project-images/${id}`);
+            const imagesList = await listAll(imagesRef);
+            await Promise.all(imagesList.items.map(item => deleteObject(item)));
+            console.log(`[Storage] Imagens removidas.`);
+        } catch(storageErr) {
+            console.warn("[Storage] Falha ao esvaziar a pasta de imagens do projeto:", storageErr);
         }
-
-        // 4. Limpar Projeto Mestre
-        const { error } = await supabase.from('projects').delete().eq('id', id);
-        if (error) throw error;
         
+        // Remove project folder root if possible
+        try {
+            await deleteObject(ref(storage, `project-images/${id}`));
+        } catch(e) {}
+
         console.log(`[Storage] Projeto ${id} erradicado com sucesso.`);
         return true;
     } catch (error) {
@@ -358,13 +402,18 @@ export const deleteProject = async (id: string): Promise<boolean> => {
 export const getUsageFromDB = async (): Promise<DailyUsage> => {
     const todayKey = new Date().toISOString().split('T')[0];
     try {
-        const { data } = await supabase.from('daily_usage').select('*').eq('date', todayKey).maybeSingle();
-        return {
-            date: todayKey, text: data?.text || 0, image: data?.image || 0, external: data?.external || 0,
-            costUSD: data?.cost_usd ? parseFloat(data.cost_usd) : 0,
-            costBRL: data?.cost_brl ? parseFloat(data.cost_brl) : 0,
-        };
-    } catch (e) { return { date: todayKey, text: 0, image: 0, external: 0, costUSD: 0, costBRL: 0 }; }
+        const docRef = doc(db, 'daily_usage', todayKey);
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+            const data = docSnap.data();
+            return {
+                date: todayKey, text: data?.text || 0, image: data?.image || 0, external: data?.external || 0,
+                costUSD: data?.cost_usd ? parseFloat(data.cost_usd) : 0,
+                costBRL: data?.cost_brl ? parseFloat(data.cost_brl) : 0,
+            };
+        }
+    } catch (e) { }
+    return { date: todayKey, text: 0, image: 0, external: 0, costUSD: 0, costBRL: 0 };
 };
 
 export const incrementUsageInDB = async (type: 'text' | 'image' | 'external', costUSD: number = 0, costBRL: number = 0): Promise<DailyUsage> => {
@@ -377,94 +426,119 @@ export const incrementUsageInDB = async (type: 'text' | 'image' | 'external', co
         cost_usd: current.costUSD + costUSD,
         cost_brl: current.costBRL + costBRL,
     };
-    await supabase.from('daily_usage').upsert(updatedDB, { onConflict: 'date' });
+    await setDoc(doc(db, 'daily_usage', current.date), updatedDB, { merge: true });
     return { ...current, ...updatedDB, costUSD: updatedDB.cost_usd, costBRL: updatedDB.cost_brl };
 };
 
 // ==================== SETTINGS ====================
 export const saveSettingsToDB = async (settings: AppSettings): Promise<void> => {
-    const { data: existing } = await supabase.from('app_settings').select('id').limit(1).single();
-    if (existing) {
-        await supabase.from('app_settings').update({ settings_data: settings }).eq('id', existing.id);
-    } else {
-        await supabase.from('app_settings').insert({ settings_data: settings });
-    }
+    await setDoc(doc(db, 'app_settings', 'singleton'), { settings_data: settings }, { merge: true });
 };
 
 export const getSettingsFromDB = async (): Promise<AppSettings | null> => {
     try {
-        const { data } = await supabase.from('app_settings').select('settings_data').limit(1).single();
-        return data?.settings_data || null;
+        const docRef = doc(db, 'app_settings', 'singleton');
+        const docSnap = await getDoc(docRef);
+        return docSnap.exists() ? docSnap.data().settings_data : null;
     } catch (e) { return null; }
 };
 
 // ==================== STYLE EXAMPLES ====================
 export const saveStyleExample = async (example: StyleExample): Promise<void> => {
-    await supabase.from('style_examples').upsert({
+    // Benchmark master mantém persistência separada, estilos normais sobrescrevem uns aos outros
+    const docId = example.styleId === 'benchmark_master' 
+        ? `benchmark_${example.providerId}` 
+        : example.styleId;
+
+    await setDoc(doc(db, 'style_examples', docId), {
         style_id: example.styleId,
+        provider_id: example.providerId || 'google-imagen',
         image_url: example.imageUrl,
         prompt: example.prompt,
         timestamp: example.timestamp,
-    }, { onConflict: 'style_id' });
+    }, { merge: true });
 };
 
 export const getStyleExamples = async (): Promise<StyleExample[]> => {
-    const { data } = await supabase.from('style_examples').select('*');
-    return (data || []).map((item: any) => ({
-        styleId: item.style_id,
-        imageUrl: item.image_url,
-        prompt: item.prompt,
-        timestamp: item.timestamp,
-    }));
+    const q = collection(db, 'style_examples');
+    const querySnapshot = await getDocs(q);
+    return querySnapshot.docs.map(doc => {
+        const item = doc.data();
+        return {
+            styleId: item.style_id,
+            providerId: item.provider_id,
+            imageUrl: item.image_url,
+            prompt: item.prompt,
+            timestamp: item.timestamp,
+        };
+    });
 };
 
 export const clearStyleExamples = async (): Promise<void> => {
-    await supabase.from('style_examples').delete().neq('style_id', 'none');
+    const q = query(collection(db, 'style_examples'), where('style_id', '!=', 'none'));
+    const querySnapshot = await getDocs(q);
+    const batch = writeBatch(db);
+    querySnapshot.forEach(docSnap => batch.delete(docSnap.ref));
+    await batch.commit();
 };
 
 // ==================== IMAGE STYLE PROMPTS ====================
 export const getImageStylePrompts = async (): Promise<ImageStyleOption[]> => {
-    const { data } = await supabase.from('image_style_prompts').select('*').eq('is_active', true).order('display_order');
-    const items = (data || []).map(item => ({ id: item.id, label: item.label, prompt: item.prompt }));
-    // Remove duplicates by label
+    const q = query(collection(db, 'image_style_prompts'), where('is_active', '==', true));
+    const querySnapshot = await getDocs(q);
+    let items = querySnapshot.docs.map(doc => {
+        const item = doc.data();
+        return { display_order: item.display_order || 0, id: item.id || doc.id, label: item.label, prompt: item.prompt };
+    });
+    items.sort((a, b) => a.display_order - b.display_order);
     const uniqueItems = items.filter((v, i, a) => a.findIndex(t => (t.label === v.label)) === i);
     return uniqueItems;
 };
 
 export const saveImageStylePrompt = async (style: ImageStyleOption, displayOrder?: number): Promise<void> => {
-    await supabase.from('image_style_prompts').upsert({ id: style.id, label: style.label, prompt: style.prompt, display_order: displayOrder || 0, is_active: true });
+    await setDoc(doc(db, 'image_style_prompts', style.id), { id: style.id, label: style.label, prompt: style.prompt, display_order: displayOrder || 0, is_active: true }, { merge: true });
 };
 
 export const deleteImageStylePrompt = async (id: string): Promise<void> => {
-    await supabase.from('image_style_prompts').delete().eq('id', id);
+    await deleteDoc(doc(db, 'image_style_prompts', id));
 };
 
 export const saveImageStylePromptsBatch = async (styles: ImageStyleOption[]): Promise<void> => {
-    const data = styles.map((s, index) => ({
-        id: s.id,
-        label: s.label,
-        prompt: s.prompt,
-        display_order: index,
-        is_active: true
-    }));
-    await supabase.from('image_style_prompts').upsert(data);
+    const batch = writeBatch(db);
+    styles.forEach((s, index) => {
+        const docRef = doc(db, 'image_style_prompts', s.id);
+        batch.set(docRef, {
+            id: s.id,
+            label: s.label,
+            prompt: s.prompt,
+            display_order: index,
+            is_active: true
+        });
+    });
+    await batch.commit();
 };
 
-// ==================== SUBTITLE PRESETS ====================
 export const getSubtitlePresets = async (): Promise<SubtitleStyleOption[]> => {
-    const { data } = await supabase.from('subtitle_presets').select('*').eq('is_active', true).order('display_order');
-    return (data || []).map(item => ({
-        id: item.id, label: item.label, maxWordsPerLine: item.max_words_per_line, fontSize: item.font_size,
-        fontFamily: item.font_family, fontWeight: item.font_weight, textColor: item.text_color,
-        strokeColor: item.stroke_color, strokeWidth: item.stroke_width, shadowColor: item.shadow_color,
-        shadowBlur: item.shadow_blur, shadowOpacity: parseFloat(item.shadow_opacity),
-        shadowDistance: item.shadow_distance, shadowAngle: item.shadow_angle, padding: item.padding,
-        yPosition: item.y_position, isBold: item.is_bold, isItalic: item.is_italic, textCasing: item.text_casing
-    }));
+    const q = query(collection(db, 'subtitle_presets'), where('is_active', '==', true));
+    const querySnapshot = await getDocs(q);
+    let items = querySnapshot.docs.map(doc => {
+        const item = doc.data();
+        return {
+            id: item.id || doc.id, label: item.label, maxWordsPerLine: item.max_words_per_line, fontSize: item.font_size,
+            fontFamily: item.font_family, fontWeight: item.font_weight, textColor: item.text_color,
+            strokeColor: item.stroke_color, strokeWidth: item.stroke_width, shadowColor: item.shadow_color,
+            shadowBlur: item.shadow_blur, shadowOpacity: parseFloat(item.shadow_opacity),
+            shadowDistance: item.shadow_distance, shadowAngle: item.shadow_angle, padding: item.padding,
+            yPosition: item.y_position, isBold: item.is_bold, isItalic: item.is_italic, textCasing: item.text_casing,
+            display_order: item.display_order || 0
+        };
+    });
+    items.sort((a, b) => a.display_order - b.display_order);
+    return items;
 };
 
 export const saveSubtitlePreset = async (preset: SubtitleStyleOption, displayOrder?: number): Promise<void> => {
-    await supabase.from('subtitle_presets').upsert({
+    await setDoc(doc(db, 'subtitle_presets', preset.id), {
         id: preset.id, label: preset.label, max_words_per_line: preset.maxWordsPerLine, font_size: preset.fontSize,
         font_family: preset.fontFamily, font_weight: preset.fontWeight, text_color: preset.textColor,
         stroke_color: preset.strokeColor, stroke_width: preset.strokeWidth, shadow_color: preset.shadowColor,
@@ -472,83 +546,94 @@ export const saveSubtitlePreset = async (preset: SubtitleStyleOption, displayOrd
         shadow_angle: preset.shadowAngle, padding: preset.padding, y_position: preset.yPosition,
         is_bold: preset.isBold, is_italic: preset.isItalic, text_casing: preset.textCasing,
         display_order: displayOrder || 0, is_active: true
-    });
+    }, { merge: true });
 };
 
 export const saveSubtitlePresetsBatch = async (presets: SubtitleStyleOption[]): Promise<void> => {
-    const data = presets.map((p, index) => ({
-        id: p.id, label: p.label, max_words_per_line: p.maxWordsPerLine, font_size: p.fontSize,
-        font_family: p.fontFamily, font_weight: p.fontWeight, text_color: p.textColor,
-        stroke_color: p.strokeColor, stroke_width: p.strokeWidth, shadow_color: p.shadowColor,
-        shadow_blur: p.shadowBlur, shadow_opacity: p.shadowOpacity, shadow_distance: p.shadowDistance,
-        shadow_angle: p.shadowAngle, padding: p.padding, y_position: p.yPosition,
-        is_bold: p.isBold, is_italic: p.isItalic, text_casing: p.textCasing,
-        display_order: index, is_active: true
-    }));
-    await supabase.from('subtitle_presets').upsert(data);
+    const batch = writeBatch(db);
+    presets.forEach((p, index) => {
+        const docRef = doc(db, 'subtitle_presets', p.id);
+        batch.set(docRef, {
+            id: p.id, label: p.label, max_words_per_line: p.maxWordsPerLine, font_size: p.fontSize,
+            font_family: p.fontFamily, font_weight: p.fontWeight, text_color: p.textColor,
+            stroke_color: p.strokeColor, stroke_width: p.strokeWidth, shadow_color: p.shadowColor,
+            shadow_blur: p.shadowBlur, shadow_opacity: p.shadowOpacity, shadow_distance: p.shadowDistance,
+            shadow_angle: p.shadowAngle, padding: p.padding, y_position: p.yPosition,
+            is_bold: p.isBold, is_italic: p.isItalic, text_casing: p.textCasing,
+            display_order: index, is_active: true
+        });
+    });
+    await batch.commit();
 };
 
 export const deleteSubtitlePreset = async (id: string): Promise<void> => {
-    await supabase.from('subtitle_presets').delete().eq('id', id);
+    await deleteDoc(doc(db, 'subtitle_presets', id));
 };
 
 // ==================== MOTION EFFECTS ====================
 export const getMotionEffects = async (): Promise<MotionEffect[]> => {
-    const { data } = await supabase.from('motion_effects').select('*').eq('is_active', true).order('display_order');
-    return (data || []).map(item => ({ id: item.id, name: item.name, description: item.description, instruction: item.instruction }));
+    const q = query(collection(db, 'motion_effects'), where('is_active', '==', true));
+    const querySnapshot = await getDocs(q);
+    let items = querySnapshot.docs.map(doc => {
+        const item = doc.data();
+        return { display_order: item.display_order || 0, id: item.id || doc.id, name: item.name, description: item.description, instruction: item.instruction };
+    });
+    items.sort((a, b) => a.display_order - b.display_order);
+    return items;
 };
 
 export const saveMotionEffectsBatch = async (effects: MotionEffect[]): Promise<void> => {
-    const data = effects.map((e, index) => ({
-        id: e.id,
-        name: e.name,
-        description: e.description,
-        instruction: e.instruction,
-        display_order: index,
-        is_active: true
-    }));
-    await supabase.from('motion_effects').upsert(data);
+    const batch = writeBatch(db);
+    effects.forEach((e, index) => {
+        const docRef = doc(db, 'motion_effects', e.id);
+        batch.set(docRef, {
+            id: e.id,
+            name: e.name,
+            description: e.description,
+            instruction: e.instruction,
+            display_order: index,
+            is_active: true
+        });
+    });
+    await batch.commit();
 };
 
 export const deleteMotionEffect = async (id: string): Promise<void> => {
-    await supabase.from('motion_effects').delete().eq('id', id);
+    await deleteDoc(doc(db, 'motion_effects', id));
 };
 
 export const saveMotionEffect = async (effect: MotionEffect, order: number): Promise<void> => {
-    await supabase.from('motion_effects').upsert({
+    await setDoc(doc(db, 'motion_effects', effect.id), {
         id: effect.id,
         name: effect.name,
         description: effect.description,
         instruction: effect.instruction,
         display_order: order,
         is_active: true
-    });
+    }, { merge: true });
 };
 
 export const uploadProjectFile = async (projectId: string, file: File | Blob, type: string, filename?: string): Promise<string> => {
     try {
-        const bucket = type === 'audio' ? 'project-audio' : 'project-images';
+        const folder = type === 'audio' ? 'project-audio' : 'project-images';
         const rawExt = filename?.split('.').pop() || 'png';
         const ext = rawExt.toLowerCase();
 
-        // Sanitizar nome do arquivo: remover caracteres especiais e espaços
         const baseName = filename ? filename.replace(`.${rawExt}`, '') : `file_${Date.now()}`;
         const sanitizedName = baseName
-            .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // remove acentos
-            .replace(/[^a-z0-9]/gi, '_') // troca especiais por underline
+            .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+            .replace(/[^a-z0-9]/gi, '_')
             .toLowerCase();
 
         const finalFilename = `${sanitizedName}.${ext}`;
-        const path = type === 'audio' ? `${projectId}.mp3` : `${projectId}/${finalFilename}`;
+        const path = type === 'audio' ? `project-audio/${projectId}.${ext}` : `${folder}/${projectId}/${finalFilename}`;
 
-        const { error } = await supabase.storage.from(bucket).upload(path, file, {
-            upsert: true,
+        const fileRef = ref(storage, path);
+        await uploadBytes(fileRef, file, {
             contentType: file instanceof File ? file.type : (type === 'audio' ? 'audio/mpeg' : 'image/png')
         });
-        if (error) throw error;
 
-        const { data } = supabase.storage.from(bucket).getPublicUrl(path);
-        return data.publicUrl;
+        return await getDownloadURL(fileRef);
     } catch (e) {
         console.error('[Storage] uploadProjectFile failed:', e);
         return '';
@@ -556,13 +641,14 @@ export const uploadProjectFile = async (projectId: string, file: File | Blob, ty
 };
 
 export const downloadProjectFile = async (projectId: string, type: string): Promise<Blob | null> => {
-    const bucket = type === 'audio' ? 'project-audio' : 'project-images';
+    const folder = type === 'audio' ? 'project-audio' : 'project-images';
     const ext = type === 'audio' ? 'mp3' : 'png';
-    const path = `${projectId}.${ext}`;
+    const path = `${folder}/${projectId}.${ext}`;
     try {
-        const { data, error } = await supabase.storage.from(bucket).download(path);
-        if (error) throw error;
-        return data;
+        const fileRef = ref(storage, path);
+        const response = await fetch(await getDownloadURL(fileRef));
+        if (!response.ok) throw new Error("Not ok");
+        return await response.blob();
     } catch (e) {
         console.error('[Storage] downloadProjectFile failed:', e);
         return null;
@@ -570,8 +656,12 @@ export const downloadProjectFile = async (projectId: string, type: string): Prom
 };
 
 export const getProjectFileUrl = async (projectId: string, type: string, filename?: string): Promise<string | null> => {
-    const bucket = type === 'audio' ? 'project-audio' : 'project-images';
-    const path = type === 'audio' ? `${projectId}.mp3` : `${projectId}/${filename}`;
-    const { data } = supabase.storage.from(bucket).getPublicUrl(path);
-    return data?.publicUrl || null;
+    try {
+        const folder = type === 'audio' ? 'project-audio' : 'project-images';
+        const path = type === 'audio' ? `project-audio/${projectId}.mp3` : `${folder}/${projectId}/${filename}`;
+        const fileRef = ref(storage, path);
+        return await getDownloadURL(fileRef);
+    } catch (e) {
+        return null;
+    }
 };

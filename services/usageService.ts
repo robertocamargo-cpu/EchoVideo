@@ -1,4 +1,6 @@
-import { getUsageFromDB, incrementUsageInDB, supabase } from "./storageService";
+import { getUsageFromDB, incrementUsageInDB } from "./storageService";
+import { db } from "./firebaseClient";
+import { collection, addDoc } from "firebase/firestore";
 
 export interface DailyUsage {
   date: string;
@@ -9,7 +11,6 @@ export interface DailyUsage {
   costBRL: number;
 }
 
-// Now purely a bridge to the DB.
 export const getDailyUsage = (): DailyUsage => {
   return {
     date: new Date().toISOString().split('T')[0],
@@ -23,11 +24,8 @@ export const getDailyUsage = (): DailyUsage => {
 
 export const fetchRealUsage = async (): Promise<DailyUsage> => {
   return await getUsageFromDB();
-}
+};
 
-/**
- * Busca cotação USD -> BRL
- */
 export const getExchangeRate = async (): Promise<number> => {
   try {
     const response = await fetch('https://api.exchangerate-api.com/v4/latest/USD');
@@ -37,31 +35,25 @@ export const getExchangeRate = async (): Promise<number> => {
     console.warn("Erro ao buscar cotação de câmbio (usando fallback 5.80):", error);
     return 5.80; // Fallback seguro e realista
   }
-}
+};
 
-/**
- * Registra um uso de API com custo associado
- */
 export const logApiCost = async (type: 'text' | 'image' | 'video' | 'ia_effects', model: string, costUSD: number, metadata: any = {}) => {
   try {
     const rate = await getExchangeRate();
     const costBRL = costUSD * rate;
 
-    // Salvar no banco (tabela granular de logs)
-    const { error } = await supabase
-      .from('api_usage_log')
-      .insert([{
+    try {
+      await addDoc(collection(db, 'api_usage_log'), {
         operation_type: type,
         model_used: model,
         cost_usd: costUSD,
-        metadata: { ...metadata, rate_used: rate, cost_brl: costBRL }
-      }]);
-
-    if (error) {
+        metadata: { ...metadata, rate_used: rate, cost_brl: costBRL },
+        created_at: new Date().toISOString()
+      });
+    } catch (error: any) {
       console.warn("Tabela api_usage_log não encontrada ou erro:", error.message);
     }
 
-    // Incrementar o acumulado diário
     await incrementUsageInDB(
       type === 'text' ? 'text' : (type === 'image' ? 'image' : 'external'),
       costUSD,
@@ -72,7 +64,7 @@ export const logApiCost = async (type: 'text' | 'image' | 'video' | 'ia_effects'
   } catch (error) {
     console.error("Erro ao logar custo de API:", error);
   }
-}
+};
 
 export const incrementUsage = async (type: 'text' | 'image' | 'external', costUSD: number = 0) => {
   const rate = await getExchangeRate();

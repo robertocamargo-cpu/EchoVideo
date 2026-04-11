@@ -34,3 +34,7 @@ yarn-error.log*
 .idea/
 *.swp
 *.swo
+
+# Renderização
+temp_render/
+*.mp4

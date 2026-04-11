@@ -1,3 +1,4 @@
+console.log("🚀 [VideoService] Versão 4.0 (Anti-Alpha-Bug) Ativada - Cache Limpo!");
 
 import { TranscriptionItem, TransitionType, SubtitleStyleOption, MotionEffect } from "../types";
 import { createSilentAudioBlob } from "./audioService";
@@ -204,7 +205,8 @@ const drawSingleSource = (
     index: number,
     progress: number,
     alpha: number = 1.0,
-    motionEffect?: MotionEffect
+    motionEffect?: MotionEffect,
+    availableEffects?: MotionEffect[]
 ) => {
     if (!source || alpha <= 0) return;
     ctx.save();
@@ -215,31 +217,31 @@ const drawSingleSource = (
     if (sWidth === 0 || sHeight === 0) { ctx.restore(); return; }
 
     const coverScale = Math.max(width / sWidth, height / sHeight);
-    // Aplicar zoom de 15% em TODOS os vídeos para cortar marcas d'água (como a do Veo)
-    let finalScale = isVideo ? coverScale * 1.15 : coverScale;
+    // Remover zoom de 1.15% em vídeos (Causa lentidão e lag no browser)
+    let finalScale = coverScale;
     let offsetX = 0;
     let offsetY = 0;
 
-    const moveRangeX = width * 0.08;
-    const moveRangeY = height * 0.08;
-
     if (!isVideo) {
-        if (motionEffect) {
-            // Aplicar efeito customizado baseado na instrução técnica
-            const params: EffectParams = parseEffectInstruction(motionEffect.instruction);
+        let params: EffectParams | null = null;
+        
+        // 1. Tentar ler o efeito pré-selecionado (vinculado ao índice global da cena)
+        if (motionEffect && motionEffect.instruction) {
+            params = parseEffectInstruction(motionEffect.instruction);
+        } 
+        
+        // 2. Fallback: Se não tem efeito específico, tentar pegar um aleatório da biblioteca disponível
+        if (!params && availableEffects && availableEffects.length > 0) {
+            const fallbackEffect = availableEffects[Math.floor(Math.random() * availableEffects.length)];
+            if (fallbackEffect.instruction) params = parseEffectInstruction(fallbackEffect.instruction);
+        }
 
-            // Calcular escala baseada nos parâmetros
+        if (params) {
             const scaleRange = params.scaleEnd - params.scaleStart;
             finalScale = coverScale * (params.scaleStart + (scaleRange * progress));
+            offsetX = width * (params.moveXStart + ((params.moveXEnd - params.moveXStart) * progress));
+            offsetY = height * (params.moveYStart + ((params.moveYEnd - params.moveYStart) * progress));
 
-            // Calcular offset baseado nos ranges precisos
-            const currentXPercent = params.moveXStart + ((params.moveXEnd - params.moveXStart) * progress);
-            const currentYPercent = params.moveYStart + ((params.moveYEnd - params.moveYStart) * progress);
-
-            offsetX = width * currentXPercent;
-            offsetY = height * currentYPercent;
-
-            // Aplicar rotação se especificada
             if (params.rotation) {
                 const centerX = width / 2;
                 const centerY = height / 2;
@@ -248,9 +250,10 @@ const drawSingleSource = (
                 ctx.translate(-centerX, -centerY);
             }
         } else {
-            // Fallback para efeito padrão suave
-            finalScale = coverScale * (1.15 + (0.10 * progress));
-            offsetX = width * (-0.02 + (0.04 * progress)); // -2% a +2%
+            // 3. FALLBACK ABSOLUTO: Zoom suave padrão 1.1x -> 1.25x para evitar imagem estática
+            const zoomAmount = 0.15;
+            finalScale = coverScale * (1.10 + (zoomAmount * progress));
+            offsetX = 0;
             offsetY = 0;
         }
     }
@@ -262,14 +265,10 @@ const drawSingleSource = (
 
     if (isVideo) {
         const v = source as HTMLVideoElement;
-        // NÃO fazer seek por frame - isso causa o efeito de "sopapo".
-        // Apenas garantir que o vídeo está tocando. O seek inicial é feito ao ativar a cena.
+        // NÃO fazer seek agressivo por frame - isso causa o efeito de "soquinho" (jitter).
+        // Apenas garantir que o vídeo está tocando. Sincronia fina é feita no renderLoop via threshold.
         v.muted = true;
-        if (v.paused) {
-            // Seek suave: só busca posicão inicial se o vídeo acabou de ser ativado (currentTime == 0)
-            if (v.currentTime < 0.05) v.currentTime = 0;
-            v.play().catch(() => {});
-        }
+        if (v.paused) v.play().catch(() => {});
     }
 
     ctx.drawImage(source, x, y, targetWidth, targetHeight);
@@ -360,6 +359,7 @@ export const generateTimelineVideo = async (
             allSubtitleChunks.sort((a, b) => a.startSeconds - b.startSeconds);
 
             const loadedAssets = new Map<number, HTMLImageElement | HTMLVideoElement>();
+            const assetUrls = new Map<number, string>(); // URLs para recarregar depois
             let loadedCount = 0;
             const totalToLoad = sortedItems.filter(item => item.importedVideoUrl || item.imageUrl || item.googleImageUrl || item.pollinationsImageUrl || item.importedImageUrl).length;
 
@@ -368,6 +368,7 @@ export const generateTimelineVideo = async (
                 await Promise.all(sortedItems.map((item, idx) => {
                     const url = item.importedVideoUrl || item.imageUrl || item.googleImageUrl || item.pollinationsImageUrl || item.importedImageUrl;
                     if (!url) return Promise.resolve();
+                    assetUrls.set(idx, url);
                     return new Promise<void>((res) => {
                         const timeout = setTimeout(() => {
                             console.warn(`[VideoService] Timeout carregando mídia da cena ${idx + 1}`);
@@ -396,7 +397,8 @@ export const generateTimelineVideo = async (
                             if (url.includes('data:')) {
                                 img.src = url;
                             } else {
-                                const cleanUrl = `${url.split('?')[0]}?cb=${Date.now()}_${idx}`;
+                                // Preservar os query parameters do Firebase (Tokens, alt=media, etc)
+                                const cleanUrl = url.includes('?') ? `${url}&cb=${Date.now()}_${idx}` : `${url}?cb=${Date.now()}_${idx}`;
                                 fetch(cleanUrl)
                                     .then(r => {
                                         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -411,7 +413,7 @@ export const generateTimelineVideo = async (
                                     .catch(() => {
                                         console.warn(`[VideoService] fetch falhou para cena ${idx + 1}, tentando carregamento direto...`);
                                         img.crossOrigin = "anonymous";
-                                        img.src = cleanUrl;
+                                        img.src = url; // Usa a url original, não a limpa
                                     });
                             }
                         }
@@ -419,16 +421,39 @@ export const generateTimelineVideo = async (
                 }));
             }
 
+            const loadAssetForScene = async (idx: number): Promise<HTMLImageElement | HTMLVideoElement | null> => {
+                if (loadedAssets.has(idx)) return loadedAssets.get(idx)!;
+                const url = assetUrls.get(idx);
+                if (!url) return null;
+                
+                const isVideo = sortedItems[idx]?.importedVideoUrl !== undefined;
+                return new Promise((res) => {
+                    if (isVideo) {
+                        const v = document.createElement('video');
+                        v.src = url; v.muted = true; v.volume = 0; v.crossOrigin = "anonymous"; v.playsInline = true; v.loop = true;
+                        v.onloadeddata = () => { v.volume = 0; res(v); };
+                        v.onerror = () => res(null);
+                        v.load();
+                    } else {
+                        const img = new Image();
+                        img.crossOrigin = "anonymous";
+                        img.onload = () => res(img);
+                        img.onerror = () => res(null);
+                        img.src = url;
+                    }
+                });
+            };
+
             const streamDestination = audioContext.createMediaStreamDestination();
             const supportedType = getSupportedMimeType();
 
-            // Reduzindo o bitrate para 12Mbps para maior estabilidade e compatibilidade
+            // Reduzindo o bitrate para 6Mbps para maior estabilidade e fluidez (Fim do soquinho)
             const recorder = new MediaRecorder(new MediaStream([
-                ...canvas.captureStream(30).getVideoTracks(), // Volta para 30 FPS fixos para estabilidade de gravação
+                ...canvas.captureStream(30).getVideoTracks(), 
                 ...streamDestination.stream.getAudioTracks()
             ]), {
                 mimeType: supportedType || undefined,
-                videoBitsPerSecond: 12000000
+                videoBitsPerSecond: 6000000
             });
 
             const chunks: Blob[] = [];
@@ -455,6 +480,7 @@ export const generateTimelineVideo = async (
             let lastProgressUpdate = 0;
             let animationFrameId: number | null = null;
             let lastActiveIdx = -1; // Rastreia a cena ativa anterior para seek de entrada único
+            let preloadedNextIdx = -1; // Pré-carregou a próxima cena?
 
             const renderLoop = () => {
                 if (isFinished) return;
@@ -470,6 +496,17 @@ export const generateTimelineVideo = async (
                     
                     const transitionDuration = 0.5;
                     const effectiveDuration = maxDuration ? Math.min(audioDuration, maxDuration) : audioDuration;
+
+                    // Safety: force stop if we're 10% past effectiveDuration (handles audioContext clock drift)
+                    if (elapsed >= effectiveDuration * 1.1) {
+                        console.warn('[VideoService] Safety timeout reached, forcing stop');
+                        isFinished = true;
+                        if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
+                        if (recorder.state === 'recording') {
+                            setTimeout(() => recorder.stop(), 200);
+                        }
+                        return;
+                    }
 
                     if (elapsed >= effectiveDuration) {
                         isFinished = true;
@@ -510,56 +547,42 @@ export const generateTimelineVideo = async (
                         // Isso permite que o decodificador do navegador rode mais solto e fluido.
                         const activeAsset = loadedAssets.get(activeIdx);
                         let activeLoopAlpha = 1.0;
+                        let nextLoopAlpha = 1.0; // CORREÇÃO: Declarado para evitar ReferenceError
                         const LOOP_FADE = 0.3; // 300ms de suavização no loop
 
+                        // Pré-carregar próxima cena 2 segundos antes da transição
+                        const timeToNextScene = nextItem ? (nextItem.startSeconds - elapsed) : 999;
+                        if (nextItem && timeToNextScene < 2 && preloadedNextIdx !== activeIdx + 1) {
+                            loadAssetForScene(activeIdx + 1).then(asset => {
+                                if (asset) loadedAssets.set(activeIdx + 1, asset);
+                            });
+                            preloadedNextIdx = activeIdx + 1;
+                        }
+
                         if (activeAsset instanceof HTMLVideoElement) {
-                            if (activeAsset.paused) activeAsset.play().catch(() => {});
+                            // SYNC DETERMINÍSTICO SUAVE: 
+                            // Solo forçamos o seek se o desvio for maior que 100ms.
+                            // Isso elimina o jitter (soquinho) causado por seeks constantes de hardware.
+                            const targetTime = Math.max(0, elapsed - currentItem.startSeconds);
+                            const drift = Math.abs(activeAsset.currentTime - targetTime);
                             
-                            const vDur = activeAsset.duration || 0.1;
-                            const vTime = sceneElapsed % vDur;
-
-                            // SYNC DETERMINÍSTICO PARA VÍDEOS COM THRESHOLD:
-                            // Só forçamos o seek se o vídeo se desviar mais de 100ms do tempo alvo do áudio.
-                            const drift = Math.abs(activeAsset.currentTime - vTime);
-                            if (drift > 0.1) {
-                                activeAsset.currentTime = vTime;
-                            }
-
-                            // Efeito simples de transição no loop (Dip-to-Black suave)
-                            if (vDur > LOOP_FADE * 2) {
-                                if (vTime < LOOP_FADE) {
-                                    activeLoopAlpha = vTime / LOOP_FADE;
-                                } else if (vTime > vDur - LOOP_FADE) {
-                                    activeLoopAlpha = (vDur - vTime) / LOOP_FADE;
-                                }
+                            if (drift > 0.1 || activeAsset.paused) {
+                                activeAsset.currentTime = targetTime;
+                                activeAsset.play().catch(() => {});
                             }
                         }
 
-                        // Se houver transição de cena, sincronizar o próximo vídeo com a mesma lógica de loop
+                        // Se houver transição de cena, sincronizar o próximo vídeo com a mesma lógica
                         const timeLeft = currentItem.endSeconds - elapsed;
-                        let nextLoopAlpha = 1.0;
-
+                        
                         if (timeLeft < transitionDuration && nextItem) {
                             const nextAsset = loadedAssets.get(activeIdx + 1);
                             if (nextAsset instanceof HTMLVideoElement) {
+                                const nextTargetTime = Math.max(0, elapsed - nextItem.startSeconds);
+                                if (Math.abs(nextAsset.currentTime - nextTargetTime) > 0.016) {
+                                    nextAsset.currentTime = nextTargetTime;
+                                }
                                 if (nextAsset.paused) nextAsset.play().catch(() => {});
-                                
-                                const nDur = nextAsset.duration || 0.1;
-                                const nextSceneElapsed = Math.max(0, elapsed - nextItem.startSeconds);
-                                const nextVTime = nextSceneElapsed % nDur;
-
-                                const driftNext = Math.abs(nextAsset.currentTime - nextVTime);
-                                if (driftNext > 0.1) {
-                                    nextAsset.currentTime = nextVTime;
-                                }
-
-                                if (nDur > LOOP_FADE * 2) {
-                                    if (nextVTime < LOOP_FADE) {
-                                        nextLoopAlpha = nextVTime / LOOP_FADE;
-                                    } else if (nextVTime > nDur - LOOP_FADE) {
-                                        nextLoopAlpha = (nDur - nextVTime) / LOOP_FADE;
-                                    }
-                                }
                             }
                         }
 
@@ -568,16 +591,16 @@ export const generateTimelineVideo = async (
 
                         if (timeLeft < transitionDuration && nextItem) {
                             const fadeProgress = 1.0 - (timeLeft / transitionDuration);
-                            drawSingleSource(ctx, loadedAssets.get(activeIdx) || null, width, height, activeIdx, progress, (1.0 - fadeProgress) * activeLoopAlpha, effectMap.get(activeIdx));
+                            drawSingleSource(ctx, loadedAssets.get(activeIdx) || null, width, height, activeIdx, progress, (1.0 - fadeProgress) * activeLoopAlpha, effectMap.get(activeIdx), motionEffects);
                             const nextSceneProgress = Math.max(0, (elapsed - nextItem.startSeconds) / Math.max(nextItem.endSeconds - nextItem.startSeconds, 0.01));
-                            drawSingleSource(ctx, loadedAssets.get(activeIdx + 1) || null, width, height, activeIdx + 1, nextSceneProgress, fadeProgress * nextLoopAlpha, effectMap.get(activeIdx + 1));
+                            drawSingleSource(ctx, loadedAssets.get(activeIdx + 1) || null, width, height, activeIdx + 1, nextSceneProgress, fadeProgress * nextLoopAlpha, effectMap.get(activeIdx + 1), motionEffects);
                         } else {
-                            drawSingleSource(ctx, loadedAssets.get(activeIdx) || null, width, height, activeIdx, progress, 1.0 * activeLoopAlpha, effectMap.get(activeIdx));
+                            drawSingleSource(ctx, loadedAssets.get(activeIdx) || null, width, height, activeIdx, progress, 1.0 * activeLoopAlpha, effectMap.get(activeIdx), motionEffects);
                         }
 
                         if (subtitleStyle) {
-                            const subtitleElapsed = elapsed + 0.05;
-                            const currentChunk = allSubtitleChunks.find(c => subtitleElapsed >= c.startSeconds && subtitleElapsed < c.endSeconds);
+                            // Renderizar legendas com o tempo exato, sem antecipação artificial no canvas
+                            const currentChunk = allSubtitleChunks.find(c => elapsed >= c.startSeconds && elapsed < c.endSeconds);
                             if (currentChunk) {
                                 drawSubtitle(ctx, currentChunk.text, width, height, subtitleStyle);
                             }
@@ -587,7 +610,7 @@ export const generateTimelineVideo = async (
                     }
 
                     if (Date.now() - lastProgressUpdate > 500) {
-                        onProgress(Math.floor((elapsed / audioDuration) * 100), `Renderizando Master (${elapsed.toFixed(1)}s / ${audioDuration.toFixed(1)}s)`);
+                        onProgress(Math.floor((elapsed / effectiveDuration) * 100), `Renderizando Master (${elapsed.toFixed(1)}s / ${effectiveDuration.toFixed(1)}s)`);
                         lastProgressUpdate = Date.now();
                     }
                 } catch (renderError) {

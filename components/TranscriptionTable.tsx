@@ -1,11 +1,14 @@
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Clapperboard, Download, Edit3, FileArchive, FileSpreadsheet, FileText, Image as ImageIcon, Loader2, MapPin, Monitor, Play, PlayCircle, RefreshCw, Sparkles, Square, Type, Upload, Users, Video, X, Zap, Ban, Activity, Wallet, Target, Layers, Video as VideoIcon, HelpCircle, Box, Plus, Trash2, AlertTriangle, Clock, AlertCircle } from 'lucide-react';
-import { TranscriptionItem, AppSettings, TransitionType, ViralTitle, MasterAsset, MotionEffect } from '../types';
+import { Clapperboard, Download, Edit3, FileArchive, FileSpreadsheet, FileText, Image as ImageIcon, Loader2, MapPin, Monitor, Play, PlayCircle, RefreshCw, Sparkles, Square, Type, Upload, Users, Video, X, Zap, Ban, Activity, Wallet, Target, Layers, Video as VideoIcon, HelpCircle, Box, Plus, Trash2, AlertTriangle, Clock, AlertCircle, MonitorPlay, Terminal, Copy, Cpu } from 'lucide-react';
+import { TranscriptionItem, AppSettings, TransitionType, ViralTitle, MasterAsset, MotionEffect, RenderEngine } from '../types';
+import { db } from '../services/firebaseClient';
+import { onSnapshot, doc as fireDoc } from 'firebase/firestore';
 import { generateImage, generateViralTitles, getApiInfrastructure, generateText, TEXT_MODEL_NAME, IMAGEN_MODEL_NAME, IMAGE_MODEL_NAME, syncScenesWithAudio } from '../services/geminiService';
 import { generatePollinationsImage } from '../services/pollinationsService';
 import { logApiCost } from '../services/usageService';
 import { generateTimelineVideo, generatePreviewVideo, generatePresetSRT } from '../services/videoService';
+import { renderWithFFmpeg } from '../services/ffmpegService';
 import { uploadProjectFile, getMotionEffects } from '../services/storageService';
 import { TimelineVisual, TimelineVisualHandle } from './TimelineVisual';
 import { ImageViewer } from './ImageViewer';
@@ -88,6 +91,7 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
     const [isComparing, setIsComparing] = useState(false);
     const [comparisonResults, setComparisonResults] = useState<{ modelId: string, label: string, imageUrl: string, loading: boolean, error?: string }[]>([]);
     const renderTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const [renderEngine, setRenderEngine] = useState<RenderEngine>('browser');
 
     const [apiInfo, setApiInfo] = useState<{ type: string, isPremium: boolean }>({ type: 'STANDARD', isPremium: false });
 
@@ -96,6 +100,23 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
 
     useEffect(() => {
         refreshApiInfo();
+        
+        if (renderEngine === 'ffmpeg' && projectId) {
+            const unsub = onSnapshot(fireDoc(db, 'projects', projectId), (snap) => {
+                const projData = snap.data();
+                if (projData?.render_status) {
+                    setVideoStatus(projData.render_status.msg || '');
+                    setVideoProgress(projData.render_status.progress || 0);
+                    if (projData.render_status.progress === 100) {
+                        setTimeout(() => setIsVideoGenerating(false), 3000);
+                    }
+                }
+            });
+            return () => unsub();
+        }
+    }, [renderEngine, projectId]);
+
+    useEffect(() => {
         loadMotionEffects();
         return () => {
             if (previewVideoUrl) URL.revokeObjectURL(previewVideoUrl);
@@ -158,68 +179,7 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         onUpdateAllItems(updatedData);
     };
 
-    const handleAutoAdjustTimings = () => {
-        if (!onUpdateAllItems) return;
-        if (!confirm("Isso irá recalcular o tempo de TODAS as cenas baseado na quantidade de palavras (2.5/seg). Deseja continuar?")) return;
-        
-        const updatedData = [...data];
-        let currentStart = 0;
-        for (let i = 0; i < updatedData.length; i++) {
-            const text = updatedData[i].text || "";
-            const wordCount = text.split(/\s+/).filter(Boolean).length;
-            // Alinhado com instructions.md: offset de -0.5s aplicado no motor, aqui mantemos a duração pura baseada em palavras
-            const idealDuration = Math.max(5, (wordCount / 2.5));
-            
-            updatedData[i] = {
-                ...updatedData[i],
-                duration: idealDuration,
-                startSeconds: currentStart,
-                endSeconds: currentStart + idealDuration,
-                startTimestamp: formatTime(currentStart),
-                endTimestamp: formatTime(currentStart + idealDuration)
-            };
-            currentStart = updatedData[i].endSeconds;
-        }
-        onUpdateAllItems(updatedData);
-    };
 
-    const [isSyncing, setIsSyncing] = useState(false);
-
-    const handleMagicSync = async () => {
-        if (!audioFile || !onUpdateAllItems) return;
-        if (!confirm("O sistema vai ouvir o áudio completo para alinhar cada cena exatamente com a fala do locutor. Isso pode levar alguns segundos. Deseja iniciar?")) return;
-        
-        setIsSyncing(true);
-        try {
-            // Prepara as cenas para alinhar (índice e texto)
-            const scenesToSync = data.map((item, index) => ({ id: index, text: item.text }));
-            const syncResults = await syncScenesWithAudio(audioFile, scenesToSync);
-            
-            const updatedData = [...data];
-            syncResults.forEach(res => {
-                if (updatedData[res.index-1]) { // Res.index é 1-based vindo da IA no prompt atualizado
-                    const idx = res.index - 1;
-                    const duration = Math.max(0.1, res.end - res.start);
-                    updatedData[idx] = {
-                        ...updatedData[idx],
-                        startSeconds: res.start,
-                        endSeconds: res.end,
-                        duration: duration,
-                        startTimestamp: formatTime(res.start),
-                        endTimestamp: formatTime(res.end)
-                    };
-                }
-            });
-            
-            onUpdateAllItems(updatedData);
-            alert("Sincronia Mágica concluída com sucesso! ✨ Suas cenas agora estão alinhadas com o áudio real.");
-        } catch (error) {
-            console.error("Erro na Sincronia Mágica:", error);
-            alert("Falha ao sincronizar. Verifique sua conexão e tente novamente.");
-        } finally {
-            setIsSyncing(false);
-        }
-    };
 
     const handleManualImageUpload = async (index: number, file: File) => {
         if (!projectId) {
@@ -501,6 +461,7 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         const folder = zip.folder("midias_projeto");
         if (!folder) return;
         setIsVideoGenerating(true);
+        setVideoStatus('ZIP_COMPRESSION');
         let addedCount = 0;
         
         try {
@@ -529,6 +490,8 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
                         }
                     }
                 }
+                setVideoStatus('ZIP_COMPRESSION');
+                setVideoProgress(Math.floor(((i + 1) / data.length) * 100));
             }
             
             if (addedCount === 0) {
@@ -987,7 +950,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
         
         setIsVideoGenerating(true);
         setShowVideoSettings(false);
-        setVideoStatus("Sincronizando Master...");
+        setVideoStatus(`Sincronizando Master via ${renderEngine === 'ffmpeg' ? 'Desktop' : 'Browser'}...`);
         setRenderElapsed(0);
 
         // Timer de render
@@ -998,8 +961,29 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
         }, 1000);
 
         const sub = includeSubtitles ? settings.subtitleStyles.find(s => s.id === (selectedSubtitlePresetId || (settings.aspectRatio === '16:9' ? 'horizontal-16-9' : 'vertical-9-16'))) : undefined;
+        
         try {
-            const blob = await generateTimelineVideo(audioFile, data, TransitionType.CUTAWAY, (p, msg) => { setVideoProgress(p); setVideoStatus(msg); }, settings.aspectRatio, sub, motionEffects);
+            let blob: Blob;
+            
+            if (renderEngine === 'ffmpeg') {
+                blob = await renderWithFFmpeg(
+                    {
+                        audioFile,
+                        items: data,
+                        transitionType: settings.transitionType,
+                        aspectRatio: settings.aspectRatio,
+                        subtitleStyle: sub,
+                        motionEffects: settings.motionEffects
+                    },
+                    (p, msg) => {
+                        setVideoProgress(p);
+                        setVideoStatus(msg);
+                    }
+                );
+            } else {
+                blob = await generateTimelineVideo(audioFile, data, TransitionType.CUTAWAY, (p, msg) => { setVideoProgress(p); setVideoStatus(msg); }, settings.aspectRatio, sub, settings.motionEffects);
+            }
+            
             if (renderTimerRef.current) clearInterval(renderTimerRef.current);
             const url = URL.createObjectURL(blob);
             setVideoUrl(url);
@@ -1008,11 +992,11 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
             const sanitizedName = projectName ? projectName.replace(/[^a-z0-9]/gi, '_').toLowerCase() : 'video';
             const link = document.createElement('a');
             link.href = url;
-            link.download = `${sanitizedName}.${extension === 'x-matroska' ? 'mkv' : extension}`;
+            link.download = `${renderEngine.toUpperCase()}_${sanitizedName}.${extension === 'x-matroska' ? 'mkv' : extension}`;
             link.click();
         } catch (e: any) {
             if (renderTimerRef.current) clearInterval(renderTimerRef.current);
-            setVideoStatus("Erro de processamento.");
+            setVideoStatus("Erro de processamento: " + e.message);
         } finally { setIsVideoGenerating(false); }
     };
 
@@ -1021,34 +1005,55 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
         
         setIsVideoGenerating(true);
         setVideoProgress(0);
-        setVideoStatus("Iniciando Exportação Teste (1 min)...");
+        setVideoStatus(`Iniciando Exportação Teste (1 min) via ${renderEngine === 'ffmpeg' ? 'Desktop' : 'Browser'}...`);
 
         try {
             const sub = includeSubtitles ? settings.subtitleStyles.find(s => s.id === (selectedSubtitlePresetId || (settings.aspectRatio === '16:9' ? 'horizontal-16-9' : 'vertical-9-16'))) : undefined;
-            const testBlob = await generateTimelineVideo(
-                audioFile, 
-                data, 
-                settings.transitionType, 
-                (p, msg) => { 
-                    setVideoProgress(p); 
-                    setVideoStatus(msg); 
-                },
-                settings.aspectRatio,
-                sub,
-                settings.motionEffects,
-                60 // maxDuration: 60 segundos
-            );
+            
+            let testBlob: Blob;
+            
+            if (renderEngine === 'ffmpeg') {
+                testBlob = await renderWithFFmpeg(
+                    {
+                        audioFile,
+                        items: data,
+                        transitionType: settings.transitionType,
+                        aspectRatio: settings.aspectRatio,
+                        subtitleStyle: sub,
+                        motionEffects: settings.motionEffects,
+                        maxDuration: 60
+                    },
+                    (p, msg) => {
+                        setVideoProgress(p);
+                        setVideoStatus(msg);
+                    }
+                );
+            } else {
+                testBlob = await generateTimelineVideo(
+                    audioFile, 
+                    data, 
+                    settings.transitionType, 
+                    (p, msg) => { 
+                        setVideoProgress(p); 
+                        setVideoStatus(msg); 
+                    },
+                    settings.aspectRatio,
+                    sub,
+                    settings.motionEffects,
+                    60 // maxDuration: 60 segundos
+                );
+            }
             
             const url = URL.createObjectURL(testBlob);
             const extension = testBlob.type.split('/')[1]?.split(';')[0] || 'webm';
             const a = document.createElement('a');
             a.href = url;
-            a.download = `TESTE_1MIN_${project?.name || 'video'}.${extension === 'x-matroska' ? 'mkv' : extension}`;
+            a.download = `TESTE_1MIN_${renderEngine.toUpperCase()}_${project?.name || 'video'}.${extension === 'x-matroska' ? 'mkv' : extension}`;
             a.click();
             URL.revokeObjectURL(url);
         } catch (e: any) {
             console.error("Erro na exportação teste:", e);
-            alert("Erro ao realizar exportação rápida.");
+            alert("Erro ao realizar exportação rápida: " + e.message);
         } finally {
             setIsVideoGenerating(false);
             setVideoStatus("");
@@ -1062,53 +1067,121 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
 
             {
                 showVideoSettings && (
-                    <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/95 backdrop-blur-xl p-4 animate-in fade-in duration-300">
+                    <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/95 backdrop-blur-xl p-2 animate-in fade-in duration-300">
                         <div className="bg-slate-900 rounded-[2.5rem] border border-slate-800 w-full max-w-3xl h-auto flex flex-col shadow-2xl overflow-hidden relative">
                             {/* Header compacto */}
-                            <div className="px-6 py-4 border-b border-slate-800 flex justify-between items-center bg-slate-900/40">
+                            <div className="px-3 py-2 border-b border-slate-800 flex justify-between items-center bg-slate-900/40">
                                 <div className="flex items-center gap-2">
                                     <Clapperboard className="text-brand-400" size={18} />
-                                    <h3 className="text-base font-black text-white uppercase tracking-tight italic">Exportação Vídeo Master</h3>
+                                    <h3 className="text-sm font-black text-white uppercase tracking-tight italic">Exportação Vídeo Master</h3>
                                 </div>
                                 <button onClick={() => setShowVideoSettings(false)} className="p-1.5 hover:bg-slate-800 rounded-full text-slate-500 hover:text-white transition-all"><X size={20} /></button>
                             </div>
                             {/* Corpo horizontal: legenda à esquerda + preview à direita */}
-                            <div className="flex flex-row gap-4 p-5">
+                            <div className="flex flex-row gap-2 p-2">
                                 {/* Coluna esquerda: controles de legenda + gerar */}
                                 <div className="flex flex-col gap-3 w-[220px] shrink-0">
-                                    <label className="text-[10px] font-black uppercase text-brand-400 tracking-widest flex items-center gap-1.5"><Type size={11} /> Legendas</label>
+                                    <label className="text-[10px] font-black uppercase text-brand-400 tracking-widest flex items-center gap-1.5"><MonitorPlay size={11} /> Motor</label>
                                     <div className="flex gap-2">
-                                        <button onClick={() => setIncludeSubtitles(true)} className={`flex-1 py-2 rounded-xl font-black uppercase text-xs tracking-widest transition-all border ${includeSubtitles ? 'bg-brand-500 text-white border-brand-400' : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-300'}`}>Sim</button>
-                                        <button onClick={() => setIncludeSubtitles(false)} className={`flex-1 py-2 rounded-xl font-black uppercase text-xs tracking-widest transition-all border ${!includeSubtitles ? 'bg-red-500 text-white border-red-400' : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-300'}`}>Não</button>
+                                        <button onClick={() => setRenderEngine('browser')} className={`flex-1 py-2 rounded-sm font-black uppercase text-[11px] tracking-widest transition-all border ${renderEngine === 'browser' ? 'bg-brand-500 text-white border-brand-400' : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-300'}`}>Browser</button>
+                                        <button onClick={() => setRenderEngine('ffmpeg')} className={`flex-1 py-2 rounded-sm font-black uppercase text-[11px] tracking-widest transition-all border ${renderEngine === 'ffmpeg' ? 'bg-brand-500 text-white border-brand-400' : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-300'}`}>Desktop</button>
+                                    </div>
+                                    {renderEngine === 'ffmpeg' && (
+                                        <div className="text-[9px] text-amber-400 bg-amber-500/10 px-2 py-1.5 rounded-sm border border-amber-500/20">
+                                            ✦ Usa FFmpeg (mais rápido, melhor qualidade)
+                                        </div>
+                                    )}
+                                    <label className="text-[10px] font-black uppercase text-brand-400 tracking-widest flex items-center gap-1.5 mt-2"><Type size={11} /> Legendas</label>
+                                    <div className="flex gap-2">
+                                        <button onClick={() => setIncludeSubtitles(true)} className={`flex-1 py-2 rounded-sm font-black uppercase text-[11px] tracking-widest transition-all border ${includeSubtitles ? 'bg-brand-500 text-white border-brand-400' : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-300'}`}>Sim</button>
+                                        <button onClick={() => setIncludeSubtitles(false)} className={`flex-1 py-2 rounded-sm font-black uppercase text-[11px] tracking-widest transition-all border ${!includeSubtitles ? 'bg-red-500 text-white border-red-400' : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-300'}`}>Não</button>
                                     </div>
                                     {includeSubtitles && (
                                         <select
                                             value={selectedSubtitlePresetId || (settings.aspectRatio === '16:9' ? 'horizontal-16-9' : 'vertical-9-16')}
                                             onChange={(e) => setSelectedSubtitlePresetId(e.target.value)}
-                                            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white text-xs outline-none focus:border-brand-500 transition-colors"
+                                            className="w-full bg-slate-950 border border-slate-800 rounded-sm px-3 py-2 text-white text-[11px] outline-none focus:border-brand-500 transition-colors"
                                         >
                                             {settings.subtitleStyles.map(preset => (
                                                 <option key={preset.id} value={preset.id}>{preset.label}</option>
                                             ))}
                                         </select>
                                     )}
-                                    <button 
-                                        onClick={handleTestExport} 
-                                        disabled={isVideoGenerating} 
-                                        className="mt-auto w-full py-3 bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-white rounded-xl border border-emerald-500/30 font-black uppercase text-[10px] tracking-widest transition-all flex items-center justify-center gap-2 active:scale-95 disabled:opacity-50"
-                                    >
-                                        <Zap size={14} /> Exportação Teste (1 Min)
-                                    </button>
-                                    <button onClick={handleFinalRender} disabled={isVideoGenerating} className="w-full py-4 bg-brand-500 hover:bg-brand-400 text-white rounded-2xl font-black uppercase text-xs tracking-[0.2em] shadow-xl shadow-brand-500/20 transition-all flex items-center justify-center active:scale-95">RENDERIZAR</button>
+                                    {renderEngine === 'ffmpeg' && (
+                                        <div className="mt-2 p-3 bg-slate-950 border border-brand-500/30 rounded-lg flex flex-col gap-2">
+                                            <div className="flex items-center justify-between">
+                                                <span className="text-[10px] font-black text-brand-400 uppercase tracking-widest flex items-center gap-1.5"><Terminal size={12}/> Comando Desktop</span>
+                                                <button 
+                                                    onClick={() => {
+                                                        const cmd = `rm -rf temp_render/* && npx tsx scripts/render_native.ts --id=${projectId} --subs=${includeSubtitles}`;
+                                                        navigator.clipboard.writeText(cmd);
+                                                        alert("Comando COMPLETO copiado! Cole no seu Terminal.");
+                                                        setIsVideoGenerating(true);
+                                                    }}
+                                                    className="p-1 hover:bg-brand-500/20 text-brand-400 rounded-md transition-colors"
+                                                    title="Copiar Comando Completo"
+                                                >
+                                                    <Copy size={14} />
+                                                </button>
+                                            </div>
+                                            <code className="text-[9px] font-mono text-slate-400 bg-black/40 p-2 rounded block break-all leading-relaxed border border-white/5">
+                                                rm -rf temp_render/* && npx tsx scripts/render_native.ts --id={projectId} --subs={String(includeSubtitles)}
+                                            </code>
+                                            <p className="text-[9px] text-slate-500 italic">Cole este comando no terminal para renderizar vídeos longos com todo o poder da sua CPU.</p>
+                                        </div>
+                                    )}
+
+                                    {renderEngine === 'browser' && (
+                                        <div className="flex flex-col gap-2 mt-auto">
+                                            <button 
+                                                onClick={handlePreview} 
+                                                disabled={isPreviewing} 
+                                                className="w-full py-1.5 bg-slate-800 hover:bg-slate-700 text-brand-400 rounded-sm text-[10px] font-black uppercase flex items-center justify-center gap-1.5 border border-slate-700 border-dashed"
+                                            >
+                                                {isPreviewing ? <Loader2 size={10} className="animate-spin" /> : <Play size={10} />} Preview
+                                            </button>
+                                            <button 
+                                                onClick={handleTestExport} 
+                                                disabled={isVideoGenerating} 
+                                                className="w-full py-3 bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-white rounded-sm border border-emerald-500/30 font-black uppercase text-[10px] tracking-widest transition-all flex items-center justify-center gap-2 active:scale-95 disabled:opacity-50"
+                                            >
+                                                <Zap size={14} /> Exportação Teste (1 Min)
+                                            </button>
+                                            <button onClick={handleFinalRender} disabled={isVideoGenerating} className="w-full py-2 bg-brand-500 hover:bg-brand-400 text-white rounded-md font-black uppercase text-[11px] tracking-[0.2em] shadow-xl shadow-brand-500/20 transition-all flex items-center justify-center active:scale-95">RENDERIZAR</button>
+                                        </div>
+                                    )}
                                 </div>
                                 {/* Coluna direita: preview */}
                                 <div className="flex-1 flex flex-col gap-2">
-                                    <div className="flex justify-between items-center">
-                                        <button onClick={handlePreview} disabled={isPreviewing} className="bg-slate-800 hover:bg-slate-700 text-brand-400 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase flex items-center gap-1.5 border border-slate-700">{isPreviewing ? <Loader2 size={10} className="animate-spin" /> : <Play size={10} />} Preview</button>
+                                    <div className="flex justify-end items-center min-h-[28px]">
                                         <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex items-center gap-1"><Monitor size={11} /> Amostra</label>
                                     </div>
-                                    <div className={`bg-black rounded-2xl border border-slate-800 overflow-hidden relative shadow-inner flex-1 mx-auto w-full ${settings.aspectRatio === '9:16' ? 'aspect-[9/16] max-w-[160px]' : 'aspect-video'}`}>
-                                        {previewVideoUrl ? <video key={previewVideoUrl} src={previewVideoUrl} controls autoPlay className="w-full h-full object-contain" /> : <div className="w-full h-full flex flex-col items-center justify-center opacity-20 gap-2"><PlayCircle size={40} /><span className="text-[10px] font-black uppercase tracking-[0.2em]">Gerar Amostra</span></div>}
+                                    <div className={`bg-black rounded-md border border-slate-800 overflow-hidden relative shadow-inner flex-1 mx-auto w-full flex items-center justify-center ${settings.aspectRatio === '9:16' ? 'aspect-[9/16] max-w-[160px]' : 'aspect-video'}`}>
+                                        {(renderEngine === 'ffmpeg' && (isVideoGenerating || videoProgress > 0)) ? (
+                                            <div className="absolute inset-0 bg-black flex flex-col items-center justify-center p-4 text-center animate-in fade-in zoom-in duration-500">
+                                                <div className="relative mb-3">
+                                                    <Terminal className="text-brand-500 animate-pulse" size={40} />
+                                                    <Cpu className="absolute -bottom-1 -right-1 text-brand-400 animate-bounce" size={16} />
+                                                </div>
+                                                <h3 className="text-brand-400 font-black uppercase text-[10px] tracking-[0.2em] mb-3 italic">Processamento Nativo</h3>
+                                                <div className="w-full max-w-[120px] h-1 bg-slate-900 rounded-full overflow-hidden mb-3 border border-white/5">
+                                                    <div className="h-full bg-gradient-to-r from-brand-600 to-brand-400 transition-all duration-700 shadow-[0_0_10px_rgba(242,101,34,0.3)]" style={{ width: `${videoProgress}%` }}></div>
+                                                </div>
+                                                <p className="text-[9px] font-mono text-slate-300 uppercase tracking-widest leading-tight">{videoStatus || 'Iniciando...'}</p>
+                                                <p className="text-[12px] font-black text-white mt-1">{videoProgress}%</p>
+                                            </div>
+                                        ) : (
+                                            <>
+                                                {previewVideoUrl ? (
+                                                    <video key={previewVideoUrl} src={previewVideoUrl} controls autoPlay className="w-full h-full object-contain" />
+                                                ) : (
+                                                    <div className="w-full h-full flex flex-col items-center justify-center opacity-20 gap-2">
+                                                        <PlayCircle size={40} />
+                                                        <span className="text-[10px] font-black uppercase tracking-[0.2em]">Gerar Amostra</span>
+                                                    </div>
+                                                )}
+                                            </>
+                                        )}
                                     </div>
                                 </div>
                             </div>
@@ -1117,19 +1190,19 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                 )
             }
 
-            <div className="bg-slate-900/95 backdrop-blur-xl border border-slate-800 rounded-2xl p-2.5 shadow-2xl relative z-40 sticky top-4">
-                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                    <div className="bg-slate-950/40 px-4 py-2 rounded-2xl border border-slate-800/50 flex flex-col md:flex-row items-center gap-4 shadow-inner flex-1 shadow-lg">
+            <div className="bg-slate-900/95 backdrop-blur-xl border border-slate-800 rounded-md p-2.5 shadow-2xl relative z-40 sticky top-4">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2">
+                    <div className="bg-slate-950/40 px-2 py-2 rounded-md border border-slate-800/50 flex flex-col md:flex-row items-center gap-2 shadow-inner flex-1 shadow-lg">
                         <div className="flex items-center gap-3 w-full lg:w-auto">
                             <span className="text-[11px] font-bold uppercase text-brand-400 tracking-wider italic pr-2 border-r border-slate-800">Direção</span>
-                            <select value={settings.aspectRatio} onChange={(e) => onUpdateGlobalSetting('aspectRatio', e.target.value as '16:9' | '9:16')} className="bg-slate-950 border border-slate-800/60 rounded-lg px-2 py-1 text-[11px] text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white hover:border-slate-700 transition-colors">
+                            <select value={settings.aspectRatio} onChange={(e) => onUpdateGlobalSetting('aspectRatio', e.target.value as '16:9' | '9:16')} className="bg-slate-950 border border-slate-800/60 rounded-sm px-2 py-1 text-[11px] text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white hover:border-slate-700 transition-colors">
                                 <option value="16:9">16:9</option>
                                 <option value="9:16">9:16</option>
                             </select>
-                            <select value={selectedStyleId} onChange={(e) => onStyleChange(e.target.value)} className="bg-slate-950 border border-slate-800/60 rounded-lg px-2 py-1 text-[11px] text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white hover:border-slate-700 transition-colors min-w-[140px]">
+                            <select value={selectedStyleId} onChange={(e) => onStyleChange(e.target.value)} className="bg-slate-950 border border-slate-800/60 rounded-sm px-2 py-1 text-[11px] text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white hover:border-slate-700 transition-colors min-w-[140px]">
                                 {settings.items.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
                             </select>
-                            <select value={globalProvider} onChange={e => setGlobalProvider(e.target.value as any)} className="bg-slate-950 border border-slate-800/60 rounded-lg px-2 py-1 text-[11px] text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white hover:border-slate-700 transition-colors min-w-[160px]">
+                            <select value={globalProvider} onChange={e => setGlobalProvider(e.target.value as any)} className="bg-slate-950 border border-slate-800/60 rounded-sm px-2 py-1 text-[11px] text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white hover:border-slate-700 transition-colors min-w-[160px]">
                                 <option value="google-nano">GEMINI NANO</option>
                                 <option value="google-imagen">IMAGEN 4</option>
                                 <option value="pollinations">POLLINATIONS FLUX</option>
@@ -1148,7 +1221,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                     <button 
                                         onClick={handleGenerateMissing} 
                                         disabled={isGeneratingAll || data.length === 0}
-                                        className={`w-full h-8 rounded-xl transition-all border flex items-center justify-center shadow-lg ${isGeneratingAll ? 'bg-amber-500/20 border-amber-500/40 text-amber-400 animate-pulse' : 'bg-slate-900 border-slate-700 text-amber-400 hover:bg-amber-500 hover:text-white hover:border-amber-500 shadow-amber-500/5'}`}
+                                        className={`w-full h-8 rounded-sm transition-all border flex items-center justify-center shadow-lg ${isGeneratingAll ? 'bg-amber-500/20 border-amber-500/40 text-amber-400 animate-pulse' : 'bg-slate-900 border-slate-700 text-amber-400 hover:bg-amber-500 hover:text-white hover:border-amber-500 shadow-amber-500/5'}`}
                                     >
                                         {isGeneratingAll ? <Loader2 size={14} className="animate-spin" /> : <Layers size={14} />}
                                     </button>
@@ -1159,7 +1232,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                     <button 
                                         onClick={handleGenerateAll} 
                                         disabled={isGeneratingAll || data.length === 0}
-                                        className={`w-full h-8 rounded-xl transition-all border flex items-center justify-center shadow-lg ${isGeneratingAll ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400 animate-pulse' : 'bg-brand-500 border-brand-400 text-white hover:bg-brand-400'}`}
+                                        className={`w-full h-8 rounded-sm transition-all border flex items-center justify-center shadow-lg ${isGeneratingAll ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400 animate-pulse' : 'bg-brand-500 border-brand-400 text-white hover:bg-brand-400'}`}
                                     >
                                         {isGeneratingAll ? <Ban size={16} /> : <RefreshCw size={16} />}
                                     </button>
@@ -1176,7 +1249,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                 <button 
                                     onClick={() => !isSyncError && setShowVideoSettings(true)} 
                                     disabled={isSyncError}
-                                    className={`h-8 flex items-center justify-center gap-1.5 px-4 rounded-r-xl border border-l-0 text-[11px] font-bold uppercase tracking-wider shadow-lg transition-all active:scale-95 ${isSyncError ? 'bg-slate-800 text-slate-500 cursor-not-allowed border-red-500/20' : 'bg-brand-500 hover:bg-brand-400 text-white border-brand-400/30'}`}
+                                    className={`h-8 flex items-center justify-center gap-1.5 px-2 rounded-r-xl border border-l-0 text-[11px] font-bold uppercase tracking-wider shadow-lg transition-all active:scale-95 ${isSyncError ? 'bg-slate-800 text-slate-500 cursor-not-allowed border-red-500/20' : 'bg-brand-500 hover:bg-brand-400 text-white border-brand-400/30'}`}
                                 >
                                     VIDEO
                                 </button>
@@ -1188,12 +1261,12 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
         <div className="flex flex-col lg:flex-row lg:items-center justify-between border-b border-slate-800 pb-0 gap-2">
                 <div className="flex items-center gap-1 overflow-x-auto whitespace-nowrap scrollbar-hide">
                     {['scenes', 'characters', 'locations', 'props', 'titles'].map(tab => (
-                        <button key={tab} onClick={() => setActiveTab(tab as TabMode)} className={`px-3 py-4 text-[11px] font-bold uppercase tracking-wider border-b-2 transition-all ${activeTab === tab ? 'text-brand-400 border-brand-500 bg-brand-500/5' : 'text-slate-500 border-transparent hover:text-slate-300'}`}>
+                        <button key={tab} onClick={() => setActiveTab(tab as TabMode)} className={`px-3 py-2 text-[12px] font-black uppercase tracking-widest border-b-2 transition-all ${activeTab === tab ? 'text-brand-400 border-brand-500 bg-brand-500/5' : 'text-slate-500 border-transparent hover:text-slate-300'}`}>
                             {tab === 'scenes' ? 'Story Board' : tab === 'characters' ? 'Personagens' : tab === 'locations' ? 'Cenários' : tab === 'props' ? 'Objetos' : 'CTR Ninja'}
                         </button>
                     ))}
                 </div>
-                <div className="flex items-center gap-4 px-4 pb-2 lg:pb-0 overflow-x-auto scrollbar-hide">
+                <div className="flex items-center gap-2 px-2 pb-2 lg:pb-0 overflow-x-auto scrollbar-hide">
                     <button
                         onClick={async () => {
                             if (!project) return;
@@ -1202,7 +1275,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                             finally { setIsSaving(false); }
                         }}
                         disabled={isSaving || !project}
-                        className={`text-[11px] font-bold uppercase px-3 py-1.5 rounded-lg border transition-all flex items-center gap-1.5 ${isSaving ? 'bg-slate-800 text-slate-500 border-slate-700' : 'bg-brand-500/10 text-brand-400 border-brand-500/30 hover:bg-brand-500 hover:text-white'}`}
+                        className={`text-[12px] font-black uppercase px-3 py-1.5 rounded-sm border transition-all flex items-center gap-1.5 ${isSaving ? 'bg-slate-800 text-slate-500 border-slate-700' : 'bg-brand-500/10 text-brand-400 border-brand-500/30 hover:bg-brand-500 hover:text-white'}`}
                     >
                         {isSaving ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
                         {isSaving ? 'SALVANDO...' : 'SALVAR'}
@@ -1215,7 +1288,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                     <button
                         onClick={() => isTimelinePreviewActive ? timelineRef.current?.stopPreview() : timelineRef.current?.startPreview()}
                         disabled={!audioFile}
-                        className={`text-[11px] font-bold uppercase px-3 py-1.5 rounded-lg border transition-all flex items-center gap-1.5 shadow-sm active:scale-95 ${isTimelinePreviewActive ? 'bg-red-500 text-white border-red-400 animate-pulse hover:bg-red-600' : 'bg-slate-800 text-white border-slate-700 hover:bg-brand-500 hover:border-brand-400'}`}
+                        className={`text-[11px] font-bold uppercase px-3 py-1.5 rounded-sm border transition-all flex items-center gap-1.5 shadow-sm active:scale-95 ${isTimelinePreviewActive ? 'bg-red-500 text-white border-red-400 animate-pulse hover:bg-red-600' : 'bg-slate-800 text-white border-slate-700 hover:bg-brand-500 hover:border-brand-400'}`}
                     >
                         {isTimelinePreviewActive ? <Square size={12} fill="currentColor" /> : <PlayCircle size={12} />}
                         PREVIEW
@@ -1236,7 +1309,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
             {
                 activeTab === 'scenes' && (
                     <div className="space-y-8 pb-32">
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                             {data.map((item, index) => (
                                 <div key={index} className="flex flex-col gap-2">
                                     {/* Linha do topo: duração editável + CAP (Capacidade de Palavras) */}
@@ -1312,20 +1385,20 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                             return null;
                                         })()}
                                     </div>
-                                    <div className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-5 flex flex-col gap-4 shadow-lg group hover:border-brand-500/30 transition-all">
+                                    <div className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-2 flex flex-col gap-2 shadow-lg group hover:border-brand-500/30 transition-all">
                                         {/* Linha de metadados alinhada à largura da imagem - Otimizado para 4 colunas em 1280px */}
-                                        <div className="flex items-center gap-1.5 text-xs font-black uppercase text-brand-400">
-                                            <span className="bg-brand-500/10 text-brand-400 px-2 py-1 rounded-xl whitespace-nowrap shrink-0 min-w-[2rem] text-center">{index + 1}</span>
-                                            <span className="bg-slate-950 px-2 py-1 rounded-full border border-slate-800 font-mono whitespace-nowrap shrink-0 flex-1 text-center text-xs leading-none py-1.5">{item.startTimestamp} – {item.endTimestamp}</span>
-                                            <span className="text-blue-400 whitespace-nowrap bg-slate-950 px-2 py-1 rounded-full border border-slate-700/50 shrink-0 min-w-[2.5rem] text-center text-xs">{item.text.split(/\s+/).filter(Boolean).length}</span>
+                                        <div className="flex items-center gap-1.5 text-[11px] font-black uppercase text-brand-400">
+                                            <span className="bg-brand-500/10 text-brand-400 px-2 py-1 rounded-sm whitespace-nowrap shrink-0 min-w-[2rem] text-center">{index + 1}</span>
+                                            <span className="bg-slate-950 px-2 py-1 rounded-full border border-slate-800 font-mono whitespace-nowrap shrink-0 flex-1 text-center text-[11px] leading-none py-1.5">{item.startTimestamp} – {item.endTimestamp}</span>
+                                            <span className="text-blue-400 whitespace-nowrap bg-slate-950 px-2 py-1 rounded-full border border-slate-700/50 shrink-0 min-w-[2.5rem] text-center text-[11px]">{item.text.split(/\s+/).filter(Boolean).length}</span>
                                         </div>
-                                        <div className={`bg-black rounded-3xl overflow-hidden relative shadow-inner ${settings.aspectRatio === '9:16' ? 'aspect-[9/16]' : 'aspect-video'}`}>
+                                        <div className={`bg-black rounded-md overflow-hidden relative shadow-inner ${settings.aspectRatio === '9:16' ? 'aspect-[9/16]' : 'aspect-video'}`}>
                                             {item.imageUrl || item.importedVideoUrl ? (
                                                 <>
                                                     {item.importedVideoUrl ? <video src={item.importedVideoUrl} className="w-full h-full object-cover" controls={false} muted autoPlay loop onClick={() => setViewingImageState({ imageUrl: item.importedVideoUrl!, promptData: getPromptData(index), filename: `cena_${index + 1}.mp4`, sourceIndex: index, sourceType: 'scene'})} /> : <img src={item.imageUrl} onClick={() => setViewingImageState({ imageUrl: item.imageUrl!, promptData: getPromptData(index), filename: `cena_${index + 1}.png`, sourceIndex: index, sourceType: 'scene' })} className="w-full h-full object-cover cursor-zoom-in" />}
                                                 </>
                                             ) : <div className="w-full h-full flex items-center justify-center opacity-20"><ImageIcon size={48} /></div>}
-                                            {(item.isGeneratingGoogle || item.isGeneratingPollinations) && <div className="absolute inset-0 bg-slate-950/95 flex flex-col items-center justify-center gap-4"><Loader2 className="animate-spin text-brand-400" size={40} /></div>}
+                                            {(item.isGeneratingGoogle || item.isGeneratingPollinations) && <div className="absolute inset-0 bg-slate-950/95 flex flex-col items-center justify-center gap-2"><Loader2 className="animate-spin text-brand-400" size={40} /></div>}
                                             <div className="absolute top-4 right-4 flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                                 <button onClick={() => handleGenerateImage(index, globalProvider as any)} title="Recriar Imagem (Manter Prompt)" className="p-2.5 bg-brand-500 hover:bg-brand-400 text-white rounded-full shadow-xl transition-colors"><Zap size={14} /></button>
                                                 <button onClick={() => {
@@ -1347,7 +1420,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                 const char = projectCharacters.find(c => c.id === charId);
                                                 if (!char) return null;
                                                 return (
-                                                    <div key={charId} className="bg-fuchsia-500/10 border border-fuchsia-500/30 px-2.5 py-1 rounded-lg flex items-center gap-1.5 text-[10px] font-black text-fuchsia-400 uppercase tracking-widest">
+                                                    <div key={charId} className="bg-fuchsia-500/10 border border-fuchsia-500/30 px-2.5 py-1 rounded-sm flex items-center gap-1.5 text-[10px] font-black text-fuchsia-400 uppercase tracking-widest">
                                                         <Users size={10} /> {char.name}
                                                     </div>
                                                 );
@@ -1356,7 +1429,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                 const loc = projectLocations.find(l => l.id === locId);
                                                 if (!loc) return null;
                                                 return (
-                                                    <div key={locId} className="bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg flex items-center gap-1.5 text-[10px] font-black text-emerald-400 uppercase tracking-widest">
+                                                    <div key={locId} className="bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-sm flex items-center gap-1.5 text-[10px] font-black text-emerald-400 uppercase tracking-widest">
                                                         <MapPin size={10} /> {loc.name}
                                                     </div>
                                                 );
@@ -1369,12 +1442,12 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                 onChange={e => onUpdateItem(index, { text: e.target.value })}
                                                 onBlur={() => onForceSave()}
                                                 rows={3}
-                                                className="bg-slate-950 p-2 rounded-xl border border-slate-800 text-xs text-slate-300 w-full resize-none focus:outline-none focus:border-brand-500/50 transition-all leading-relaxed [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-slate-800/80 [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-slate-700"
+                                                className="bg-slate-950 p-2 rounded-sm border border-slate-800 text-[11px] text-slate-300 w-full resize-none focus:outline-none focus:border-brand-500/50 transition-all leading-relaxed [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-slate-800/80 [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-slate-700"
                                                 placeholder="Texto da cena..."
                                             />
                                             <div className="space-y-3">
                                                 <div className="flex items-center justify-between px-1">
-                                                    <div className="flex items-center gap-2"><Edit3 size={10} className="text-brand-400" /><label className="text-xs font-black text-slate-600 uppercase tracking-widest">Editor de Prompt</label></div>
+                                                    <div className="flex items-center gap-2"><Edit3 size={10} className="text-brand-400" /><label className="text-[12px] font-black text-slate-600 uppercase tracking-widest">Editor de Prompt</label></div>
                                                 </div>
 
                                                 <div className="grid grid-cols-2 gap-2">
@@ -1384,12 +1457,12 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                             value={item.medium || ''}
                                                             placeholder={activeStylePrompt ? activeStylePrompt.split(',')[0].trim() : "Ex: Cinematic, 3D..."}
                                                             onChange={e => onUpdateItem(index, { medium: e.target.value })}
-                                                            className={`w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs outline-none focus:border-amber-500/50 transition-colors ${!item.medium && activeStylePrompt ? 'text-slate-500 italic' : 'text-slate-300'}`}
+                                                            className={`w-full bg-slate-950 border border-slate-800 rounded-sm p-2 text-[11px] outline-none focus:border-amber-500/50 transition-colors ${!item.medium && activeStylePrompt ? 'text-slate-500 italic' : 'text-slate-300'}`}
                                                         />
                                                     </div>
                                                     <div className="space-y-1">
                                                         <span className="text-[0.7rem] font-bold text-purple-500/60 uppercase px-1">Camera</span>
-                                                        <input value={item.camera || ''} onChange={e => onUpdateItem(index, { camera: e.target.value })} className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-300 outline-none focus:border-purple-500/50" placeholder="Ex: Close-up, Wide..." />
+                                                        <input value={item.camera || ''} onChange={e => onUpdateItem(index, { camera: e.target.value })} className="w-full bg-slate-950 border border-slate-800 rounded-sm p-2 text-[11px] text-slate-300 outline-none focus:border-purple-500/50" placeholder="Ex: Close-up, Wide..." />
                                                     </div>
                                                 </div>
 
@@ -1405,7 +1478,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                             return relevantChars.length > 0 ? relevantChars.map(c => c.name).join(", ") : "Personagem ou Assunto Principal...";
                                                         })()}
                                                         onChange={e => onUpdateItem(index, { subject: e.target.value })}
-                                                        className={`w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs outline-none focus:border-fuchsia-500/50 transition-colors ${!item.subject && projectCharacters.some(c => item.characterIds?.includes(c.id)) ? 'text-slate-500 italic' : 'text-slate-300'}`}
+                                                        className={`w-full bg-slate-950 border border-slate-800 rounded-sm p-2 text-[11px] outline-none focus:border-fuchsia-500/50 transition-colors ${!item.subject && projectCharacters.some(c => item.characterIds?.includes(c.id)) ? 'text-slate-500 italic' : 'text-slate-300'}`}
                                                     />
                                                 </div>
 
@@ -1426,7 +1499,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                             <RefreshCw size={11} />
                                                         </button>
                                                     </div>
-                                                    <textarea value={item.action || ''} onChange={e => onUpdateItem(index, { action: e.target.value })} rows={6} className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-300 outline-none focus:border-white/20 resize-none custom-scrollbar" placeholder="Ação criativa (Surrealismo, Simbolismo, Metáforas)..." />
+                                                    <textarea value={item.action || ''} onChange={e => onUpdateItem(index, { action: e.target.value })} rows={6} className="w-full bg-slate-950 border border-slate-800 rounded-sm p-2 text-[11px] text-slate-300 outline-none focus:border-white/20 resize-none custom-scrollbar" placeholder="Ação criativa (Surrealismo, Simbolismo, Metáforas)..." />
                                                 </div>
 
                                                 <div className="space-y-1">
@@ -1441,18 +1514,18 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                             return relevantLocs.length > 0 ? relevantLocs.map(l => l.name).join(", ") : "Cenário ou Ambiente...";
                                                         })()}
                                                         onChange={e => onUpdateItem(index, { cenario: e.target.value })}
-                                                        className={`w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs outline-none focus:border-emerald-500/50 transition-colors ${!item.cenario && projectLocations.some(l => item.locationIds?.includes(l.id)) ? 'text-slate-500 italic' : 'text-slate-300'}`}
+                                                        className={`w-full bg-slate-950 border border-slate-800 rounded-sm p-2 text-[11px] outline-none focus:border-emerald-500/50 transition-colors ${!item.cenario && projectLocations.some(l => item.locationIds?.includes(l.id)) ? 'text-slate-500 italic' : 'text-slate-300'}`}
                                                     />
                                                 </div>
 
                                                 <div className="space-y-1">
                                                     <span className="text-[0.7rem] font-bold text-sky-500/60 uppercase px-1">Animation (Motion)</span>
-                                                    <textarea value={item.animation || ''} onChange={e => onUpdateItem(index, { animation: e.target.value })} className="w-full h-10 bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs text-slate-300 outline-none focus:border-sky-500/50 resize-none custom-scrollbar" placeholder="Motion prompt for Runway/Luma..." />
+                                                    <textarea value={item.animation || ''} onChange={e => onUpdateItem(index, { animation: e.target.value })} className="w-full h-10 bg-slate-950 border border-slate-800 rounded-sm p-2 text-[11px] text-slate-300 outline-none focus:border-sky-500/50 resize-none custom-scrollbar" placeholder="Motion prompt for Runway/Luma..." />
                                                 </div>
 
                                                 <div className="space-y-2 pt-2 border-t border-white/5">
-                                                    <label className="text-xs font-black text-slate-600 uppercase tracking-widest px-1">Preview Visual (Cores)</label>
-                                                    <ColoredPrompt promptData={getPromptData(index)} className="w-full h-auto min-h-16 bg-slate-950/50 border border-slate-800 rounded-2xl p-4 text-xs font-mono shadow-inner" />
+                                                    <label className="text-[12px] font-black text-slate-600 uppercase tracking-widest px-1">Preview Visual (Cores)</label>
+                                                    <ColoredPrompt promptData={getPromptData(index)} className="w-full h-auto min-h-16 bg-slate-950/50 border border-slate-800 rounded-md p-2 text-[11px] font-mono shadow-inner" />
                                                 </div>
                                             </div>
                                         </div>
@@ -1466,27 +1539,27 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
 
             {
                 (activeTab === 'characters' || activeTab === 'locations') && (
-                    <div className="flex flex-col gap-6 pb-32">
+                    <div className="flex flex-col gap-3 pb-32">
                         <div className="flex justify-between items-center">
-                            <h2 className="text-xs font-black text-white uppercase tracking-tight">
+                            <h2 className="text-[11px] font-black text-white uppercase tracking-tight">
                                 {activeTab === 'characters' ? 'Gerenciar Personagens' : 'Gerenciar Cenários'}
                             </h2>
                             <button 
                                 onClick={() => handleAddAsset(activeTab as any)}
-                                className="px-4 py-2 bg-brand-500 hover:bg-brand-400 text-white rounded-xl text-xs font-black uppercase flex items-center gap-2 shadow-lg transition-all active:scale-95"
+                                className="px-2 py-2 bg-brand-500 hover:bg-brand-400 text-white rounded-sm text-[11px] font-black uppercase flex items-center gap-2 shadow-lg transition-all active:scale-95"
                             >
                                 <Plus size={16} /> Adicionar {activeTab === 'characters' ? 'Personagem' : 'Cenário'}
                             </button>
                         </div>
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
                         {(activeTab === 'characters' ? projectCharacters : projectLocations).map((asset, index) => (
-                            <div key={asset.id} className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-6 flex flex-col gap-5 shadow-lg group hover:border-brand-500/30 transition-all">
-                                <div className="flex justify-between items-center text-xs font-black uppercase text-brand-400">
-                                    <span className={`px-2 py-1 rounded text-xs font-black ${activeTab === 'characters' ? 'bg-fuchsia-500/10 text-fuchsia-400' : 'bg-emerald-500/10 text-emerald-400'}`}>
+                            <div key={asset.id} className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-3 flex flex-col gap-5 shadow-lg group hover:border-brand-500/30 transition-all">
+                                <div className="flex justify-between items-center text-[11px] font-black uppercase text-brand-400">
+                                    <span className={`px-2 py-1 rounded text-[11px] font-black ${activeTab === 'characters' ? 'bg-fuchsia-500/10 text-fuchsia-400' : 'bg-emerald-500/10 text-emerald-400'}`}>
                                         {activeTab === 'characters' ? 'PERSONAGEM' : 'CENÁRIO'} #{index + 1}
                                     </span>
                                     <div className="flex items-center gap-3">
-                                        <span className="text-xs font-black text-slate-600 tracking-widest">{getAssetOccurrence(asset.id, activeTab === 'characters' ? 'char' : 'loc')}</span>
+                                        <span className="text-[11px] font-black text-slate-600 tracking-widest">{getAssetOccurrence(asset.id, activeTab === 'characters' ? 'char' : 'loc')}</span>
                                         <button 
                                             onClick={() => handleDeleteAsset(asset.id, activeTab as any)}
                                             className="text-slate-600 hover:text-red-500 transition-colors"
@@ -1496,7 +1569,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                         </button>
                                     </div>
                                 </div>
-                                <div className="aspect-square bg-black rounded-3xl overflow-hidden relative shadow-inner cursor-zoom-in">
+                                <div className="aspect-square bg-black rounded-md overflow-hidden relative shadow-inner cursor-zoom-in">
                                     {asset.imageUrl ? (
                                         <img
                                             src={asset.imageUrl}
@@ -1512,7 +1585,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                             {activeTab === 'characters' ? <Users size={48} /> : <MapPin size={48} />}
                                         </div>
                                     )}
-                                    {(asset.isGeneratingGoogle || asset.isGeneratingPollinations) && <div className="absolute inset-0 bg-slate-950/95 flex flex-col items-center justify-center gap-4"><Loader2 className="animate-spin text-brand-400" size={40} /></div>}
+                                    {(asset.isGeneratingGoogle || asset.isGeneratingPollinations) && <div className="absolute inset-0 bg-slate-950/95 flex flex-col items-center justify-center gap-2"><Loader2 className="animate-spin text-brand-400" size={40} /></div>}
                                     <div className="absolute top-4 right-4 flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-20">
                                         <button 
                                             onClick={() => handleGenerateAssetImage(asset, activeTab as any)} 
@@ -1523,7 +1596,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                         </button>
                                         <button 
                                             onClick={() => handleCompareModels(asset, activeTab as any)} 
-                                            className="px-3 py-1.5 bg-slate-900/90 backdrop-blur-md border border-slate-700 text-white rounded-lg shadow-xl hover:border-brand-500 transition-all active:scale-95 flex items-center gap-2"
+                                            className="px-3 py-1.5 bg-slate-900/90 backdrop-blur-md border border-slate-700 text-white rounded-sm shadow-xl hover:border-brand-500 transition-all active:scale-95 flex items-center gap-2"
                                         >
                                             <Sparkles size={12} className="text-brand-400" />
                                             <span className="text-[10px] font-black uppercase tracking-widest">MODELO</span>
@@ -1541,7 +1614,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                     const list = activeTab === 'characters' ? [...projectCharacters] : [...projectLocations];
                                                     onUpdateProjectInfo(activeTab as any, list.map(a => a.id === asset.id ? { ...a, name: e.target.value } : a));
                                                 }}
-                                                className="bg-transparent text-xs font-black text-white uppercase tracking-tight italic outline-none border-b border-transparent focus:border-brand-500/30"
+                                                className="bg-transparent text-[11px] font-black text-white uppercase tracking-tight italic outline-none border-b border-transparent focus:border-brand-500/30"
                                             />
                                         </div>
                                         <div className="flex flex-col gap-0.5 mt-1">
@@ -1553,13 +1626,13 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                     const list = activeTab === 'characters' ? [...projectCharacters] : [...projectLocations];
                                                     onUpdateProjectInfo(activeTab as any, list.map(a => a.id === asset.id ? { ...a, realName: e.target.value } : a));
                                                 }}
-                                                className="bg-transparent text-xs font-bold text-slate-400 uppercase tracking-widest outline-none border-b border-transparent focus:border-brand-500/30"
+                                                className="bg-transparent text-[11px] font-bold text-slate-400 uppercase tracking-widest outline-none border-b border-transparent focus:border-brand-500/30"
                                             />
                                         </div>
                                     </div>
                                     <div className="space-y-2">
                                         <div className="flex flex-col gap-1 px-1">
-                                            <label className="text-xs font-black text-slate-600 uppercase tracking-widest">Token Estético (Editável)</label>
+                                            <label className="text-[11px] font-black text-slate-600 uppercase tracking-widest">Token Estético (Editável)</label>
                                             <p className="text-[0.7rem] text-slate-500 italic leading-tight">
                                                 {activeTab === 'characters'
                                                     ? "REGRA DE OURO: Descreva apenas matéria física (pele, cabelo, roupa). Sem nomes reais ou termos de estilo."
@@ -1569,11 +1642,11 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                         <textarea value={asset.description} onChange={e => {
                                             const list = activeTab === 'characters' ? [...projectCharacters] : [...projectLocations];
                                             onUpdateProjectInfo(activeTab as any, list.map(a => a.id === asset.id ? { ...a, description: e.target.value } : a));
-                                        }} className="w-full h-24 bg-slate-950 border border-slate-800 rounded-2xl p-4 text-[13px] font-mono text-slate-300 outline-none focus:border-brand-500 shadow-inner resize-none custom-scrollbar" />
+                                        }} className="w-full h-24 bg-slate-950 border border-slate-800 rounded-md p-2 text-[13px] font-mono text-slate-300 outline-none focus:border-brand-500 shadow-inner resize-none custom-scrollbar" />
                                     </div>
                                     <div className="space-y-2">
-                                        <label className="text-xs font-black text-slate-600 uppercase tracking-widest px-1">Visualização do Motor</label>
-                                        <div className="w-full h-24 bg-slate-950/50 border border-slate-800 rounded-2xl p-4 text-[13px] font-mono overflow-y-auto scrollbar-hide shadow-inner">
+                                        <label className="text-[11px] font-black text-slate-600 uppercase tracking-widest px-1">Visualização do Motor</label>
+                                        <div className="w-full h-24 bg-slate-950/50 border border-slate-800 rounded-md p-2 text-[13px] font-mono overflow-y-auto scrollbar-hide shadow-inner">
                                             <span className={activeTab === 'characters' ? "text-fuchsia-400 font-bold" : "text-emerald-400 font-bold"}>
                                                 {asset.description}
                                             </span>
@@ -1589,38 +1662,38 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
 
             {
                 activeTab === 'props' && (
-                    <div className="flex flex-col gap-6 pb-32">
+                    <div className="flex flex-col gap-3 pb-32">
                         <div className="flex justify-between items-center">
-                            <h2 className="text-xs font-black text-white uppercase tracking-tight">Gerenciar Objetos (Props)</h2>
+                            <h2 className="text-[11px] font-black text-white uppercase tracking-tight">Gerenciar Objetos (Props)</h2>
                             <button 
                                 onClick={() => handleAddAsset('props')}
-                                className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-white rounded-xl text-xs font-black uppercase flex items-center gap-2 shadow-lg transition-all active:scale-95"
+                                className="px-2 py-2 bg-amber-500 hover:bg-amber-400 text-white rounded-sm text-[11px] font-black uppercase flex items-center gap-2 shadow-lg transition-all active:scale-95"
                             >
                                 <Plus size={16} /> Adicionar Objeto
                             </button>
                         </div>
                         {projectProps.length === 0 ? (
-                            <div className="flex flex-col items-center justify-center py-32 text-slate-600 gap-6">
-                                <div className="w-24 h-24 rounded-3xl bg-amber-500/5 border border-amber-500/20 flex items-center justify-center">
+                            <div className="flex flex-col items-center justify-center py-32 text-slate-600 gap-3">
+                                <div className="w-24 h-24 rounded-md bg-amber-500/5 border border-amber-500/20 flex items-center justify-center">
                                     <Box size={40} className="text-amber-500/30" />
                                 </div>
                                 <div className="text-center space-y-2">
-                                    <p className="text-xs font-black uppercase tracking-widest text-slate-500">Nenhum Objeto Detectado</p>
-                                    <p className="text-xs text-slate-600 max-w-sm">
+                                    <p className="text-[11px] font-black uppercase tracking-widest text-slate-500">Nenhum Objeto Detectado</p>
+                                    <p className="text-[11px] text-slate-600 max-w-sm">
                                         Objetos/itens com destaque narrativo (armas, relíquias, etc.) são detectados automaticamente na próxima geração de cenas.
                                     </p>
                                 </div>
                             </div>
                         ) : (
-                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
                                 {projectProps.map((prop, index) => (
-                                    <div key={prop.id} className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-6 flex flex-col gap-5 shadow-lg group hover:border-amber-500/30 transition-all">
-                                        <div className="flex justify-between items-center text-xs font-black uppercase">
-                                            <span className="bg-amber-500/10 text-amber-400 px-2 py-1 rounded text-xs font-black">
+                                    <div key={prop.id} className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-3 flex flex-col gap-5 shadow-lg group hover:border-amber-500/30 transition-all">
+                                        <div className="flex justify-between items-center text-[11px] font-black uppercase">
+                                            <span className="bg-amber-500/10 text-amber-400 px-2 py-1 rounded text-[11px] font-black">
                                                 OBJETO #{index + 1}
                                             </span>
                                             <div className="flex items-center gap-3">
-                                                <span className="text-xs font-black text-slate-600 tracking-widest">{getAssetOccurrence(prop.id, 'prop')} CENAS</span>
+                                                <span className="text-[11px] font-black text-slate-600 tracking-widest">{getAssetOccurrence(prop.id, 'prop')} CENAS</span>
                                                 <button 
                                                     onClick={() => handleDeleteAsset(prop.id, 'props')}
                                                     className="text-slate-600 hover:text-red-500 transition-colors"
@@ -1630,7 +1703,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                 </button>
                                             </div>
                                         </div>
-                                        <div className="aspect-square bg-black rounded-3xl overflow-hidden relative shadow-inner cursor-zoom-in">
+                                        <div className="aspect-square bg-black rounded-md overflow-hidden relative shadow-inner cursor-zoom-in">
                                             {prop.imageUrl ? (
                                                 <img
                                                     src={prop.imageUrl}
@@ -1646,7 +1719,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                     <Box size={48} />
                                                 </div>
                                             )}
-                                            {(prop.isGeneratingGoogle || prop.isGeneratingPollinations) && <div className="absolute inset-0 bg-slate-950/95 flex flex-col items-center justify-center gap-4"><Loader2 className="animate-spin text-amber-400" size={40} /></div>}
+                                            {(prop.isGeneratingGoogle || prop.isGeneratingPollinations) && <div className="absolute inset-0 bg-slate-950/95 flex flex-col items-center justify-center gap-2"><Loader2 className="animate-spin text-amber-400" size={40} /></div>}
                                             <div className="absolute top-4 right-4 flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-opacity z-20">
                                                 <button 
                                                     onClick={() => handleGenerateAssetImage(prop, 'props')} 
@@ -1657,7 +1730,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                 </button>
                                                 <button 
                                                     onClick={() => handleCompareModels(prop, 'props')} 
-                                                    className="px-3 py-1.5 bg-slate-900/90 backdrop-blur-md border border-slate-700 text-white rounded-lg shadow-xl hover:border-amber-500 transition-all active:scale-95 flex items-center gap-2"
+                                                    className="px-3 py-1.5 bg-slate-900/90 backdrop-blur-md border border-slate-700 text-white rounded-sm shadow-xl hover:border-amber-500 transition-all active:scale-95 flex items-center gap-2"
                                                 >
                                                     <Sparkles size={12} className="text-amber-400" />
                                                     <span className="text-[10px] font-black uppercase tracking-widest">MODELO</span>
@@ -1673,7 +1746,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                         onChange={e => {
                                                             onUpdateProjectInfo('props', projectProps.map(p => p.id === prop.id ? { ...p, name: e.target.value } : p));
                                                         }}
-                                                        className="bg-transparent text-xs font-black text-white uppercase tracking-tight italic outline-none border-b border-transparent focus:border-amber-500/30"
+                                                        className="bg-transparent text-[11px] font-black text-white uppercase tracking-tight italic outline-none border-b border-transparent focus:border-amber-500/30"
                                                     />
                                                 </div>
                                                 <div className="flex flex-col gap-0.5 mt-1">
@@ -1684,13 +1757,13 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                         onChange={e => {
                                                             onUpdateProjectInfo('props', projectProps.map(p => p.id === prop.id ? { ...p, realName: e.target.value } : p));
                                                         }}
-                                                        className="bg-transparent text-xs font-bold text-slate-400 uppercase tracking-widest outline-none border-b border-transparent focus:border-amber-500/30"
+                                                        className="bg-transparent text-[11px] font-bold text-slate-400 uppercase tracking-widest outline-none border-b border-transparent focus:border-amber-500/30"
                                                     />
                                                 </div>
                                             </div>
                                             <div className="space-y-2">
                                                 <div className="flex flex-col gap-1 px-1">
-                                                    <label className="text-xs font-black text-slate-600 uppercase tracking-widest">Token Físico (Editável)</label>
+                                                    <label className="text-[11px] font-black text-slate-600 uppercase tracking-widest">Token Físico (Editável)</label>
                                                     <p className="text-[0.7rem] text-slate-500 italic leading-tight">
                                                         7 variáveis obrigatórias: tipo, material, cor, textura, tamanho/forma, estado, detalhes únicos.
                                                     </p>
@@ -1700,12 +1773,12 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                     onChange={e => {
                                                         onUpdateProjectInfo('props', projectProps.map(p => p.id === prop.id ? { ...p, description: e.target.value } : p));
                                                     }}
-                                                    className="w-full h-28 bg-slate-950 border border-slate-800 rounded-2xl p-4 text-[13px] font-mono text-slate-300 outline-none focus:border-amber-500 shadow-inner resize-none custom-scrollbar"
+                                                    className="w-full h-28 bg-slate-950 border border-slate-800 rounded-md p-2 text-[13px] font-mono text-slate-300 outline-none focus:border-amber-500 shadow-inner resize-none custom-scrollbar"
                                                 />
                                             </div>
                                             <div className="space-y-2">
-                                                <label className="text-xs font-black text-slate-600 uppercase tracking-widest px-1">Visualização do Motor</label>
-                                                <div className="w-full h-16 bg-slate-950/50 border border-slate-800 rounded-2xl p-4 text-[13px] font-mono overflow-y-auto scrollbar-hide shadow-inner">
+                                                <label className="text-[11px] font-black text-slate-600 uppercase tracking-widest px-1">Visualização do Motor</label>
+                                                <div className="w-full h-16 bg-slate-950/50 border border-slate-800 rounded-md p-2 text-[13px] font-mono overflow-y-auto scrollbar-hide shadow-inner">
                                                     <span className="text-amber-400 font-bold">{prop.description}</span>
                                                 </div>
                                             </div>
@@ -1723,60 +1796,60 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                     <div className="space-y-12 pb-32">
                         <div className="bg-slate-900/50 p-12 rounded-[3rem] border border-slate-800 text-center space-y-8 shadow-2xl relative overflow-hidden group">
                             <div className="bg-brand-500/10 w-24 h-24 rounded-full flex items-center justify-center mx-auto border border-brand-500/20 shadow-inner"><Target className="text-brand-400" size={48} /></div>
-                            <div className="space-y-4 max-w-2xl mx-auto"><h2 className="text-xs font-black text-white uppercase tracking-tighter">Engenharia de <span className="text-brand-400">CTR Ninja</span></h2></div>
-                            <button onClick={handleGenerateTitles} disabled={isGeneratingTitles} className="bg-brand-500 hover:bg-brand-400 text-white px-12 py-5 rounded-[2rem] font-black uppercase text-xs tracking-[0.2em] shadow-2xl transition-all flex items-center gap-4 mx-auto active:scale-95">{isGeneratingTitles ? <Loader2 size={24} className="animate-spin" /> : <Zap size={24} />} Gerar Títulos Magnéticos</button>
+                            <div className="space-y-4 max-w-2xl mx-auto"><h2 className="text-[11px] font-black text-white uppercase tracking-tighter">Engenharia de <span className="text-brand-400">CTR Ninja</span></h2></div>
+                            <button onClick={handleGenerateTitles} disabled={isGeneratingTitles} className="bg-brand-500 hover:bg-brand-400 text-white px-12 py-5 rounded-[2rem] font-black uppercase text-[11px] tracking-[0.2em] shadow-2xl transition-all flex items-center gap-2 mx-auto active:scale-95">{isGeneratingTitles ? <Loader2 size={24} className="animate-spin" /> : <Zap size={24} />} Gerar Títulos Magnéticos</button>
                         </div>
                         {generatedTitles.length > 0 && (
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                                 {generatedTitles.map((item, idx) => {
                                     const isGenerating = generatingThumbnailMap[idx];
                                     const currentImageUrl = (item as any).imageUrl;
 
                                     return (
-                                        <div key={idx} className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-8 flex flex-col gap-6 hover:border-brand-500/30 transition-all shadow-xl group relative">
+                                        <div key={idx} className="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-8 flex flex-col gap-3 hover:border-brand-500/30 transition-all shadow-xl group relative">
                                             <div className="flex justify-between items-start">
-                                                <div className="bg-slate-950 px-4 py-2 rounded-xl text-brand-400 font-black text-xs uppercase border border-slate-800">Rank #{idx + 1}</div>
-                                                <span className="text-slate-500 font-black text-xs">{item.viralityScore}% CTR</span>
+                                                <div className="bg-slate-950 px-2 py-2 rounded-sm text-brand-400 font-black text-[11px] uppercase border border-slate-800">Rank #{idx + 1}</div>
+                                                <span className="text-slate-500 font-black text-[11px]">{item.viralityScore}% CTR</span>
                                             </div>
-                                            <h3 className="text-xs font-black uppercase tracking-tight text-slate-200 whitespace-pre-line leading-tight">{item.title}</h3>
+                                            <h3 className="text-[11px] font-black uppercase tracking-tight text-slate-200 whitespace-pre-line leading-tight">{item.title}</h3>
 
                                             {currentImageUrl && (
-                                                <div className={`w-full rounded-2xl overflow-hidden border border-slate-800 shadow-2xl relative group-hover:border-brand-500 transition-all cursor-zoom-in ${settings.aspectRatio === '9:16' ? 'aspect-[9/16] w-1/2 mx-auto' : 'aspect-video'}`} onClick={() => setViewingImageState({ imageUrl: currentImageUrl, promptData: { action: item.thumbnailVisual, style: activeStylePrompt }, filename: `thumbnail_${idx + 1}.png` })}>
+                                                <div className={`w-full rounded-md overflow-hidden border border-slate-800 shadow-2xl relative group-hover:border-brand-500 transition-all cursor-zoom-in ${settings.aspectRatio === '9:16' ? 'aspect-[9/16] w-1/2 mx-auto' : 'aspect-video'}`} onClick={() => setViewingImageState({ imageUrl: currentImageUrl, promptData: { action: item.thumbnailVisual, style: activeStylePrompt }, filename: `thumbnail_${idx + 1}.png` })}>
                                                     <img src={currentImageUrl} className="w-full h-full object-cover" />
                                                     <div className="absolute inset-x-0 bottom-0 bg-black/60 backdrop-blur-md p-3 text-center">
-                                                        <span className="text-white font-black italic uppercase text-xs tracking-tight">"{item.thumbnailText}"</span>
+                                                        <span className="text-white font-black italic uppercase text-[11px] tracking-tight">"{item.thumbnailText}"</span>
                                                     </div>
                                                 </div>
                                             )}
 
-                                            <div className="bg-slate-950/40 p-4 rounded-2xl border border-slate-800 space-y-3">
-                                                <p className="text-brand-400 text-xs font-black uppercase tracking-widest flex items-center gap-2"><Layers size={12} /> Gatilho & Lógica</p>
-                                                <p className="text-slate-500 text-xs italic">"{item.explanation}"</p>
+                                            <div className="bg-slate-950/40 p-2 rounded-md border border-slate-800 space-y-3">
+                                                <p className="text-brand-400 text-[11px] font-black uppercase tracking-widest flex items-center gap-2"><Layers size={12} /> Gatilho & Lógica</p>
+                                                <p className="text-slate-500 text-[11px] italic">"{item.explanation}"</p>
                                             </div>
-                                            <div className="bg-slate-950/40 p-4 rounded-2xl border border-slate-800 space-y-4">
+                                            <div className="bg-slate-950/40 p-2 rounded-md border border-slate-800 space-y-4">
                                                 <div className="flex justify-between items-center">
-                                                    <p className="text-emerald-400 text-xs font-black uppercase tracking-widest flex items-center gap-2"><ImageIcon size={12} /> Sugestão de Thumbnail</p>
+                                                    <p className="text-emerald-400 text-[11px] font-black uppercase tracking-widest flex items-center gap-2"><ImageIcon size={12} /> Sugestão de Thumbnail</p>
                                                     <button
                                                         onClick={() => handleGenerateThumbnail(idx)}
                                                         disabled={isGenerating}
-                                                        className="bg-emerald-500 hover:bg-emerald-400 text-white px-3 py-1.5 rounded-lg text-xs font-black uppercase flex items-center gap-2 transition-all shadow-lg active:scale-95 disabled:opacity-50"
+                                                        className="bg-emerald-500 hover:bg-emerald-400 text-white px-3 py-1.5 rounded-sm text-[11px] font-black uppercase flex items-center gap-2 transition-all shadow-lg active:scale-95 disabled:opacity-50"
                                                     >
                                                         {isGenerating ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />}
                                                         {currentImageUrl ? 'Regerar Thumbnail' : 'Criar Thumbnail'}
                                                     </button>
                                                 </div>
                                                 <div className="space-y-2">
-                                                    <p className="text-xs text-slate-500 uppercase font-black tracking-widest">Visual:</p>
-                                                    <p className="text-slate-300 text-xs">{item.thumbnailVisual}</p>
+                                                    <p className="text-[11px] text-slate-500 uppercase font-black tracking-widest">Visual:</p>
+                                                    <p className="text-slate-300 text-[11px]">{item.thumbnailVisual}</p>
                                                 </div>
                                                 <div className="space-y-2">
-                                                    <p className="text-xs text-slate-500 uppercase font-black tracking-widest">Texto na Imagem:</p>
-                                                    <p className="text-emerald-300 font-black uppercase text-xs italic">"{item.thumbnailText}"</p>
+                                                    <p className="text-[11px] text-slate-500 uppercase font-black tracking-widest">Texto na Imagem:</p>
+                                                    <p className="text-emerald-300 font-black uppercase text-[11px] italic">"{item.thumbnailText}"</p>
                                                 </div>
                                             </div>
                                             <div className="flex justify-between items-center pt-2 border-t border-slate-800/50">
-                                                <button onClick={() => { navigator.clipboard.writeText(item.title); alert("Copiado!"); }} className="text-brand-400 text-xs font-black uppercase">Copiar Título</button>
-                                                {item.abWinnerReason && <span className="text-xs font-black text-slate-700 uppercase">A/B Winner Priority</span>}
+                                                <button onClick={() => { navigator.clipboard.writeText(item.title); alert("Copiado!"); }} className="text-brand-400 text-[11px] font-black uppercase">Copiar Título</button>
+                                                {item.abWinnerReason && <span className="text-[11px] font-black text-slate-700 uppercase">A/B Winner Priority</span>}
                                             </div>
                                         </div>
                                     );
@@ -1819,15 +1892,15 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
 
             {/* Modal de Comparação de Modelos (MODELO) */}
             {isComparing && (
-                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-xl">
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-2 bg-slate-950/90 backdrop-blur-xl">
                     <div className="bg-slate-900 border border-slate-800 rounded-[3rem] w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
                         <div className="p-8 border-b border-slate-800 flex justify-between items-center bg-slate-900/80">
                             <div>
-                                <h3 className="text-xs font-black text-white uppercase tracking-tighter flex items-center gap-3">
+                                <h3 className="text-[11px] font-black text-white uppercase tracking-tighter flex items-center gap-3">
                                     <Sparkles className="text-brand-400" size={24} /> 
                                     Comparar Modelos de IA
                                 </h3>
-                                <p className="text-slate-500 text-xs font-bold uppercase tracking-widest mt-1">
+                                <p className="text-slate-500 text-[11px] font-bold uppercase tracking-widest mt-1">
                                     Escolha o melhor visual para definir o padrão do projeto
                                 </p>
                             </div>
@@ -1840,11 +1913,11 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                         </div>
                         
                         <div className="flex-1 overflow-y-auto p-10 custom-scrollbar">
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                                 {comparisonResults.map((res) => (
-                                    <div key={res.modelId} className="group flex flex-col gap-4">
+                                    <div key={res.modelId} className="group flex flex-col gap-2">
                                         <div className="flex justify-between items-center px-1">
-                                            <span className="text-xs font-black text-slate-500 uppercase tracking-[0.2em]">{res.label}</span>
+                                            <span className="text-[11px] font-black text-slate-500 uppercase tracking-[0.2em]">{res.label}</span>
                                             {res.loading && <Loader2 className="animate-spin text-brand-400" size={16} />}
                                         </div>
                                         
@@ -1855,14 +1928,14 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                     <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center backdrop-blur-[2px]">
                                                         <button 
                                                             onClick={() => handleSelectModel(res.modelId, res.imageUrl)}
-                                                            className="bg-brand-500 hover:bg-brand-400 text-white px-8 py-3 rounded-full font-black uppercase text-xs tracking-widest shadow-2xl transform translate-y-4 group-hover:translate-y-0 transition-all active:scale-95"
+                                                            className="bg-brand-500 hover:bg-brand-400 text-white px-8 py-3 rounded-full font-black uppercase text-[11px] tracking-widest shadow-2xl transform translate-y-4 group-hover:translate-y-0 transition-all active:scale-95"
                                                         >
                                                             Escolher este Estilo
                                                         </button>
                                                     </div>
                                                 </>
                                             ) : (
-                                                <div className="w-full h-full flex flex-col items-center justify-center gap-4 text-slate-700">
+                                                <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-slate-700">
                                                     {res.loading ? (
                                                         <>
                                                             <div className="w-32 h-1 bg-slate-800 rounded-full overflow-hidden">
@@ -1872,7 +1945,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                         </>
                                                     ) : (
                                                         res.error ? (
-                                                            <div className="text-center p-6 space-y-2">
+                                                            <div className="text-center p-3 space-y-2">
                                                                 <Ban className="mx-auto text-red-500/50" size={32} />
                                                                 <p className="text-[10px] text-red-400 font-bold uppercase leading-tight">{res.error}</p>
                                                             </div>

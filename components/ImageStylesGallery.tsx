@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Palette, Sparkles, Zap, Loader2, ImageIcon, ArrowLeft, Download, Info, RefreshCw, Trash2, CheckCircle, PlayCircle } from 'lucide-react';
 import { AppSettings, ImageStyleOption, StyleExample } from '../types';
-import { generateImage, IMAGEN_MODEL_NAME, IMAGE_MODEL_NAME } from '../services/geminiService';
+import { generateImage, IMAGEN_ULTRA_MODEL_NAME, IMAGEN_FAST_MODEL_NAME, NANO_MODEL_NAME } from '../services/geminiService';
 import { generatePollinationsImage } from '../services/pollinationsService';
 import { saveStyleExample, getStyleExamples, clearStyleExamples } from '../services/storageService';
 
@@ -16,12 +16,22 @@ const TEST_PROMPT_BASE = "Cenário: O interior de uma biblioteca antiga e mágic
 export const ImageStylesGallery: React.FC<ImageStylesGalleryProps> = ({ settings, onBack }) => {
   const [examples, setExamples] = useState<Record<string, StyleExample>>({});
   const [loadingStyles, setLoadingStyles] = useState<Record<string, boolean>>({});
-  const [provider, setProvider] = useState<'google-nano' | 'google-imagen' | 'pollinations' | 'pollinations-zimage'>('google-imagen');
+  const [provider, setProvider] = useState<'google-nano' | 'google-imagen' | 'pollinations-flux' | 'pollinations-zimage'>('google-imagen');
   const [isAutoGenerating, setIsAutoGenerating] = useState(false);
+  const [autoGenProgress, setAutoGenProgress] = useState(0);
+  const [autoGenCurrentLabel, setAutoGenCurrentLabel] = useState('');
   const [userIdea, setUserIdea] = useState('');
+  
+  // Estados para o Benchmark de 4 Colunas
+  const [benchmarkStates, setBenchmarkStates] = useState<Record<string, { url: string, loading: boolean, error: string }>>({
+    'google-fast': { url: '', loading: false, error: '' },
+    'google-nano': { url: '', loading: false, error: '' },
+    'pollinations-flux': { url: '', loading: false, error: '' },
+    'pollinations-zimage': { url: '', loading: false, error: '' }
+  });
+
   const abortRef = useRef(false);
 
-  // Carregar exemplos do cache ao montar (apenas carrega, não gera)
   useEffect(() => {
     loadCachedExamples();
     return () => { abortRef.current = true; };
@@ -31,29 +41,86 @@ export const ImageStylesGallery: React.FC<ImageStylesGalleryProps> = ({ settings
     try {
       const cached = await getStyleExamples();
       const map: Record<string, StyleExample> = {};
-      cached.forEach(ex => map[ex.styleId] = ex);
+      const benchMap = { 
+        'google-fast': { url: '', loading: false, error: '' },
+        'google-nano': { url: '', loading: false, error: '' },
+        'pollinations-flux': { url: '', loading: false, error: '' },
+        'pollinations-zimage': { url: '', loading: false, error: '' }
+      };
+
+      cached.forEach(ex => {
+        if (ex.styleId === 'benchmark_master') {
+          if (ex.providerId && benchMap[ex.providerId as keyof typeof benchMap]) {
+            benchMap[ex.providerId as keyof typeof benchMap] = { url: ex.imageUrl, loading: false, error: '' };
+          }
+        } else {
+          map[ex.styleId] = ex;
+        }
+      });
       setExamples(map);
+      setBenchmarkStates(benchMap);
     } catch (e) { console.error(e); }
   };
 
-  const handleGenerate = async (style: ImageStyleOption, silent = false) => {
+  // O useEffect abaixo foi removido para evitar recarregamento desnecessário, 
+  // já que a galeria agora é única e persistente independente do seletor visual de benchmark.
+  /*
+  useEffect(() => {
+    loadCachedExamples();
+  }, [provider]);
+  */
+
+  const handleGenerateBenchmark = async (targetProvider: string) => {
+    setBenchmarkStates(prev => ({ ...prev, [targetProvider]: { ...prev[targetProvider], loading: true, error: '' } }));
+    try {
+      const promptBase = userIdea.trim() || TEST_PROMPT_BASE;
+      const finalPrompt = `${promptBase}. Strictly: Absolutely no text, no written characters, no alphabet, no letters, no words, no typography. Pure imagery only.`;
+
+      let result: { image: string };
+      if (targetProvider === 'google-ultra') result = await generateImage(finalPrompt, '16:9', IMAGEN_ULTRA_MODEL_NAME);
+      else if (targetProvider === 'google-fast') result = await generateImage(finalPrompt, '16:9', IMAGEN_FAST_MODEL_NAME);
+      else if (targetProvider === 'google-nano') result = await generateImage(finalPrompt, '16:9', NANO_MODEL_NAME);
+      else if (targetProvider === 'pollinations-flux') result = await generatePollinationsImage(finalPrompt, 'flux', "", '16:9');
+      else if (targetProvider === 'pollinations-zimage') result = await generatePollinationsImage(finalPrompt, 'zimage', "", '16:9');
+      else throw new Error("Provedor inválido");
+
+      const masterExample: StyleExample = {
+        styleId: 'benchmark_master',
+        providerId: targetProvider,
+        imageUrl: result.image,
+        prompt: promptBase,
+        timestamp: Date.now()
+      };
+      await saveStyleExample(masterExample);
+      setBenchmarkStates(prev => ({ ...prev, [targetProvider]: { url: result.image, loading: false, error: '' } }));
+    } catch (error: any) {
+      setBenchmarkStates(prev => ({ ...prev, [targetProvider]: { url: '', loading: false, error: error.message || 'Falha na API' } }));
+    }
+  };
+
+  const handleGlobalBenchmark = async () => {
+    // Dispara as 4 simultaneamente
+    const providers = ['google-fast', 'google-nano', 'pollinations-flux', 'pollinations-zimage'];
+    await Promise.all(providers.map(p => handleGenerateBenchmark(p)));
+  };
+
+  const handleGenerate = async (style: ImageStyleOption, targetProvider: string, silent = false) => {
     if (!silent) setLoadingStyles(prev => ({ ...prev, [style.id]: true }));
     try {
       const promptBase = userIdea.trim() || TEST_PROMPT_BASE;
       const finalPrompt = `${promptBase} style: ${style.prompt}, Strictly: Absolutely no text, no written characters, no alphabet, no letters, no words, no typography. Pure imagery only.`;
 
-      const isPol = provider.startsWith('pollinations');
-      const isPollinationsZ = provider === 'pollinations-zimage';
-      const isGoogleImagen = provider === 'google-imagen';
-      const polModel = isPollinationsZ ? 'zimage' : 'flux';
-      const geminiModel = isGoogleImagen ? IMAGEN_MODEL_NAME : IMAGE_MODEL_NAME;
-
-      const result = !isPol
-        ? await generateImage(finalPrompt, '16:9', geminiModel)
-        : await generatePollinationsImage(finalPrompt, polModel, "", '16:9');
+      let result: { image: string };
+      if (targetProvider === 'google-ultra') result = await generateImage(finalPrompt, '16:9', IMAGEN_ULTRA_MODEL_NAME);
+      else if (targetProvider === 'google-fast') result = await generateImage(finalPrompt, '16:9', IMAGEN_FAST_MODEL_NAME);
+      else if (targetProvider === 'google-nano') result = await generateImage(finalPrompt, '16:9', NANO_MODEL_NAME);
+      else if (targetProvider === 'pollinations-flux') result = await generatePollinationsImage(finalPrompt, 'flux', "", '16:9');
+      else if (targetProvider === 'pollinations-zimage') result = await generatePollinationsImage(finalPrompt, 'zimage', "", '16:9');
+      else throw new Error("Provedor inválido");
 
       const newExample: StyleExample = {
         styleId: style.id,
+        providerId: targetProvider,
         imageUrl: result.image,
         prompt: style.prompt,
         timestamp: Date.now()
@@ -62,36 +129,49 @@ export const ImageStylesGallery: React.FC<ImageStylesGalleryProps> = ({ settings
       await saveStyleExample(newExample);
       setExamples(prev => ({ ...prev, [style.id]: newExample }));
     } catch (error: any) {
-      if (!silent) alert(`Erro ao gerar estilo ${style.label}: ${error.message}`);
+      if (!silent) alert(`Erro ao gerar estilo ${style.label} com ${targetProvider}: ${error.message}`);
       throw error;
     } finally {
       if (!silent) setLoadingStyles(prev => ({ ...prev, [style.id]: false }));
     }
   };
 
-  const handleAutoGenerate = async (stylesToGen: ImageStyleOption[]) => {
+  const handleManualBuild = async (targetProvider: 'google-fast' | 'google-nano' | 'pollinations-flux' | 'pollinations-zimage') => {
     if (isAutoGenerating) return;
+    setProvider(targetProvider);
     setIsAutoGenerating(true);
+    setAutoGenProgress(0);
     abortRef.current = false;
 
-    for (const style of stylesToGen) {
+    const total = settings.items.length;
+    for (let i = 0; i < total; i++) {
+      const style = settings.items[i];
       if (abortRef.current) break;
+      setAutoGenCurrentLabel(style.label);
+      setAutoGenProgress(Math.round(((i) / total) * 100));
       setLoadingStyles(prev => ({ ...prev, [style.id]: true }));
       try {
-        await handleGenerate(style, true);
+        await handleGenerate(style, targetProvider, true);
       } catch (e) {
         console.error(`Falha ao auto-gerar ${style.label}`, e);
       } finally {
         setLoadingStyles(prev => ({ ...prev, [style.id]: false }));
       }
     }
-    setIsAutoGenerating(false);
+    setAutoGenProgress(100);
+    setTimeout(() => setIsAutoGenerating(false), 1000);
   };
 
   const handleResetGallery = async () => {
     if (!confirm("Isso apagará todas as imagens de exemplo salvas e reiniciará a galeria. Deseja continuar?")) return;
     await clearStyleExamples();
     setExamples({});
+    setBenchmarkStates({
+      'google-fast': { url: '', loading: false, error: '' },
+      'google-nano': { url: '', loading: false, error: '' },
+      'pollinations-flux': { url: '', loading: false, error: '' },
+      'pollinations-zimage': { url: '', loading: false, error: '' }
+    });
   };
 
   const handleStopAuto = () => {
@@ -99,103 +179,179 @@ export const ImageStylesGallery: React.FC<ImageStylesGalleryProps> = ({ settings
     setIsAutoGenerating(false);
   };
 
-  const hasMissingImages = settings.items.some(s => !examples[s.id]);
-
   return (
     <div className="w-full max-w-7xl mx-auto py-12 px-4 animate-in fade-in slide-in-from-bottom-4 duration-700">
 
-      {/* Top Navigation — Single Row */}
-      <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
-        <div className="flex items-center gap-4">
-          <button
-            onClick={onBack}
-            className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 hover:text-brand-400 transition-colors"
-          >
-            <ArrowLeft size={14} /> Voltar
-          </button>
-          <div className="w-px h-5 bg-slate-800" />
-          <div className="flex items-center gap-3">
-            <div className="bg-brand-500/10 p-2 rounded-2xl border border-brand-500/20 text-brand-400">
-              <Palette size={20} />
+      {/* Top Header */}
+      <div className="flex items-center justify-between mb-12">
+        <button
+          onClick={onBack}
+          className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-slate-500 hover:text-brand-400 transition-colors"
+        >
+          <ArrowLeft size={14} /> Voltar
+        </button>
+        <div className="flex items-center gap-3">
+          <div className="bg-brand-500/10 p-2 rounded-2xl border border-brand-500/20 text-brand-400">
+            <Palette size={20} />
+          </div>
+          <h1 className="text-xl font-black text-white uppercase tracking-tighter italic leading-none">Galeria de <span className="text-brand-400">Estilos</span></h1>
+        </div>
+        <div className="w-24" /> {/* Spacer */}
+      </div>
+
+      {/* Layout Principal: Prompt + Benchmark */}
+      <div className="space-y-12 mb-20">
+        {/* Barra de Prompt e Ação Principal */}
+        <div className="bg-slate-900/40 p-1.5 rounded-[2.5rem] border border-slate-800/50 backdrop-blur-2xl shadow-2xl flex flex-col md:flex-row items-center gap-2 group focus-within:border-brand-500/30 transition-all duration-500">
+          <div className="flex-1 w-full flex items-center gap-4 px-6 py-4">
+            <div className="text-brand-400 opacity-50 group-focus-within:opacity-100 transition-opacity">
+              <Sparkles size={24} />
             </div>
-            <div>
-              <h1 className="text-xl font-black text-white uppercase tracking-tighter italic leading-none">Galeria de <span className="text-brand-400">Estilos</span></h1>
-              <p className="text-slate-500 text-[10px] font-medium">Guia visual de calibração estética echoVID.</p>
+            <div className="flex-1">
+              <label className="text-[10px] font-black uppercase text-slate-500 tracking-[0.3em] mb-1 block italic opacity-50">Ideia para Benchmark Global</label>
+              <input
+                type="text"
+                value={userIdea}
+                onChange={(e) => setUserIdea(e.target.value)}
+                placeholder="Descreva uma cena mágica para testar as IAs..."
+                className="w-full bg-transparent text-white placeholder-slate-800 outline-none text-xl font-bold tracking-tight"
+              />
             </div>
+          </div>
+          <div className="flex items-center gap-2 p-2 w-full md:w-auto">
+            <button 
+              onClick={handleGlobalBenchmark}
+              disabled={isAutoGenerating}
+              className="flex-1 md:flex-none px-10 py-5 bg-gradient-to-br from-brand-500 to-brand-600 hover:from-brand-400 hover:to-brand-500 text-white rounded-[1.8rem] font-black uppercase text-xs tracking-[0.2em] transition-all shadow-xl shadow-brand-500/20 active:scale-95 disabled:opacity-50 flex items-center gap-3"
+            >
+              Criar Benchmark <Zap size={16} />
+            </button>
+            <button 
+              onClick={handleResetGallery}
+              className="p-5 bg-slate-950/50 hover:bg-red-500/10 text-slate-700 hover:text-red-400 rounded-[1.8rem] border border-slate-800/50 transition-all active:scale-95"
+              title="Limpar Tudo"
+            >
+              <Trash2 size={20} />
+            </button>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3 bg-slate-900/60 px-4 py-2 rounded-2xl border border-slate-800">
-          <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800">
-            <button onClick={() => setProvider('google-nano')} className={`px-3 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${provider === 'google-nano' ? 'bg-slate-700 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}>Nano Pro</button>
-            <button onClick={() => setProvider('google-imagen')} className={`px-3 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${provider === 'google-imagen' ? 'bg-brand-500 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}>Imagen 4 Fast</button>
-            <button onClick={() => setProvider('pollinations')} className={`px-3 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${provider === 'pollinations' ? 'bg-indigo-500 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}>Flux Cinematic</button>
-            <button onClick={() => setProvider('pollinations-zimage')} className={`px-3 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${provider === 'pollinations-zimage' ? 'bg-emerald-500 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}>ZImage Magic</button>
-          </div>
-          <div className="flex items-center gap-2">
-            {isAutoGenerating ? (
-              <button onClick={handleStopAuto} className="bg-red-500/10 hover:bg-red-500/20 text-red-400 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 transition-all border border-red-500/20">
-                <Loader2 size={14} className="animate-spin" /> Parar
-              </button>
-            ) : (
-              <button onClick={() => handleAutoGenerate(settings.items)} className="bg-slate-800 hover:bg-slate-700 text-brand-400 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 transition-all border border-slate-700">
-                <RefreshCw size={14} /> Regerar Tudo
-              </button>
-            )}
-            <button onClick={handleResetGallery} className="p-2 text-slate-600 hover:text-red-500 transition-colors" title="Limpar Cache"><Trash2 size={16} /></button>
-          </div>
+        {/* 4 Colunas de Modelos */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8">
+          {[
+            { id: 'google-fast', label: 'Imagen 4 Fast', color: 'from-blue-400 to-cyan-500' },
+            { id: 'google-nano', label: 'Nano Banana $0,039', color: 'from-amber-400 to-orange-600' },
+            { id: 'pollinations-flux', label: 'Flux Cinematic', color: 'from-purple-500 to-pink-600' },
+            { id: 'pollinations-zimage', label: 'ZImage Magic', color: 'from-emerald-500 to-teal-600' }
+          ].map((m) => (
+            <div key={m.id} className={`bg-slate-900/30 border border-slate-800/50 rounded-[2.5rem] overflow-hidden flex flex-col shadow-2xl transition-all duration-500 group relative ${provider === m.id ? 'ring-2 ring-brand-500/50 scale-[1.02] bg-slate-900/60' : 'hover:border-slate-700 hover:scale-[1.01]'}`}>
+              
+              <div className="aspect-[4/5] bg-slate-950 relative flex items-center justify-center overflow-hidden">
+                {benchmarkStates[m.id].url ? (
+                  <img src={benchmarkStates[m.id].url} alt={m.label} className="w-full h-full object-cover transition-transform duration-1000 group-hover:scale-110" />
+                ) : benchmarkStates[m.id].error ? (
+                  <div className="p-8 text-center bg-red-500/5 h-full flex flex-col items-center justify-center">
+                    <div className="bg-red-500/20 p-3 rounded-full text-red-400 mb-4">
+                      <Info size={24} />
+                    </div>
+                    <span className="text-red-400 text-[10px] font-black uppercase tracking-widest block mb-2">ERRO API</span>
+                    <p className="text-slate-500 text-[10px] leading-relaxed line-clamp-3 mb-6 italic">{benchmarkStates[m.id].error}</p>
+                    <button onClick={() => handleGenerateBenchmark(m.id)} className="px-6 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-[9px] font-black uppercase text-white tracking-widest transition-all">Re-tentar</button>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center gap-4 opacity-5 group-hover:opacity-10 transition-opacity">
+                    <ImageIcon size={64} />
+                    <span className="text-[10px] font-black uppercase tracking-[0.4em]">Standby</span>
+                  </div>
+                )}
+
+                {/* Overlays */}
+                <div className={`absolute top-6 left-6 px-4 py-1.5 rounded-full text-[9px] font-black uppercase tracking-[0.2em] text-white bg-gradient-to-r ${m.color} shadow-lg z-10`}>
+                  {m.label}
+                </div>
+
+                {benchmarkStates[m.id].loading && (
+                  <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-md flex flex-col items-center justify-center gap-6 z-20">
+                    <div className="relative">
+                      <div className={`w-12 h-12 rounded-full border-2 border-brand-500/20 border-t-brand-400 animate-spin`}></div>
+                      <Sparkles className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-brand-400 animate-pulse" size={16} />
+                    </div>
+                    <span className="text-[10px] font-black uppercase text-brand-400 tracking-[0.4em]">Renderizando...</span>
+                  </div>
+                )}
+              </div>
+              
+              <div className="p-8 flex flex-col gap-6 bg-gradient-to-b from-transparent to-slate-950/50">
+                <div className="flex flex-col gap-1">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[11px] font-black uppercase text-white tracking-widest italic">{m.label.split(' ')[0]}</span>
+                    <div className={`w-1.5 h-1.5 rounded-full bg-gradient-to-r ${m.color} animate-pulse`}></div>
+                  </div>
+                  <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">Engine Power</span>
+                </div>
+
+                <button 
+                  onClick={() => handleManualBuild(m.id as any)}
+                  disabled={isAutoGenerating}
+                  className={`w-full py-5 rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] transition-all border flex items-center justify-center gap-3 ${provider === m.id ? 'bg-white text-slate-950 border-white shadow-[0_0_30px_rgba(255,255,255,0.2)]' : 'bg-slate-950/50 text-slate-400 border-slate-800/50 hover:text-white hover:border-slate-600'}`}
+                >
+                  {isAutoGenerating && provider === m.id ? (
+                    <><Loader2 size={16} className="animate-spin" /> Gerando...</>
+                  ) : (
+                    <>Gerar Manual <ArrowLeft className="rotate-180" size={14} /></>
+                  )}
+                </button>
+              </div>
+              
+              {/* Active Glow */}
+              {provider === m.id && (
+                <div className={`absolute bottom-0 left-0 right-0 h-1 bg-gradient-to-r ${m.color}`}></div>
+              )}
+            </div>
+          ))}
         </div>
       </div>
 
-      {/* Idea Input Row — Compacto */}
-      <div className="mb-6">
-        <div className="bg-slate-900/60 px-5 py-3 rounded-2xl border border-slate-800 flex items-center gap-4">
-          <div className="bg-brand-500/10 p-2 rounded-xl text-brand-400 border border-brand-500/20 shrink-0">
-            <Sparkles size={16} />
+      {/* Feedback de Progresso Global */}
+      {isAutoGenerating && (
+        <div className="mb-12 animate-in fade-in slide-in-from-top-4 duration-500">
+          <div className="bg-slate-900/80 border border-brand-500/30 backdrop-blur-xl rounded-3xl p-8 shadow-2xl relative overflow-hidden">
+            <div className="flex justify-between items-end mb-4 relative z-10">
+              <div>
+                <span className="text-[10px] font-black uppercase text-brand-400 tracking-[0.4em] mb-1 block">Construindo Manual Estrutural</span>
+                <h2 className="text-2xl font-black text-white uppercase italic tracking-tighter italic leading-none">Pintando: <span className="text-brand-400">{autoGenCurrentLabel}</span></h2>
+              </div>
+              <div className="text-right text-white font-mono text-xl font-black italic">{autoGenProgress}%</div>
+            </div>
+            {/* Background Bar */}
+            <div className="w-full h-3 bg-slate-950 rounded-full border border-slate-800 overflow-hidden relative">
+              <div 
+                className="h-full bg-gradient-to-r from-brand-600 to-indigo-500 transition-all duration-700 shadow-[0_0_20px_rgba(var(--brand-rgb),0.5)]" 
+                style={{ width: `${autoGenProgress}%` }}
+              />
+            </div>
+            {/* Cancel Button */}
+            <button 
+              onClick={handleStopAuto}
+              className="mt-6 flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-red-500 hover:text-red-400 transition-colors"
+            >
+              <Trash2 size={12} /> Abortar Sequência
+            </button>
           </div>
-          <div className="flex-1">
-            <label className="text-[9px] font-black uppercase text-slate-500 tracking-[0.2em]">Ideia para Teste de Estilo</label>
-            <input
-              type="text"
-              value={userIdea}
-              onChange={(e) => setUserIdea(e.target.value)}
-              placeholder="Ex: Um astronauta medieval em Marte..."
-              className="w-full bg-transparent text-white placeholder-slate-700 outline-none text-sm font-medium"
-            />
-          </div>
-          <span className="text-[9px] text-slate-600 italic hidden md:block shrink-0">Vazio = Biblioteca Mágica</span>
-        </div>
-      </div>
-
-      {/* Empty Gallery Prompt */}
-      {hasMissingImages && !isAutoGenerating && Object.keys(examples).length === 0 && (
-        <div className="bg-slate-900/60 border border-slate-800 rounded-[3rem] p-20 flex flex-col items-center justify-center text-center gap-8 mb-20 animate-in fade-in zoom-in duration-500">
-          <div className="bg-brand-500/10 p-10 rounded-full text-brand-400 border border-brand-500/20">
-            <PlayCircle size={80} />
-          </div>
-          <div className="max-w-xl space-y-4">
-            <h2 className="text-3xl font-black text-white uppercase tracking-tight">Galeria Vazia</h2>
-            <p className="text-slate-500 text-sm font-medium">Escolha seu provedor acima (Gemini ou Flux) e inicie a geração automática para criar seu manual visual de referência.</p>
-          </div>
-          <button
-            onClick={() => handleAutoGenerate(settings.items)}
-            className="px-12 py-5 bg-brand-500 text-white rounded-3xl font-black uppercase text-xs tracking-[0.3em] hover:bg-brand-400 transition-all shadow-2xl shadow-brand-500/20"
-          >
-            Gerar Manual de Estilos
-          </button>
         </div>
       )}
 
+      <div className="h-px bg-slate-800/50 mb-12" />
+
       {/* Grid de Estilos */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
+      <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 ${isAutoGenerating ? 'opacity-50 pointer-events-none' : ''}`}>
         {settings.items.map((style) => {
           const example = examples[style.id];
           const isLoading = loadingStyles[style.id];
 
           return (
-            <div key={style.id} className="bg-slate-900/40 border border-slate-800 rounded-[3rem] overflow-hidden flex flex-col shadow-2xl group hover:border-brand-500/30 transition-all duration-500">
+            <div key={style.id} className="bg-slate-900/40 border border-slate-800 rounded-[2.5rem] overflow-hidden flex flex-col shadow-2xl group hover:border-brand-500/30 transition-all duration-500">
 
-              {/* Media Container */}
               <div className="aspect-video bg-black relative flex items-center justify-center overflow-hidden">
                 {example ? (
                   <img
@@ -205,81 +361,47 @@ export const ImageStylesGallery: React.FC<ImageStylesGalleryProps> = ({ settings
                   />
                 ) : (
                   <div className="flex flex-col items-center gap-4 opacity-10">
-                    <ImageIcon size={80} />
-                    <span className="text-[10px] font-black uppercase tracking-[0.4em]">Fila de Espera</span>
+                    <ImageIcon size={60} />
+                    <span className="text-[10px] font-black uppercase tracking-[0.4em]">Fila</span>
                   </div>
                 )}
 
-                {/* Loading Overlay */}
                 {isLoading && (
-                  <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-md flex flex-col items-center justify-center gap-6 z-20">
-                    <div className="relative">
-                      <Loader2 className="animate-spin text-brand-400" size={64} />
-                      <Sparkles className="absolute -top-2 -right-2 text-brand-300 animate-pulse" size={24} />
-                    </div>
-                    <div className="text-center">
-                      <span className="text-[12px] font-black uppercase tracking-[0.3em] text-brand-400 block mb-1">Pintando Exemplo</span>
-                      <span className="text-[9px] text-slate-500 uppercase font-bold tracking-widest italic">Benchmark v1.85</span>
-                    </div>
+                  <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-md flex flex-col items-center justify-center gap-4 z-20">
+                    <Loader2 className="animate-spin text-brand-400" size={32} />
+                    <span className="text-[10px] font-black uppercase tracking-[0.3em] text-brand-400 block">Gerando...</span>
                   </div>
                 )}
 
-                {/* Botões de Ação na Imagem */}
                 {example && !isLoading && (
-                  <div className="absolute top-6 right-6 flex gap-3 opacity-0 group-hover:opacity-100 transition-all translate-y-2 group-hover:translate-y-0">
+                  <div className="absolute top-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-all">
                     <a
                       href={example.imageUrl}
-                      download={`echogen_style_${style.label.replace(/\s+/g, '_').toLowerCase()}.png`}
-                      className="p-3 bg-slate-900/80 text-white rounded-2xl hover:bg-brand-500 shadow-2xl border border-white/10 transition-colors"
+                      download={`style_${style.label.toLowerCase()}.png`}
+                      className="p-2 bg-slate-900/80 text-white rounded-lg hover:bg-brand-500 transition-colors"
                     >
-                      <Download size={20} />
+                      <Download size={16} />
                     </a>
-                  </div>
-                )}
-
-                {/* Status Indicator */}
-                {example && (
-                  <div className="absolute bottom-6 left-6 px-4 py-2 bg-black/60 backdrop-blur-md rounded-full border border-white/5 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-all">
-                    <CheckCircle size={14} className="text-green-500" />
-                    <span className="text-[9px] font-black text-white uppercase tracking-widest">Cache Ativo</span>
                   </div>
                 )}
               </div>
 
-              {/* Info Panel */}
-              <div className="p-10 flex-1 flex flex-col gap-6 bg-slate-900/20 backdrop-blur-sm">
+              <div className="p-8 flex-1 flex flex-col gap-4">
                 <div className="flex justify-between items-start">
-                  <div className="space-y-1">
-                    <h3 className="text-2xl font-black text-white uppercase tracking-tight italic leading-none">{style.label}</h3>
-                    <div className="flex items-center gap-2 mt-2">
-                      <div className="w-1.5 h-1.5 rounded-full bg-brand-500"></div>
-                      <span className="text-[10px] font-black uppercase text-slate-500 tracking-widest">Token Visual Permanente</span>
-                    </div>
-                  </div>
+                  <h3 className="text-xl font-black text-white uppercase tracking-tight italic">{style.label}</h3>
                   <button
-                    onClick={() => handleGenerate(style)}
+                    onClick={() => handleGenerate(style, provider)}
                     disabled={isLoading}
-                    className="bg-brand-500 hover:bg-brand-400 text-white p-4 rounded-2xl shadow-xl shadow-brand-500/20 transition-all active:scale-90 disabled:opacity-50"
+                    className="p-2 bg-brand-500 hover:bg-brand-400 text-white rounded-xl transition-all disabled:opacity-50"
                   >
-                    <RefreshCw size={24} className={isLoading ? 'animate-spin' : ''} />
+                    <RefreshCw size={18} className={isLoading ? 'animate-spin' : ''} />
                   </button>
                 </div>
 
-                <div className="bg-slate-950/60 p-6 rounded-[2rem] border border-slate-800 shadow-inner group-hover:border-slate-700 transition-colors relative">
-                  <div className="absolute -top-3 left-6 px-3 py-1 bg-slate-900 border border-slate-800 rounded-lg text-[8px] font-black text-slate-500 uppercase tracking-widest">Lógica Estética</div>
-                  <p className="text-[12px] font-mono text-slate-400 leading-relaxed italic mt-2">
+                <div className="bg-slate-950/60 p-4 rounded-2xl border border-slate-800 relative">
+                  <p className="text-[11px] font-mono text-slate-400 leading-relaxed italic">
                     "{style.prompt}"
                   </p>
-                </div>
-
-                <div className="flex items-center justify-between mt-auto pt-6 border-t border-slate-800/50">
-                  <div className="flex items-center gap-3 text-slate-600 text-[10px] font-black uppercase tracking-widest">
-                    <div className="bg-slate-800 p-2 rounded-xl"><Info size={14} /></div>
-                    <span>Render Master Engine</span>
-                  </div>
-                  {example && (
-                    <span className="text-[10px] font-mono text-slate-700">Ref: {new Date(example.timestamp).toLocaleDateString()}</span>
-                  )}
                 </div>
               </div>
             </div>
@@ -287,41 +409,18 @@ export const ImageStylesGallery: React.FC<ImageStylesGalleryProps> = ({ settings
         })}
       </div>
 
-      {/* Footer / Benchmark Info */}
-      <div className="mt-32 pt-16 border-t border-slate-900 flex flex-col lg:flex-row justify-between items-start gap-12">
-        <div className="max-w-2xl space-y-6">
-          <div className="flex items-center gap-3 text-brand-400">
-            <Sparkles size={24} />
-            <h4 className="text-white font-black uppercase tracking-[0.2em] text-sm">Protocolo de Benchmark Visual</h4>
-          </div>
-          <p className="text-slate-500 text-sm leading-relaxed font-medium">
-            Para garantir uma comparação técnica honesta, todas as imagens acima utilizam o mesmo prompt "Biblioteca Mágica". Este prompt foi desenhado para testar:
-          </p>
-          <ul className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {[
-              "Iluminação Volumétrica (Luz Dourada)",
-              "Física de Materiais (Bronze, Lã, Couro)",
-              "Micro-detalhes (Poeira e Engrenagens)",
-              "Expressão Facial e Anatomia",
-              "Profundidade de Campo (Bokeh)",
-              "Renderização de Texturas Orgânicas"
-            ].map(item => (
-              <li key={item} className="flex items-center gap-3 text-[10px] font-black uppercase text-slate-600 tracking-widest">
-                <div className="w-1.5 h-1.5 rounded-full bg-brand-900"></div>
-                {item}
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        <div className="flex flex-col gap-4 w-full lg:w-auto">
-          <button
+      {/* Footer Informative */}
+      <div className="mt-20 pt-10 border-t border-slate-900 text-center">
+        <p className="text-slate-500 text-xs font-medium max-w-2xl mx-auto">
+          Estes exemplos ajudam a calibrar o tom visual dos seus projetos. O Manual de Estilo gerado será salvo no cache e poderá ser visualizado a qualquer momento.
+        </p>
+        <div className="flex justify-center gap-4 mt-8">
+           <button
             onClick={onBack}
-            className="px-16 py-6 bg-brand-500 text-white rounded-[2.5rem] font-black uppercase text-xs tracking-[0.3em] hover:bg-brand-400 transition-all shadow-2xl shadow-brand-500/20 border-b-4 border-brand-700 active:border-b-0 active:translate-y-1"
+            className="px-12 py-4 bg-brand-500 text-white rounded-2xl font-black uppercase text-xs tracking-[0.2em] hover:bg-brand-400 transition-all shadow-xl shadow-brand-500/20"
           >
-            Aplicar nos Projetos
+            Aplicar e Voltar
           </button>
-          <p className="text-[9px] text-slate-700 font-black uppercase text-center tracking-widest">echoVID v1.85 • IA Creative Suite</p>
         </div>
       </div>
     </div>

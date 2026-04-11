@@ -90,6 +90,9 @@ const selectEffectWithAI = async (
     scene: TranscriptionItem,
     effects: MotionEffect[]
 ): Promise<string | null> => {
+    // 0. Vídeos não recebem animação Ken Burns ou seleções de IA para efeitos
+    if (scene.importedVideoUrl) return null;
+
     try {
         // Importar GoogleGenAI do módulo correto
         const { GoogleGenAI } = await import('@google/genai');
@@ -106,6 +109,7 @@ const selectEffectWithAI = async (
 
         const sceneText = scene.text || '';
         const sceneVisual = scene.imagePrompt || '';
+        const sceneRationale = (scene as any).animationRationale || '';
 
         const effectsList = effects.map(e =>
             `- ID: ${e.id}\n  Nome: ${e.name}\n  Descrição: ${e.description}\n  Instrução: ${e.instruction}`
@@ -116,21 +120,21 @@ const selectEffectWithAI = async (
 CENA:
 Texto: "${sceneText}"
 Descrição Visual: "${sceneVisual}"
+Intenção da Animação: "${sceneRationale}"
 
 EFEITOS DISPONÍVEIS (Escolha estritamente UM destes IDs):
 ${effectsList}
 
 REGRAS CRÍTICAS:
-1. Analise o "mood" da cena: Cenas introspectivas pedem zooms lentos e suaves. Cenas de ação pedem pans rápidos ou zooms intensos.
-2. Seja criativo: Varie as direções (esquerda, direita, cima, baixo) para manter o dinamismo visual.
-3. Use APENAS os IDs listados acima.
-4. Proibido repetir o efeito da cena anterior se houver outras opções.
-5. Retorne APENAS o ID do efeito (ex: "zoom-in-left").
+1. Use a "Intenção da Animação" (Rationale) como guia principal para a criatividade.
+2. Analise o "mood" da cena: Cenas introspectivas pedem zooms lentos. Transições épicas pedem zooms intensos.
+3. Varie as direções para manter o dinamismo visual.
+4. Responda APENAS o ID do efeito selecionado.
 
 Resposta:`;
 
         const responseJson = await ai.models.generateContent({
-            model: 'gemini-2.0-flash-exp',
+            model: 'gemini-1.5-flash', // Usando modelo estável para evitar 404
             contents: {
                 parts: [{ text: prompt }]
             }
@@ -149,8 +153,12 @@ Resposta:`;
 
         console.warn(`IA retornou algo não mapeado: "${response}". Tentando match contextual.`);
         return null;
-    } catch (error) {
-        console.error('Erro ao usar IA para seleção de efeito:', error);
+    } catch (error: any) {
+        if (error?.status === 404 || error?.message?.includes('404')) {
+            console.error('CRITICAL: Erro 404 na Gemini API. O modelo "gemini-2.0-flash-exp" foi DELETADO do sistema. Se você ainda vê este erro, por favor limpe o cache do navegador ou execute um Hard Refresh (Ctrl+F5) pois seu JS está obsoleto.');
+        } else {
+            console.error('Erro ao usar IA para seleção de efeito:', error);
+        }
         return null;
     }
 };
@@ -172,6 +180,11 @@ export const selectEffectForScene = async (
 ): Promise<MotionEffect> => {
     if (availableEffects.length === 0) {
         throw new Error("Nenhum efeito disponível para seleção");
+    }
+
+    // 0. Vídeos NUNCA recebem efeitos de animação (Já têm movimento próprio)
+    if (scene.importedVideoUrl) {
+        return { id: 'none', name: 'Nenhum', description: 'Sem animação para vídeos', instruction: '' } as MotionEffect;
     }
 
     // 1. Filtrar efeito anterior para evitar repetição ABSOLUTA
@@ -306,20 +319,24 @@ export const preselectEffectsForScenes = async (
 
     for (let index = 0; index < scenes.length; index++) {
         const scene = scenes[index];
-        
-        // No selectEffectForScene, agora passamos o último efeito para compatibilidade, 
-        // mas a lógica local aqui vai forçar a variedade baseada no histórico.
         const previousEffect = effectHistory.length > 0 ? effectHistory[effectHistory.length - 1] : undefined;
         
-        // Filtramos os candidatos localmente para garantir variedade maior que 1 cena
-        const candidates = availableEffects.filter(e => !effectHistory.some(h => h.id === e.id));
-        const pool = candidates.length > 0 ? candidates : availableEffects;
+        // Candidatos que não estão no histórico recente (exclui os últimos 3 usados)
+        let candidates = availableEffects.filter(e => !effectHistory.some(h => h.id === e.id));
+        
+        // Se esgotarmos todos os candidatos únicos, relaxamos a restrição mas ainda evitamos o imediatamente anterior
+        if (candidates.length === 0) {
+            candidates = availableEffects.filter(e => e.id !== previousEffect?.id);
+        }
+        
+        // Se ainda assim não houver candidatos (só tem 1 efeito na lista total), usamos o que tem
+        if (candidates.length === 0) candidates = availableEffects;
 
-        const selectedEffect = await selectEffectForScene(scene, pool, previousEffect, useAI);
+        const selectedEffect = await selectEffectForScene(scene, candidates, previousEffect, useAI);
         
         effectMap.set(index, selectedEffect);
         
-        // Atualiza histórico
+        // Atualiza histórico limitado a 3 itens para garantir rotação agressiva
         effectHistory.push(selectedEffect);
         if (effectHistory.length > MAX_HISTORY) {
             effectHistory.shift();

@@ -10,6 +10,7 @@ export interface ImageHistoryItem {
 
 export interface StyleExample {
   styleId: string;
+  providerId?: string; // Novo campo para suporte multi-IA
   imageUrl: string;
   prompt: string;
   timestamp: number;
@@ -43,6 +44,7 @@ export interface TranscriptionItem {
   camera?: string;
   negative?: string;
   animation?: string;
+  animationRationale?: string;
 
   googleImageUrl?: string;
   pollinationsImageUrl?: string;
@@ -186,3 +188,5 @@ export interface MotionEffect {
   description: string;
   instruction: string;
 }
+
+export type RenderEngine = 'browser' | 'ffmpeg';

@@ -3,6 +3,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { TranscriptionItem, TranscriptionResponse, ViralTitle, MasterAsset } from "../types";
 import { logApiCost } from "./usageService";
 import { splitAudioFile } from "./audioService";
+import { cleanDescription, normalizeCamera, sanitizeNickname, buildFinalVisualPrompt } from "./promptSanitizer";
 
 declare global {
   interface AIStudio {
@@ -15,11 +16,17 @@ declare global {
 }
 
 // Text tasks - user confirmed 2.5-flash was working
-export const TEXT_MODEL_NAME = "gemini-2.5-flash";
-// Gemini Nano (Anterior)
-export const IMAGE_MODEL_NAME = "nano-banana-pro-preview";
-// Imagen 4 Fast (Gemini) - using imagen-3.0-generate-001 motor
-export const IMAGEN_MODEL_NAME = "imagen-3.0-generate-001";
+export const TEXT_MODEL_NAME = "gemini-1.5-flash";
+// Gemini Nano / Imagen Series - IDs EXATOS conforme solicitado pelo usuário
+export const IMAGEN_ULTRA_MODEL_NAME = "imagen-3.0-generate-001";
+export const IMAGEN_FAST_MODEL_NAME = "imagen-4.0-fast-generate-001";
+// Nano Banana Normal - Gemini 2.5 Flash Image API
+export const NANO_MODEL_NAME = "gemini-2.5-flash-image"; 
+// Alias de compatibilidade
+export const IMAGEN_MODEL_NAME = IMAGEN_FAST_MODEL_NAME;
+export const NANO_BATCH_MODEL_NAME = NANO_MODEL_NAME;
+export const IMAGE_MODEL_NAME = NANO_MODEL_NAME;
+
 
 // Helper to convert File to base64 for Gemini API multimodal input
 const fileToBase64 = (file: File | Blob): Promise<string> => {
@@ -67,24 +74,33 @@ export const generateImage = async (prompt: string, aspectRatio: '1:1' | '3:4' |
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   logApiCost('image', modelName, 0.04, { prompt, aspectRatio });
 
-  const response = await ai.models.generateContent({
-    model: modelName,
-    contents: { parts: [{ text: prompt }] },
-    config: { imageConfig: { aspectRatio } }
-  });
+  try {
+    const response = await ai.models.generateContent({
+      model: modelName,
+      contents: { parts: [{ text: prompt }] },
+      config: { imageConfig: { aspectRatio } }
+    });
 
-  let base64Image = "";
-  if (response.candidates?.[0]?.content?.parts) {
-    for (const part of response.candidates[0].content.parts) {
-      if (part.inlineData) {
-        base64Image = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-        break;
+    let base64Image = "";
+    if (response.candidates?.[0]?.content?.parts) {
+      for (const part of response.candidates[0].content.parts) {
+        if (part.inlineData) {
+          base64Image = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+          break;
+        }
       }
     }
-  }
 
-  if (!base64Image) throw new Error("A IA não retornou uma imagem válida.");
-  return { image: base64Image, prompt };
+    if (!base64Image) throw new Error("A IA não retornou uma imagem válida.");
+    return { image: base64Image, prompt };
+  } catch (error: any) {
+    if (error.message?.includes('404') || error.message?.includes('not found')) {
+      const msg = `ERRO 404: O modelo '${modelName}' não foi encontrado na sua conta. Verifique se o ID está disponível no Google AI Studio.`;
+      console.error(`❌ [Google AI] ${msg}`);
+      throw new Error(msg);
+    }
+    throw error;
+  }
 };
 
 export const generateText = async (prompt: string, modelName: string = TEXT_MODEL_NAME): Promise<string> => {
@@ -211,20 +227,22 @@ export const enrichSrtWithVisuals = async (
     Analyze the audio/script. Extract recurring characters, locations, and important props.
     
     🎨 ASSET DNA (STRICT ANATOMY & NO STYLE):
-    - CHARACTERS description: YOU MUST STRICTLY USE DEFINED ANATOMY ALWAYS: Subject/Archetype, Hair, Face Shape/Eyes, Upper/Lower Clothing, Shoes. NEVER USE PROPER NAMES IN DESCRIPTIONS (e.g. use "Middle-aged bearded man" instead of "Jesus").
-    - IMPORTANT: If the character is a real-world entity (celebrity, historical figure, politician, etc.), you MUST faithfully reproduce their actual physical characteristics: facial features, skin tone, hair style, build, and their most iconic or default outfit/uniform. Use their real identity as the absolute reference for the anatomy description.
-    - Describe using natural English phrases. ESTRITAMENTE PROIBIDO terms about lighting, quality, or style (no "cinematic", "4k").
-    - LOCATIONS/PROPS description: Exactly 4 parts (Structure, Anchors, Materials, Lighting), max 60 words. LITERAL descriptions only, NO proper names, NO metaphors or emotions.
+    - CHARACTERS description: YOU MUST STRICTLY USE DEFINED ANATOMY ALWAYS: Type/Archetype, Hair, Face/Eyes, Upper Clothing, Lower Clothing, Shoes. 
+    - CRITICAL: NO LABELS ALLOWED (e.g. do NOT write "Hair: Short", just write "Short hair"). Return a clean, comma-separated list of attributes.
+    - NEVER USE PROPER NAMES IN DESCRIPTIONS (e.g. use "Middle-aged bearded man" instead of "Jerry").
+    - IMPORTANT: If the character is a real-world entity (celebrity, historical figure, politician, etc.), you MUST faithfully reproduce their actual physical characteristics. Use their real identity as the absolute reference for the anatomy description.
+    - Describe using natural English phrases. ESTRITAMENTE PROIBIDO terms about lighting, quality, or style (no "cinematic", "4k", "octane").
+    - LOCATIONS/PROPS: Return a clean list of 4 attributes (Structure, Anchors, Materials, Lighting), max 60 words. LITERAL descriptions only, NO labels, NO proper names, NO metaphors.
     
     🗣️ DEFINITIVE NAMING RULES:
-    1. CHARACTERS: ESTRITAMENTE PROIBIDO usar nomes reais no campo 'name'. Crie um apelido (nickname) fonético em português. Ex: 'Elon Musk' -> 'Ilonmãsqui'.
-    2. LOCATIONS/PROPS: O 'name' pode ser o nome real (ex: 'Quarto 12', 'Relógio de Ouro').
+    1. CHARACTERS: ESTRITAMENTE PROIBIDO usar nomes reais ou IDs (ex: char01) no campo 'name'. Crie um apelido (nickname) amigável e fonético EM INGLÊS. Ex: 'Elon Musk' -> 'Ilonmãsqui' ou 'Elon'.
+    2. LOCATIONS/PROPS: Use nicknames limpos em INGLÊS no campo 'name' (ex: 'SunnyvaleBoardroom', 'Table', 'AirConditioner'). Proibido slugs com underline ou termos em Português.
     3. SECURITY: Nomes reais de pessoas devem ficar APENAS no campo 'realName'.
     
     FIELD RULES FOR GENERATION (ENGLISH ONLY in description fields):
-    CHARACTER description — one paragraph, ALL fields mandatory.
-    LOCATION description — exactly 4 parts, max 60 words.
-    PROP description — one paragraph, ALL fields mandatory.
+    CHARACTER description — one paragraph, flat list of attributes, NO LABELS.
+    LOCATION description — flat list of 4 attributes, max 60 words, NO LABELS.
+    PROP description — flat list of attributes, NO LABELS.
     
     ${scriptText ? `ORIGINAL SCRIPT FOR REFERENCE:\n${scriptText}\n` : ''}
 
@@ -298,6 +316,23 @@ export const enrichSrtWithVisuals = async (
         
         globalAssets = JSON.parse(rawInventory);
         if (!globalAssets.detectedProps) globalAssets.detectedProps = [];
+        
+        // POST-INVENTORY WASH: Sanitize names and descriptions immediately
+        globalAssets.detectedCharacters = globalAssets.detectedCharacters.map((c: any) => ({
+          ...c,
+          name: sanitizeNickname(c.name),
+          description: cleanDescription(c.description)
+        }));
+        globalAssets.detectedLocations = globalAssets.detectedLocations.map((l: any) => ({
+          ...l,
+          name: sanitizeNickname(l.name),
+          description: cleanDescription(l.description)
+        }));
+        globalAssets.detectedProps = globalAssets.detectedProps.map((p: any) => ({
+          ...p,
+          name: sanitizeNickname(p.name),
+          description: cleanDescription(p.description)
+        }));
         break;
       } catch (e: any) {
         invRetries--;
@@ -449,11 +484,13 @@ export const enrichSrtWithVisuals = async (
                         cenario: { type: "string" },
                         props: { type: "string" },
                         animation: { type: "string" },
+                        animationRationale: { type: "string" },
+                        camera: { type: "string" },
                         characterIds: { type: "array", items: { type: "string" } },
                         locationIds: { type: "array", items: { type: "string" } },
                         propIds: { type: "array", items: { type: "string" } }
                       },
-                      required: ["startSeconds", "endSeconds", "text", "subject", "action", "cenario"]
+                      required: ["startSeconds", "endSeconds", "text", "subject", "action", "cenario", "camera"]
                     }
                   }
                 },
@@ -499,6 +536,12 @@ export const enrichSrtWithVisuals = async (
     // Reorder results to maintain temporal sequence
     allChunkResults.sort((a, b) => a.index - b.index);
 
+    // POST-PROCESS 1: Chronological sorting and Prompt Reconstruction
+    // Rule: first occurrence → full description | repetitions → nickname only
+    allItems.sort((a, b) => a.startSeconds - b.startSeconds);
+    
+    const seenAssetIds = new Set<string>();
+
     for (const chunkResult of allChunkResults) {
       const { items: rawItems, start, duration: chunkDuration } = chunkResult;
       try {
@@ -507,12 +550,10 @@ export const enrichSrtWithVisuals = async (
           currentBoundary = allItems[allItems.length - 1].endSeconds;
         }
 
-        // Deduplicação e Limpeza: Remove itens com timestamps inválidos ou duplicados antes de processar
+        // Deduplicação e Limpeza
         const uniqueRawItems = (rawItems || []).filter((item: any, i: number) => {
           if (!item || item.startSeconds === undefined || item.endSeconds === undefined) return false;
-          // Ignora cenas com duração zero ou negativa
           if (item.endSeconds <= item.startSeconds) return false;
-          // Verifica se já existe uma cena idêntica no mesmo bloco (evita loop de Smart Split)
           const isDuplicate = rawItems.slice(0, i).some((prev: any) => 
             prev.startSeconds === item.startSeconds && prev.endSeconds === item.endSeconds
           );
@@ -523,42 +564,27 @@ export const enrichSrtWithVisuals = async (
           let rawStart = item.startSeconds !== undefined ? Number(item.startSeconds) : (idx * 5);
           let rawEnd = item.endSeconds !== undefined ? Number(item.endSeconds) : rawStart + 7;
 
-          // Global sync adjustment (Removed anticipation per user request for exact start)
           const GLOBAL_SYNC_OFFSET = 0.0;
-
-          // Mapping relative timestamps to global ones and applying offset
           let gStart = (rawStart >= start ? rawStart : start + Math.min(rawStart, chunkDuration)) + GLOBAL_SYNC_OFFSET;
           let gEnd = (rawEnd >= start ? rawEnd : start + Math.min(rawEnd, chunkDuration)) + GLOBAL_SYNC_OFFSET;
 
-          // Safety: don't go below zero
           gStart = Math.max(0, gStart);
           gEnd = Math.max(0.5, gEnd);
 
-          // Fill small gaps (< 1.5s) to ensure subtitle continuity, but respect larger silences
           if (allItems.length > 0) {
             const lastEnd = allItems[allItems.length - 1].endSeconds;
             const gap = gStart - lastEnd;
-            if (gap > 0 && gap < 1.5) {
-              gStart = lastEnd;
-            }
+            if (gap > 0 && gap < 1.5) gStart = lastEnd;
           } else {
-            // Respect the very first scene start for the first chunk
             const gap = gStart - start;
-            if (gap > 0 && gap < 1.5) {
-              gStart = start;
-            }
+            if (gap > 0 && gap < 1.5) gStart = start;
           }
 
-          // Compute required minimum duration based on text length (approx 3.0 words per second)
           const wordCount = item.text ? item.text.split(' ').length : 0;
-          const textMinDuration = Math.max(5.0, wordCount / 3.0); // Restaurado para 5.0w/s para evitar atropelamento visual
+          const textMinDuration = Math.max(5.0, wordCount / 3.0); 
 
-          // Ensure end is always after start
-          if (gEnd <= gStart + 0.5) {
-            gEnd = gStart + Math.max(textMinDuration, 5.0);
-          }
+          if (gEnd <= gStart + 0.5) gEnd = gStart + Math.max(textMinDuration, 5.0);
 
-          // Final safety clamp: ensure end is within reasonable bounds
           gStart = Math.max(start, Math.min(gStart, start + chunkDuration - 0.5));
           gEnd = Math.max(gStart + 0.5, Math.min(gEnd, start + chunkDuration + 5.0)); 
 
@@ -569,29 +595,26 @@ export const enrichSrtWithVisuals = async (
             return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(2, '0')}`;
           };
 
-          // CONSTRUCT IMAGE PROMPT — padrão instructions.md
-          // Estrutura: Subject (desc. física) | Action | Camera | Object | Environment | Visual Integrity
-
-          // POST-PROCESSING: Strict Field Purity & Mapping
+          // RECONSTRUCTION RULE: first occurrence → full description | repetitions → nickname only
           
-          // Reconstruct SUBJECT: Nickname + Physical Description
+          // Reconstruct SUBJECT
           let uiSubject = "";
           let detailedSubjectForVp = "";
           const foundChars = (item.characterIds || []).map((id: string) => globalAssets.detectedCharacters.find((c: any) => c.id === id)).filter(Boolean);
           
           if (foundChars.length > 0) {
-            uiSubject = foundChars.map((c: any) => {
-              const characteristics = c.description.split(',').map((s: string) => s.trim()).filter(Boolean);
-              const twoCharacteristics = characteristics.slice(0, 2).join(', ');
-              return `${c.name}: ${twoCharacteristics || c.description}`;
-            }).join(" | ");
-            detailedSubjectForVp = foundChars.map((c: any) => c.description).join(", ");
-          } else {
-            uiSubject = "";
-            detailedSubjectForVp = "";
+            uiSubject = foundChars.map((c: any) => `${c.name}: ${c.description.split(',').slice(0, 2).join(', ')}`).join(" | ");
+            
+            detailedSubjectForVp = foundChars.map((c: any) => {
+              if (!seenAssetIds.has(c.id)) {
+                seenAssetIds.add(c.id);
+                return `${c.name}, ${c.description}`; // Nickname + Full Desc first time
+              }
+              return c.name; // Nickname only repetition
+            }).join(", ");
           }
 
-          // Reconstruct SCENARIO: Local Nickname + Desc + Props Nickname + Desc
+          // Reconstruct SCENARIO
           let uiCenario = "";
           let detailedCenarioForVp = "";
           const foundLoc = (item.locationIds || []).map((id: string) => globalAssets.detectedLocations.find((l: any) => l.id === id)).filter(Boolean)[0];
@@ -599,31 +622,41 @@ export const enrichSrtWithVisuals = async (
 
           if (foundLoc) {
             uiCenario = `${foundLoc.name}: ${foundLoc.description}`;
-            detailedCenarioForVp = foundLoc.description;
-          } else {
-            uiCenario = "";
-            detailedCenarioForVp = "";
+            if (!seenAssetIds.has(foundLoc.id)) {
+              seenAssetIds.add(foundLoc.id);
+              detailedCenarioForVp = `${foundLoc.name}, ${foundLoc.description}`;
+            } else {
+              detailedCenarioForVp = foundLoc.name;
+            }
           }
 
           if (foundProps.length > 0) {
             const propStrings = foundProps.map((p: any) => `${p.name}: ${p.description}`);
-            uiCenario += " | " + propStrings.join(" | ");
-            detailedCenarioForVp += `, ${foundProps.map((p: any) => p.description).join(", ")}`;
+            uiCenario += (uiCenario ? " | " : "") + propStrings.join(" | ");
+            
+            const detailedProps = foundProps.map((p: any) => {
+              if (!seenAssetIds.has(p.id)) {
+                seenAssetIds.add(p.id);
+                return `${p.name}, ${p.description}`;
+              }
+              return p.name;
+            }).join(", ");
+            
+            detailedCenarioForVp += (detailedCenarioForVp ? ", " : "") + detailedProps;
           }
 
-          // ACTION stays focused on movement
           const uiAction = item.action || "";
 
-          // Final Image Prompt (sum of fields)
-          const vpParts = [
+          // Final Image Prompt structure [Style]. [Subject]. [Action]. [Scenario]. [Camera Angle].
+          // Using strict buildFinalVisualPrompt utility
+          const vp = buildFinalVisualPrompt(
             stylePrompt,
             detailedSubjectForVp,
             uiAction,
             detailedCenarioForVp,
             item.camera || "",
-            `Visual Integrity: "Pure image only: absolutely NO text, NO letters, NO words, NO numbers, NO signs, NO banners, NO captions written anywhere in the image."`
-          ].filter(Boolean);
-          const vp = vpParts.join(". ");
+            `Visual Integrity: "Pure image only: all surfaces are blank and free of any text or letters."`
+          );
 
           const totalDuration = gEnd - gStart;
           const scenesToCreate: any[] = [];
@@ -640,6 +673,7 @@ export const enrichSrtWithVisuals = async (
             action: uiAction,
             cenario: uiCenario,
             animation: item.animation || "",
+            animationRationale: item.animationRationale || "",
             characterIds: item.characterIds || [],
             locationIds: item.locationIds || [],
             propIds: item.propIds || [],
@@ -717,12 +751,12 @@ export const enrichSrtWithVisuals = async (
         const projectedDuration = (item.endSeconds - last.startSeconds);
         const projectedWps = (lastWords + itemWords) / (projectedDuration || 1);
 
-        // MERGE CRITERIA (Aligned with instructions.md): 
+        // MERGE CRITERIA (Aligned with instructions-core.md): 
         // 1. If last scene is too short in duration (< 5.0s)
         // 2. BUT ONLY if merging won't exceed the strict max duration (10s) 
-        // 3. AND ONLY if it doesn't create severe "atropelamento" (> 3.2 wps)
+        // 3. AND ONLY if it doesn't create severe "atropelamento" (> 3.0 wps)
         const isTooShort = last.duration < 5.0;
-        const canAbsorb = projectedDuration <= 10.0 && projectedWps <= 3.2;
+        const canAbsorb = projectedDuration <= 10.0 && projectedWps <= 3.0;
 
         if (isTooShort && canAbsorb) {
           last.endSeconds = item.endSeconds;

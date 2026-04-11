@@ -12,6 +12,7 @@ import { getAudioDuration } from './services/audioService';
 import { DEFAULT_SETTINGS, SettingsModal } from './components/SettingsModal';
 import { ChangelogModal } from './components/ChangelogModal';
 import React, { useState, useEffect, useRef } from 'react';
+import { seedDatabase } from './seed';
 
 const App: React.FC = () => {
   console.log("[App] Component initializing...");
@@ -38,7 +39,7 @@ const App: React.FC = () => {
   const [audioDuration, setAudioDuration] = useState(0);
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
   const [editingProjectName, setEditingProjectName] = useState<string>('');
-  const [supabaseStatus, setSupabaseStatus] = useState<'connecting' | 'stable' | 'error'>('connecting');
+  const [firebaseStatus, setFirebaseStatus] = useState<'connecting' | 'stable' | 'error'>('connecting');
   // Estado de renderização global — persistente entre navegações de tela
   const [isAppVideoGenerating, setIsAppVideoGenerating] = useState(false);
   const [appVideoProgress, setAppVideoProgress] = useState(0);
@@ -51,11 +52,12 @@ const App: React.FC = () => {
   useEffect(() => {
     const initApp = async () => {
       console.log("[App] initApp started — carregamento sequencial para reduzir Disk I/O");
+      try { await seedDatabase(); } catch(e){ console.error("Seed failed", e); }
       
       const fallbackTimer = setTimeout(() => {
         console.warn("[App] Initialization timeout reached. Forcing app to load.");
         setSettingsLoaded(true);
-        setSupabaseStatus('error');
+        setFirebaseStatus('error');
       }, 10000);
 
       try {
@@ -93,12 +95,13 @@ const App: React.FC = () => {
         await refreshUsage();
         await refreshApiInfo();
 
-        setSupabaseStatus('stable');
+        setFirebaseStatus('stable');
         console.log("[App] Initialization complete");
-      } catch (e) {
+      } catch (e: any) {
         console.error("[App] Initialization ERROR:", e);
         setSettings(DEFAULT_SETTINGS);
-        setSupabaseStatus('error');
+        setFirebaseStatus('error');
+        (window as any)._initError = e?.message || String(e);
       } finally {
         clearTimeout(fallbackTimer);
         setSettingsLoaded(true);
@@ -297,6 +300,13 @@ const App: React.FC = () => {
     try {
       const proj = await getProjectById(id);
       if (proj) {
+        // Reset estados voláteis antes de carregar o novo projeto
+        setFile(null);
+        setSrtText('');
+        setScriptText('');
+        setAudioDuration(0);
+        setTranscriptionDuration(0);
+        
         setCurrentProject(proj);
         setItems(proj.items);
         setStatus(ProcessingStatus.COMPLETED);
@@ -329,7 +339,7 @@ const App: React.FC = () => {
 
           if (audioBlob && audioBlob.size > 0) {
             console.log(`[App] Áudio Detectado: ${audioBlob.size} bytes`);
-            const audioFileObj = new File([audioBlob], `${proj.name.replace(/\s+/g, '_')}_restored.wav`, { type: 'audio/wav' });
+            const audioFileObj = new File([audioBlob], `${proj.name.replace(/\s+/g, '_')}_restored.mp3`, { type: 'audio/mpeg' });
             setFile(audioFileObj);
 
             try {
@@ -381,7 +391,7 @@ const App: React.FC = () => {
       <div className="min-h-screen bg-slate-950 flex items-center justify-center text-white">
         <div className="flex flex-col items-center space-y-4">
           <Loader2 className="w-12 h-12 text-brand-500 animate-spin" />
-          <p className="text-slate-400 font-medium animate-pulse">Sincronizando com Supabase...</p>
+          <p className="text-slate-400 font-medium animate-pulse">Iniciando Echosystem (Firebase) ...</p>
         </div>
       </div>
     );
@@ -395,18 +405,22 @@ const App: React.FC = () => {
 
       {/* OVERLAY DE RENDERIZAÇÃO GLOBAL — aparece em qualquer tela enquanto renderiza */}
       {isAppVideoGenerating && (
-        <div className="fixed bottom-0 left-0 right-0 z-[200] bg-slate-950/98 backdrop-blur-2xl border-t border-brand-500/40 p-5 shadow-2xl">
-          <div className="max-w-5xl mx-auto flex items-center gap-8">
-            <div className="bg-brand-500/10 p-3 rounded-2xl text-brand-400 border border-brand-500/20"><Activity className="animate-pulse" size={28} /></div>
-            <div className="flex-1 space-y-2">
+        <div className="fixed bottom-0 left-0 right-0 z-[200] bg-slate-950/98 backdrop-blur-2xl border-t border-brand-500/40 p-2 shadow-2xl">
+          <div className="max-w-5xl mx-auto flex items-center gap-4">
+            <div className="bg-brand-500/10 p-2 rounded-sm text-brand-400 border border-brand-500/20"><Activity className="animate-pulse" size={20} /></div>
+            <div className="flex-1 space-y-1">
               <div className="flex justify-between items-end">
                 <div className="flex flex-col">
-                  <span className="text-xs font-black uppercase text-brand-400 tracking-[0.3em] mb-0.5">Renderizador Master</span>
-                  <span className="text-sm font-bold text-white uppercase">{appVideoStatus}</span>
+                  <span className="text-[11px] font-black uppercase text-brand-400 tracking-[0.2em] mb-0.5">
+                    {appVideoStatus?.includes('ZIP') ? 'Comprimindo arquivos para download' : 'Renderizador Master'}
+                  </span>
+                  <span className="text-[12px] font-bold text-white uppercase">
+                    {appVideoStatus?.includes('ZIP') ? 'Preparando Pacote...' : appVideoStatus}
+                  </span>
                 </div>
                 <div className="flex flex-col items-end">
-                  <span className="text-3xl font-black text-brand-400">{appVideoProgress}%</span>
-                  <span className="text-xs font-mono text-slate-500">
+                  <span className="text-2xl font-black text-brand-400">{appVideoProgress}%</span>
+                  <span className="text-[11px] font-mono text-slate-500">
                     {(() => {
                       const e = Math.floor(appRenderElapsed);
                       const mm = String(Math.floor(e / 60)).padStart(2, '0');
@@ -423,8 +437,8 @@ const App: React.FC = () => {
                   </span>
                 </div>
               </div>
-              <div className="w-full bg-slate-800 h-3 rounded-full overflow-hidden border border-slate-700 shadow-inner">
-                <div className="bg-gradient-to-r from-brand-600 to-brand-400 h-full transition-all duration-300 rounded-full" style={{ width: `${appVideoProgress}%` }}></div>
+              <div className="w-full bg-slate-800 h-2 rounded-sm overflow-hidden border border-slate-700 shadow-inner">
+                <div className="bg-gradient-to-r from-brand-600 to-brand-400 h-full transition-all duration-300 rounded-none" style={{ width: `${appVideoProgress}%` }}></div>
               </div>
             </div>
           </div>
@@ -432,55 +446,58 @@ const App: React.FC = () => {
       )}
 
       {/* Header */}
-      <header className="h-16 border-b border-slate-800 bg-slate-900/50 backdrop-blur-xl flex items-center justify-between px-6 sticky top-0 z-40">
-        <div className="flex items-center space-x-4">
+      <header className="h-12 border-b border-slate-800 bg-slate-900/50 backdrop-blur-xl flex items-center justify-between px-3 sticky top-0 z-40">
+        <div className="flex items-center space-x-2">
           <button
             onClick={() => { setStatus(ProcessingStatus.IDLE); setCurrentProject(null); setItems([]); setFile(null); setViewMode('transcription'); }}
-            className="flex items-center space-x-2 mr-6 hover:opacity-80 transition-opacity cursor-pointer group"
+            className="flex items-center space-x-2 mr-4 hover:opacity-80 transition-opacity cursor-pointer group"
           >
-            <div className="w-10 h-10 bg-gradient-to-br from-brand-600 to-brand-400 rounded-xl flex items-center justify-center shadow-lg shadow-brand-500/20 group-hover:shadow-brand-500/40 transition-all">
-              <Zap className="w-6 h-6 text-white fill-white" />
+            <div className="w-8 h-8 bg-gradient-to-br from-brand-600 to-brand-400 rounded-sm flex items-center justify-center shadow-lg shadow-brand-500/20 group-hover:shadow-brand-500/40 transition-all">
+              <Zap className="w-5 h-5 text-white fill-white" />
             </div>
-            <h1 className="text-xl font-bold tracking-tight text-white uppercase italic">echo<span className="text-brand-400">VID</span> <span className="ml-2 text-[10px] font-mono bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full border border-slate-700 align-middle not-italic">v4.2.6</span></h1>
+            <h1 className="text-sm font-black tracking-tight text-white uppercase italic">echo<span className="text-brand-400">VID</span> <span className="ml-1 text-[9px] font-mono bg-slate-800 text-slate-400 px-1 py-0.5 rounded-sm border border-slate-700 align-middle not-italic">v4.2.6</span></h1>
           </button>
           {currentProject && (
-            <div className="flex items-center gap-2 mr-4 max-w-[280px]">
-              <span className="text-[9px] font-black uppercase text-slate-600 tracking-widest">|</span>
-              <span className="text-sm font-black text-brand-400 uppercase tracking-tight truncate">{currentProject.name}</span>
+            <div className="flex flex-col max-w-[200px]">
+              <div className="flex items-center gap-1">
+                <span className="text-[9px] font-black uppercase text-slate-600 tracking-widest">|</span>
+                <span className="text-[12px] font-black text-brand-400 uppercase tracking-tight truncate leading-tight">{currentProject.name}</span>
+              </div>
+              <span className="text-[9px] font-mono text-slate-500 tracking-tighter opacity-50 ml-2 leading-none">{currentProject.id}</span>
             </div>
           )}
 
-          <nav className="flex items-center bg-slate-950/50 p-1 rounded-xl border border-slate-800">
+          <nav className="flex items-center bg-slate-950/50 p-0.5 rounded-sm border border-slate-800">
             <button
               onClick={() => setViewMode('transcription')}
-              className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-all flex items-center space-x-2 ${viewMode === 'transcription' ? 'bg-slate-800 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
+              className={`px-3 py-1 rounded-sm text-[12px] font-bold transition-all flex items-center space-x-1.5 ${viewMode === 'transcription' ? 'bg-slate-800 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
             >
-              <Layout className="w-4 h-4" />
+              <Layout className="w-3.5 h-3.5" />
               <span>Editor</span>
             </button>
             <button
               onClick={() => setViewMode('styles')}
-              className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-all flex items-center space-x-2 ${viewMode === 'styles' ? 'bg-slate-800 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
+              className={`px-3 py-1 rounded-sm text-[12px] font-bold transition-all flex items-center space-x-1.5 ${viewMode === 'styles' ? 'bg-slate-800 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
             >
-              <Palette className="w-4 h-4" />
+              <Palette className="w-3.5 h-3.5" />
               <span>Galeria</span>
             </button>
             <button
               onClick={() => setViewMode('analytics')}
-              className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-all flex items-center space-x-2 ${viewMode === 'analytics' ? 'bg-slate-800 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
+              className={`px-3 py-1 rounded-sm text-[12px] font-bold transition-all flex items-center space-x-1.5 ${viewMode === 'analytics' ? 'bg-slate-800 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
             >
-              <Activity className="w-4 h-4" />
+              <Activity className="w-3.5 h-3.5" />
               <span>Métricas</span>
             </button>
           </nav>
         </div>
 
-        <div className="flex items-center space-x-3">
-          <button onClick={() => setIsProjectsOpen(true)} className="p-2.5 rounded-xl bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition-all border border-slate-700/50">
-            <FolderOpen className="w-5 h-5" />
+        <div className="flex items-center space-x-2">
+          <button onClick={() => setIsProjectsOpen(true)} className="p-1.5 rounded-sm bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition-all border border-slate-700/50">
+            <FolderOpen className="w-4 h-4" />
           </button>
-          <button onClick={() => setIsSettingsOpen(true)} className="p-2.5 rounded-xl bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition-all border border-slate-700/50">
-            <Settings className="w-5 h-5" />
+          <button onClick={() => setIsSettingsOpen(true)} className="p-1.5 rounded-sm bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition-all border border-slate-700/50">
+            <Settings className="w-4 h-4" />
           </button>
         </div>
       </header>
@@ -742,7 +759,10 @@ const App: React.FC = () => {
                                 <button onClick={submitRename} className="p-1.5 bg-brand-500 hover:bg-brand-400 text-white rounded"><Check size={14}/></button>
                             </div>
                         ) : (
-                            <h4 className="font-bold text-slate-200 group-hover:text-brand-400 transition-colors mb-1 truncate pr-16">{proj.name}</h4>
+                            <div className="flex flex-col mb-1.5 truncate pr-16">
+                                <h4 className="font-bold text-slate-200 group-hover:text-brand-400 transition-colors truncate">{proj.name}</h4>
+                                <span className="text-[9px] font-mono text-slate-500 tracking-tighter opacity-60 leading-none mt-0.5">{proj.id}</span>
+                            </div>
                         )}
                         <div className="flex items-center text-xs text-slate-500 space-x-3">
                           <span className="flex items-center"><Clock className="w-3 h-3 mr-1" /> {proj.date}</span>
@@ -778,9 +798,9 @@ const App: React.FC = () => {
       {/* Footer Info */}
       <footer className="h-10 bg-slate-900/80 border-t border-slate-800 px-6 flex items-center justify-between text-[10px] font-medium tracking-widest text-slate-500 uppercase">
         <div className="flex items-center space-x-6">
-          {supabaseStatus === 'stable' && <span className="flex items-center"><ShieldCheck className="w-3 h-3 mr-1.5 text-emerald-500" /> Supabase Connected</span>}
-          {supabaseStatus === 'connecting' && <span className="flex items-center"><Loader2 className="w-3 h-3 mr-1.5 text-yellow-400 animate-spin" /> Conectando ao Supabase...</span>}
-          {supabaseStatus === 'error' && <span className="flex items-center"><AlertCircle className="w-3 h-3 mr-1.5 text-red-400" /> Supabase Offline</span>}
+          {firebaseStatus === 'stable' && <span className="flex items-center"><ShieldCheck className="w-3 h-3 mr-1.5 text-emerald-500" /> Firebase Connected</span>}
+          {firebaseStatus === 'connecting' && <span className="flex items-center"><Loader2 className="w-3 h-3 mr-1.5 text-yellow-400 animate-spin" /> Conectando ao Firebase...</span>}
+          {firebaseStatus === 'error' && <span className="flex items-center"><AlertCircle className="w-3 h-3 mr-1.5 text-red-400" /> Firebase Offline: {(window as any)._initError || 'Unknown config or network timeout'}</span>}
           <div className="flex items-center space-x-1 mr-4 bg-slate-950/50 px-3 py-1.5 rounded-lg border border-slate-800">
             <Cpu className="w-3.5 h-3.5 text-brand-400" />
             <span className="text-[10px] font-mono text-slate-400 uppercase tracking-widest">{TEXT_MODEL_NAME}</span>
