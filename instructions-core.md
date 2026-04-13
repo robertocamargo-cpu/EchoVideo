@@ -6,9 +6,9 @@
 - Action é o único campo criativo
 - Nunca gerar texto dentro da imagem
 - Campos vazios devem permanecer vazios
-- Consistência visual vem da repetição exata das descrições físicas
-- Primeira menção no prompt: apelido + descrição completa
-- Repetições no mesmo prompt: apenas apelido
+- **Consistência Visual**: Em cada cena, a primeira menção de um personagem ou cenário no prompt deve conter o `Apelido: Descrição Completa`.
+- **Refência Cruzada**: Dentro da mesma cena (no campo Action), usa-se apenas o apelido para referenciar o asset já descrito no Subject/Scenario.
+- Proibido qualquer texto na imagem.
 
 ---
 
@@ -35,26 +35,13 @@ Regras:
 ---
 
 ## 4. 🎬 Segmentação de Cenas
-Duração:
-- Mínimo: 5s  
-- Máximo: 10s  
-
-Ritmo:
-- Alvo: 2,5 palavras por segundo  
-- Limite máximo: 3,0 WPS  
-
-Tabela de referência:
-- 5s → 12–13 palavras  
-- 6s → 14–15 palavras  
-- 7s → 16–18 palavras  
-- 8s → 19–20 palavras  
-- 9s → 21–23 palavras  
-- 10s → 24–25 palavras  
-
-Regra de divisão:
-- Se ultrapassar limite → dividir cena
-- Pode repetir cenário/personagens/objetos
-- Action obrigatoriamente deve ser diferente
+- Mínimo: 4s | Máximo: 10s.
+- **Sweet Spot**: 8.0 segundos.
+- **A Regra do Diretor (Hierarquia de Âncoras)**:
+  1. **Âncora Primária**: Buscar ponto final (. ! ?) entre 6s e 10s.
+  2. **Âncora Secundária**: Se sem ponto, buscar vírgula ou respiração entre 5s e 10s.
+  3. **Corte de Emergência**: Se sem pontuação, forçar corte exatamente aos 8.0s para manter energia visual.
+- Action obrigatoriamente deve ser diferente em cada corte.
 
 ---
 
@@ -103,10 +90,12 @@ OU
 - upload do usuário
 
 Regras:
-- Se houver SRT → domina tempo e texto
-- IA não altera SRT
-- Render usa tempo do áudio (AudioContext)
-- Sem antecipação de legenda
+- Se houver SRT → domina tempo e texto.
+- IA não altera SRT.
+- **Sincronização Absoluta (Desktop)**: Uso obrigatório de arquivo **.ass (Substation Alpha)** global.
+- As legendas são aplicadas no passo final da renderização nativa, sincronizadas diretamente pelo timestamp do áudio master.
+- **Sincronia de Estilos**: O renderizador Desktop deve aceitar o parâmetro `--presetId` para carregar exatamente o mesmo preset (cores, fontes, posições) selecionado pelo usuário no Browser via Firestore.
+- Sem antecipação de legenda (delay zero em relação à fala).
 
 ---
 
@@ -161,7 +150,7 @@ Regras:
 Meta: Estabilidade total para vídeos de longa duração (20 min+).
 
 **Ambiente Operacional:**
-- Porta Padrão: **3005** (Vite configurado para ignorar `temp_render`).
+- Porta Padrão: **3006** (Vite configurado para ignorar `temp_render`).
 - FFmpeg: Obrigatório uso do **ffmpeg-full** via Homebrew no macOS.
 
 **Estratégia de Renderização:**
@@ -177,9 +166,40 @@ Para garantir a paridade entre os renderizadores Browser e Desktop:
 **Vídeos MP4 Importados:**
 - **Zoom Fixo**: Escala de **1.12 (112%)** permanente.
 - **Movimento**: Proibido aplicar filtros de Zoompan ou Ken Burns (o vídeo já possui movimento nativo).
+- **Velocidade Adaptativa**: O vídeo deve ter sua velocidade ajustada (playbackRate/setpts) para cobrir **exatamente** a duração total da cena. O vídeo deve rodar apenas 1 vez (sem loop) esticado ou encurtado conforme o tempo da cena.
 
 **Imagens Estáticas:**
 - **Zoom Base**: Escala de **1.0 (100%)**.
 - **Dinâmica**: Uso obrigatório da biblioteca `motion_effects`.
 - **Rodízio Proibitivo**: Um efeito **nunca** deve ser repetido em cenas consecutivas. O sistema deve sortear um novo movimento aleatório se não houver seleção manual do usuário.
 - **Suavidade**: Filtro `zoompan` operando em 25fps para evitar trepidação (jitter).
+
+---
+
+## 13. 🤖 Arsenal de IA (Modelos)
+
+### Análise e Estrutura (Texto e Áudio)
+- **Gemini 2.5 Flash**: Modelo mestre para **transcrição verbatim**, **divisão de cenas** (decupagem), inventário de tokens e geração de títulos virais. 
+- **Papel**: Garantir que o áudio e o texto estejam 100% sincronizados.
+
+### Geração de Imagem (Artistas Prime)
+- **Imagen 4.0 Fast**: Motor padrão de alta velocidade para geração de cenas e assets. (Aguardando configuração)
+- **Gemini 2.5 Flash Image (Nano Banana)**: Motor econômico focado em geração em lote com baixo custo.
+- **Flux Cinematic (Pollinations)**: AI focada em realismo cinematográfico e composições dramáticas.
+- **GPT Image (Pollinations)**: AI focada em realismo mágico, surrealismo e efeitos visuais oníricos (Substituiu ZImage).
+
+---
+
+## 14. 🎬 Sistema Duplo de Animação
+
+O EchoVideo utiliza dois conceitos distintos de "animação" que não devem ser confundidos:
+
+### 1. Efeitos de Movimento (Render)
+- **O que é**: Movimentos técnicos de câmera (Ken Burns, Zoompan) aplicados durante a geração do vídeo.
+- **Fonte**: Sorteados ou selecionados da coleção `motion_effects` do banco de dados (ex: "Dynamic Zoom-In Drift").
+- **Aplicação**: Processados puramente pelos motores FFmpeg (WASM e Native) para dar vida a imagens estáticas.
+
+### 2. Conceitos Criativos (IA)
+- **O que é**: Uma "ideia de diretor" gerada pelo Gemini 2.5 Flash para cada cena.
+- **Fonte**: Campo `animation` gerado na decupagem, baseado no contexto da cena, personagens e cenário.
+- **Aplicação**: É um guia criativo/narrativo para a composição da imagem; **não** é processado pelos motores de renderização técnica. Serve para inspirar a estética da cena produzida.

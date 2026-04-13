@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Palette, Sparkles, Zap, Loader2, ImageIcon, ArrowLeft, Download, Info, RefreshCw, Trash2, CheckCircle, PlayCircle } from 'lucide-react';
 import { AppSettings, ImageStyleOption, StyleExample } from '../types';
-import { generateImage, IMAGEN_ULTRA_MODEL_NAME, IMAGEN_FAST_MODEL_NAME, NANO_MODEL_NAME } from '../services/geminiService';
+import { generateImage, IMAGEN_FAST_MODEL_NAME, NANO_MODEL_NAME } from '../services/geminiService';
 import { generatePollinationsImage } from '../services/pollinationsService';
 import { saveStyleExample, getStyleExamples, clearStyleExamples } from '../services/storageService';
 
@@ -77,11 +77,10 @@ export const ImageStylesGallery: React.FC<ImageStylesGalleryProps> = ({ settings
       const finalPrompt = `${promptBase}. Strictly: Absolutely no text, no written characters, no alphabet, no letters, no words, no typography. Pure imagery only.`;
 
       let result: { image: string };
-      if (targetProvider === 'google-ultra') result = await generateImage(finalPrompt, '16:9', IMAGEN_ULTRA_MODEL_NAME);
-      else if (targetProvider === 'google-fast') result = await generateImage(finalPrompt, '16:9', IMAGEN_FAST_MODEL_NAME);
+      if (targetProvider === 'google-fast') result = await generateImage(finalPrompt, '16:9', IMAGEN_FAST_MODEL_NAME);
       else if (targetProvider === 'google-nano') result = await generateImage(finalPrompt, '16:9', NANO_MODEL_NAME);
       else if (targetProvider === 'pollinations-flux') result = await generatePollinationsImage(finalPrompt, 'flux', "", '16:9');
-      else if (targetProvider === 'pollinations-zimage') result = await generatePollinationsImage(finalPrompt, 'zimage', "", '16:9');
+      else if (targetProvider === 'pollinations-zimage') result = await generatePollinationsImage(finalPrompt, 'gpt-image-large', "", '16:9');
       else throw new Error("Provedor inválido");
 
       const masterExample: StyleExample = {
@@ -111,11 +110,10 @@ export const ImageStylesGallery: React.FC<ImageStylesGalleryProps> = ({ settings
       const finalPrompt = `${promptBase} style: ${style.prompt}, Strictly: Absolutely no text, no written characters, no alphabet, no letters, no words, no typography. Pure imagery only.`;
 
       let result: { image: string };
-      if (targetProvider === 'google-ultra') result = await generateImage(finalPrompt, '16:9', IMAGEN_ULTRA_MODEL_NAME);
-      else if (targetProvider === 'google-fast') result = await generateImage(finalPrompt, '16:9', IMAGEN_FAST_MODEL_NAME);
+      if (targetProvider === 'google-fast') result = await generateImage(finalPrompt, '16:9', IMAGEN_FAST_MODEL_NAME);
       else if (targetProvider === 'google-nano') result = await generateImage(finalPrompt, '16:9', NANO_MODEL_NAME);
       else if (targetProvider === 'pollinations-flux') result = await generatePollinationsImage(finalPrompt, 'flux', "", '16:9');
-      else if (targetProvider === 'pollinations-zimage') result = await generatePollinationsImage(finalPrompt, 'zimage', "", '16:9');
+      else if (targetProvider === 'pollinations-zimage') result = await generatePollinationsImage(finalPrompt, 'gpt-image-large', "", '16:9');
       else throw new Error("Provedor inválido");
 
       const newExample: StyleExample = {
@@ -242,7 +240,7 @@ export const ImageStylesGallery: React.FC<ImageStylesGalleryProps> = ({ settings
             { id: 'google-fast', label: 'Imagen 4 Fast', color: 'from-blue-400 to-cyan-500' },
             { id: 'google-nano', label: 'Nano Banana $0,039', color: 'from-amber-400 to-orange-600' },
             { id: 'pollinations-flux', label: 'Flux Cinematic', color: 'from-purple-500 to-pink-600' },
-            { id: 'pollinations-zimage', label: 'ZImage Magic', color: 'from-emerald-500 to-teal-600' }
+            { id: 'pollinations-zimage', label: 'GPT Image', color: 'from-emerald-500 to-teal-600' }
           ].map((m) => (
             <div key={m.id} className={`bg-slate-900/30 border border-slate-800/50 rounded-[2.5rem] overflow-hidden flex flex-col shadow-2xl transition-all duration-500 group relative ${provider === m.id ? 'ring-2 ring-brand-500/50 scale-[1.02] bg-slate-900/60' : 'hover:border-slate-700 hover:scale-[1.01]'}`}>
               

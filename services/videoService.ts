@@ -560,6 +560,12 @@ export const generateTimelineVideo = async (
                         }
 
                         if (activeAsset instanceof HTMLVideoElement) {
+                            // ADAPTAÇÃO DE VELOCIDADE: Ajusta a velocidade para que o vídeo rode exatamente uma vez na duração da cena
+                            const activeSceneDuration = currentItem.endSeconds - currentItem.startSeconds;
+                            if (activeAsset.duration > 0 && activeSceneDuration > 0) {
+                                activeAsset.playbackRate = activeAsset.duration / activeSceneDuration;
+                            }
+
                             // SYNC DETERMINÍSTICO SUAVE: 
                             // Solo forçamos o seek se o desvio for maior que 100ms.
                             // Isso elimina o jitter (soquinho) causado por seeks constantes de hardware.
@@ -578,6 +584,10 @@ export const generateTimelineVideo = async (
                         if (timeLeft < transitionDuration && nextItem) {
                             const nextAsset = loadedAssets.get(activeIdx + 1);
                             if (nextAsset instanceof HTMLVideoElement) {
+                                const nextSceneDuration = nextItem.endSeconds - nextItem.startSeconds;
+                                if (nextAsset.duration > 0 && nextSceneDuration > 0) {
+                                    nextAsset.playbackRate = nextAsset.duration / nextSceneDuration;
+                                }
                                 const nextTargetTime = Math.max(0, elapsed - nextItem.startSeconds);
                                 if (Math.abs(nextAsset.currentTime - nextTargetTime) > 0.016) {
                                     nextAsset.currentTime = nextTargetTime;

@@ -103,16 +103,10 @@ export const buildFinalVisualPrompt = (
   let cleanScenario = cleanDescription(scenario);
   const cleanCamera = normalizeCamera(camera);
 
-  // 2. Blindagem de Subject (Evitar: "Jerry: Jerry is...")
-  // Se o subject contém ":", pegamos o que vem depois para evitar o rótulo redundante
-  if (cleanSubject.includes(':')) {
-    cleanSubject = cleanSubject.split(':').slice(1).join(':').trim();
-  }
-
-  // 3. Blindagem de Action (Remover qualquer menção a IDs que vazaram)
+  // 2. Blindagem de Action (Remover qualquer menção a IDs que vazaram)
   cleanAction = cleanAction.replace(TECHNICAL_ID_REGEX, '');
 
-  // 4. Montar Partes
+  // 3. Montar Partes
   const parts = [
     style,
     cleanSubject,
@@ -122,7 +116,7 @@ export const buildFinalVisualPrompt = (
     visualIntegrity
   ].filter(p => p && p.trim().length > 0);
 
-  // 5. Limpeza Final de redundância global
+  // 4. Limpeza Final de redundância global
   return parts.join(". ")
     .replace(/\s\s+/g, ' ')
     .replace(/\.\./g, '.')

@@ -75,7 +75,7 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
     const [showVideoSettings, setShowVideoSettings] = useState(false);
     const [includeSubtitles, setIncludeSubtitles] = useState<boolean>(true);
     const [viewingImageState, setViewingImageState] = useState<{ imageUrl: string, promptData: any, filename: string, sourceIndex?: number, sourceType?: 'scene' | 'thumbnail' } | null>(null);
-    const [globalProvider, setGlobalProvider] = useState<'google-nano' | 'google-fast' | 'google-ultra' | 'pollinations' | 'pollinations-zimage'>('google-fast');
+    const [globalProvider, setGlobalProvider] = useState<'google-nano' | 'google-fast' | 'pollinations' | 'pollinations-zimage'>('google-fast');
     const [generatedTitles, setGeneratedTitles] = useState<ViralTitle[]>([]);
     const [isGeneratingTitles, setIsGeneratingTitles] = useState(false);
     const [generatingThumbnailMap, setGeneratingThumbnailMap] = useState<Record<number, boolean>>({});
@@ -224,37 +224,37 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         // (1) MEDIUM - Override manual > Estilo Global
         const medium = item.medium || (activeStylePrompt ? activeStylePrompt.split(',')[0].trim() : '');
 
-        // (2) SUBJECT - APENAS características físicas dos personagens
+        // (2) SUBJECT - Nome + Características físicas dos personagens
         let subject = '';
         if (relevantChars.length > 0) {
-            // Prioriza descrições dos assets vinculados
-            subject = relevantChars.map(c => c.description).filter(Boolean).join(", ");
+            // Combina Nome + Descrição para cada personagem
+            subject = relevantChars.map(c => `${c.name}: ${c.description || ''}`).join(", ");
         }
         
-        // Se o subject manual tiver algo que não está na descrição (e respeitando a regra de ser característica), apenda
+        // Se o subject manual tiver algo, apenda
         if (item.subject && !subject.includes(item.subject)) {
             subject = subject ? `${subject}, ${item.subject}` : item.subject;
         }
 
-        // (3) ACTION / SYMBOLISM - A ideia da cena (O que está acontecendo)
+        // (3) ACTION / SYMBOLISM - A ideia da cena
         let action = (item.action || item.imagePrompt || '')
             .replace(/style:.*$/gi, '')
             .replace(/master cinematic.*$/gi, '')
             .trim();
 
-        const parts = action.split(/,(?:\s*)Strictly:|,(?:\s*)Visual Integrity:/i);
-        action = parts[0].trim();
+        const pAction = action.split(/,(?:\s*)Strictly:|,(?:\s*)Visual Integrity:/i);
+        action = pAction[0].trim();
 
         // (4) CENARIO / LOCATION & PROPS (OBJETOS) - Características do local e dos objetos
         let cenario = item.cenario || '';
         if (!cenario && relevantLocs.length > 0) {
-            cenario = relevantLocs.map(l => l.description).filter(Boolean).join(" ");
+            cenario = relevantLocs.map(l => `${l.name}: ${l.description || ''}`).join(" ");
         }
 
-        // Integra Objetos (Props) no Cenário conforme solicitado pelo usuário
+        // Integra Objetos (Props) no Cenário
         let propsText = '';
         if (relevantProps.length > 0) {
-            propsText = relevantProps.map(p => p.description).filter(Boolean).join(", ");
+            propsText = relevantProps.map(p => `${p.name}: ${p.description || ''}`).join(", ");
         } else if (item.props) {
             propsText = item.props;
         }
@@ -515,7 +515,7 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         setIsVideoGenerating(false);
     };
 
-    const handleGenerateImage = async (index: number, providerParam?: 'google-nano' | 'google-fast' | 'google-ultra' | 'pollinations' | 'pollinations-zimage', overrideItem?: Partial<TranscriptionItem>) => {
+    const handleGenerateImage = async (index: number, providerParam?: 'google-nano' | 'google-fast' | 'pollinations' | 'pollinations-zimage', overrideItem?: Partial<TranscriptionItem>) => {
         // Usar o modelo preferencial se existir, senão o parâmetro ou globalProvider
         const provider = providerParam || (project?.preferredImageModel as any) || globalProvider;
         // Limpar a imagem anterior para feedback visual de regeneração
@@ -534,15 +534,13 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
             const isPol = provider.startsWith('pollinations');
             const isPollinationsZ = provider === 'pollinations-zimage';
             const isGoogleNano = provider === 'google-nano';
-            const isGoogleUltra = provider === 'google-ultra';
             const isGoogleFast = provider === 'google-fast';
 
-            const polModel = isPollinationsZ ? 'zimage' : 'flux';
+            const polModel = isPollinationsZ ? 'gpt-image-large' : 'flux';
             
-            let geminiModel = 'imagen-3.0-generate-002'; // default
-            if (isGoogleFast) geminiModel = 'imagen-3.0-generate-002';
-            if (isGoogleUltra) geminiModel = 'imagen-3.0-ultra-001';
-            if (isGoogleNano) geminiModel = 'gemini-nano';
+            let geminiModel = IMAGEN_FAST_MODEL_NAME; // default
+            if (isGoogleFast) geminiModel = IMAGEN_FAST_MODEL_NAME;
+            if (isGoogleNano) geminiModel = NANO_MODEL_NAME;
 
             const result = !isPol
                 ? await generateImage(pData.finalPrompt, settings.aspectRatio, geminiModel)
@@ -621,10 +619,10 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         setIsComparing(true);
         
         const models = [
-            { id: 'google-imagen', label: 'GEN NANO (IMAGEN 3)' },
-            { id: 'pollinations-flux', label: 'FLUX' },
-            { id: 'pollinations-zimage', label: 'ZIMAGE' },
-            { id: 'pollinations-turbo', label: 'TURBO' }
+            { id: 'google-fast', label: 'IMAGEN 4 FAST' },
+            { id: 'google-nano', label: 'NANO BANANA' },
+            { id: 'pollinations', label: 'FLUX CINEMATIC' },
+            { id: 'pollinations-zimage', label: 'GPT IMAGE' }
         ];
 
         setComparisonResults(models.map(m => ({ modelId: m.id, label: m.label, imageUrl: '', loading: true })));
@@ -632,14 +630,16 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         const assetPrompt = `${asset.description} style: ${activeStylePrompt}, Visual Integrity: "Pure image only: all surfaces are blank and free of any text or letters."`;
 
         // Execução paralela
-        models.forEach(async (model, idx) => {
+        models.forEach(async (model) => {
             try {
                 let result;
-                if (model.id === 'google-imagen') {
-                    result = await generateImage(assetPrompt, '1:1' as any, IMAGEN_MODEL_NAME);
+                if (model.id === 'google-fast') {
+                    result = await generateImage(assetPrompt, '1:1' as any, IMAGEN_FAST_MODEL_NAME);
+                } else if (model.id === 'google-nano') {
+                    result = await generateImage(assetPrompt, '1:1' as any, NANO_MODEL_NAME);
                 } else {
-                    const polModel = model.id === 'pollinations-zimage' ? 'zimage' : (model.id === 'pollinations-turbo' ? 'turbo' : 'flux');
-                    result = await generatePollinationsImage(assetPrompt, polModel, "", '16:9');
+                    const polModel = model.id === 'pollinations-zimage' ? 'gpt-image-large' : 'flux';
+                    result = await generatePollinationsImage(assetPrompt, polModel, "", '1:1' as any);
                 }
                 
                 setComparisonResults(prev => prev.map(r => r.modelId === model.id ? { ...r, imageUrl: result.image, loading: false } : r));
@@ -691,15 +691,13 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
 
             const isPollinationsZ = provider === 'pollinations-zimage';
             const isGoogleNano = provider === 'google-nano';
-            const isGoogleUltra = provider === 'google-ultra';
             const isGoogleFast = provider === 'google-fast';
 
             const assetFinalProvider = (provider === 'pollinations' || provider === 'pollinations-zimage') ? 'pollinations' : 'google';
-            const polModel = isPollinationsZ ? 'zimage' : 'flux';
+            const polModel = isPollinationsZ ? 'gpt-image-large' : 'flux';
             
             let geminiModel = IMAGEN_MODEL_NAME; // default Imagen 3
             if (isGoogleFast) geminiModel = 'imagen-3.0-generate-002'; // Ou o nome correto do Fast
-            if (isGoogleUltra) geminiModel = 'imagen-3.0-ultra-001';
             if (isGoogleNano) geminiModel = 'gemini-nano'; // Se houver esse mapeamento no service
 
             // Mas para garantir o mesmo código da galeria, vou usar as constantes do geminiService se estiverem lá
@@ -707,7 +705,6 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
             
             const result = assetFinalProvider === 'google'
                 ? await generateImage(assetPrompt, settings.aspectRatio, 
-                    isGoogleUltra ? 'imagen-3.0-ultra-001' : 
                     isGoogleFast ? 'imagen-3.0-generate-002' : 
                     isGoogleNano ? 'gemini-nano' : 'imagen-3.0-generate-002'
                   )
@@ -767,24 +764,27 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
     };
 
     const handleRecreateSceneBroll = async (index: number) => {
+        const item = data[index];
+        if (!item) return;
+
         onUpdateItem(index, { isGeneratingGoogle: true });
+
         try {
-            const item = data[index];
-            const systemPrompt = `You are an expert video producer. Rewrite this scene to be a generic B-roll shot without any specific character names. It should describe a cinematic visually stunning establishing shot or abstract concept representation related to the text.
+            const systemPrompt = `You are an expert cinematic director. Rewrite this scene as a visually stunning B-roll shot (abstract, metaphorical, or atmospheric).
             
 Original text: "${item.text}"
 Current action: "${item.action}"
 
-Return ONLY a valid JSON object with the following keys, no markdown formatting at all:
+Return ONLY a valid JSON:
 {
-  "medium": "cinematic photography, 3d render, etc",
-  "subject": "generic description, e.g., A lone silhouette, A glowing orb (NO real names)",
-  "action": "what is happening",
-  "cenario": "the environment",
-  "props": "objects in the scene",
-  "symbolism": "visual metaphor",
-  "camera": "camera angle/movement",
-  "animation": "motion prompt for runway/luma"
+  "medium": "cinematic photography, abstract 3d, etc",
+  "subject": "conceptual elements (e.g. 'Golden particles floating in a vacuum')",
+  "action": "Cinematic and highly symbolic action (MANDATORY: NO REAL NAMES)",
+  "cenario": "Surreal or conceptual environment description",
+  "props": "Symbolic objects",
+  "symbolism": "Visual metaphor",
+  "camera": "Unique camera angle (e.g. Wide shot, Extreme Close-up)",
+  "animation": "CREATE A UNIQUE CREATIVE ANIMATION CONCEPT. Analyze the scene's mood and describe a visual motion idea (e.g. 'The environment dissolves into light as the camera orbits', 'Time slows down while shadows grow like vines') — NEVER use technical names like 'Zoompan'. Be cinematic and evocative."
 }`;
             
             const newActionRaw = await generateText(systemPrompt);
@@ -831,7 +831,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
             const isPol = provider.startsWith('pollinations');
             const isPollinationsZ = provider === 'pollinations-zimage';
             const isGoogleImagen = provider === 'google-imagen';
-            const polModel = isPollinationsZ ? 'zimage' : 'flux';
+            const polModel = isPollinationsZ ? 'gpt-image-large' : 'flux';
             const geminiModel = isGoogleImagen ? IMAGEN_MODEL_NAME : IMAGE_MODEL_NAME;
 
             const result = !isPol
@@ -898,7 +898,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
 
         // 3. SEGUNDA PASSADA: Preencher slots vazios com arquivos sem número ou conflitantes
         for (const file of unmappedFiles) {
-            const targetIdx = updatedItems.findIndex((item, idx) =>
+            const targetIdx = updatedItems.findIndex((item, idx) => 
                 !item.imageUrl && !item.importedVideoUrl && !usedIndices.has(idx)
             );
             if (targetIdx !== -1) {
@@ -992,7 +992,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                         transitionType: settings.transitionType,
                         aspectRatio: settings.aspectRatio,
                         subtitleStyle: sub,
-                        motionEffects: settings.motionEffects
+                        motionEffects: motionEffects
                     },
                     (p, msg) => {
                         setVideoProgress(p);
@@ -1132,7 +1132,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                 <span className="text-[10px] font-black text-brand-400 uppercase tracking-widest flex items-center gap-1.5"><Terminal size={12}/> Comando Desktop</span>
                                                 <button 
                                                     onClick={() => {
-                                                        const cmd = `rm -rf temp_render/* && npx tsx scripts/render_native.ts --id=${projectId} --subs=${includeSubtitles}`;
+                                                        const cmd = `rm -rf temp_render/* && npx tsx scripts/render_native.ts --id=${projectId} --subs=${includeSubtitles} --presetId=${selectedSubtitlePresetId || (settings.aspectRatio === '16:9' ? 'horizontal-16-9' : 'vertical-9-16')}`;
                                                         navigator.clipboard.writeText(cmd);
                                                         alert("Comando COMPLETO copiado! Cole no seu Terminal.");
                                                         setIsVideoGenerating(true);
@@ -1144,7 +1144,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                 </button>
                                             </div>
                                             <code className="text-[9px] font-mono text-slate-400 bg-black/40 p-2 rounded block break-all leading-relaxed border border-white/5">
-                                                rm -rf temp_render/* && npx tsx scripts/render_native.ts --id={projectId} --subs={String(includeSubtitles)}
+                                                rm -rf temp_render/* && npx tsx scripts/render_native.ts --id={projectId} --subs={String(includeSubtitles)} --presetId={selectedSubtitlePresetId || (settings.aspectRatio === '16:9' ? 'horizontal-16-9' : 'vertical-9-16')}
                                             </code>
                                             <p className="text-[9px] text-slate-500 italic">Cole este comando no terminal para renderizar vídeos longos com todo o poder da sua CPU.</p>
                                         </div>
@@ -1225,9 +1225,8 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                 {[
                                     { id: 'google-fast', label: 'FAST', color: 'from-blue-400 to-cyan-500', title: 'Imagen 4 Fast' },
                                     { id: 'google-nano', label: 'NANO', color: 'from-amber-400 to-orange-600', title: 'Nano Banana' },
-                                    { id: 'google-ultra', label: 'ULTRA', color: 'from-blue-600 to-indigo-700', title: 'Imagen 3 Ultra' },
                                     { id: 'pollinations', label: 'FLUX', color: 'from-purple-500 to-pink-600', title: 'Flux Cinematic' },
-                                    { id: 'pollinations-zimage', label: 'ZIMG', color: 'from-emerald-500 to-teal-600', title: 'ZImage Magic' }
+                                    { id: 'pollinations-zimage', label: 'GPTI', color: 'from-emerald-500 to-teal-600', title: 'GPT Image' }
                                 ].map(p => (
                                     <button 
                                         key={p.id}
@@ -1550,7 +1549,7 @@ Return ONLY a valid JSON object with the following keys, no markdown formatting 
                                                 </div>
 
                                                 <div className="space-y-1">
-                                                    <span className="text-[0.7rem] font-bold text-sky-500/60 uppercase px-1">Animation (Motion)</span>
+                                                    <span className="text-[0.7rem] font-bold text-sky-500/60 uppercase px-1">Ideia de Animação (IA)</span>
                                                     <textarea value={item.animation || ''} onChange={e => onUpdateItem(index, { animation: e.target.value })} className="w-full h-10 bg-slate-950 border border-slate-800 rounded-sm p-2 text-[11px] text-slate-300 outline-none focus:border-sky-500/50 resize-none custom-scrollbar" placeholder="Motion prompt for Runway/Luma..." />
                                                 </div>
 

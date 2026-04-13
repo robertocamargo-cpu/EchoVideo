@@ -450,10 +450,30 @@ export const saveStyleExample = async (example: StyleExample): Promise<void> => 
         ? `benchmark_${example.providerId}` 
         : example.styleId;
 
+    let imageUrl = example.imageUrl;
+
+    // Se a imagem é base64 e ultrapassa 800KB, salvar no Firebase Storage
+    if (imageUrl && imageUrl.startsWith('data:') && imageUrl.length > 800_000) {
+        try {
+            const base64Data = imageUrl.split(',')[1];
+            const binaryStr = atob(base64Data);
+            const bytes = new Uint8Array(binaryStr.length);
+            for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+            
+            const storagePath = `style-examples/${docId}_${Date.now()}.png`;
+            const storageRef = ref(storage, storagePath);
+            await uploadBytes(storageRef, bytes, { contentType: 'image/png' });
+            imageUrl = await getDownloadURL(storageRef);
+            console.log(`[Storage] Imagem grande salva no Storage: ${storagePath}`);
+        } catch (e) {
+            console.warn('[Storage] Falha ao salvar no Storage, tentando Firestore:', e);
+        }
+    }
+
     await setDoc(doc(db, 'style_examples', docId), {
         style_id: example.styleId,
         provider_id: example.providerId || 'google-imagen',
-        image_url: example.imageUrl,
+        image_url: imageUrl,
         prompt: example.prompt,
         timestamp: example.timestamp,
     }, { merge: true });

@@ -15,20 +15,26 @@ interface SettingsModalProps {
 
 export const DEFAULT_SETTINGS: AppSettings = {
     transcriptionPrompt: `🧠 MASTER PROMPT — AUDIO-TEXT SYNCHRONIZATION ENGINE
-    Divide this audio into scenes (5-10s).
+    Divide this audio into scenes FOLLOWING THE DIRECTOR'S RULE.
+    
+    Duração e Ritmo (Cinematográfico):
+    - Sweet Spot: 8.0 seconds per scene.
+    - Range: 5.0s (min) to 10.0s (max).
+    - HEURISTIC FOR SEGMENTATION (The Director's Rule):
+      1. PRIMARY ANCHOR: Always try to end a scene at a full stop (.) between 6s and 10s.
+      2. SECONDARY ANCHOR: If no full stop exists, split at the nearest comma (,) or breath between 5s and 10s.
+      3. EMERGENCY CUT: If no punctuation exists by 10s, YOU MUST force a cut exactly at 8.0s. Change the ACTION/CAMERA entirely.
+      4. NEVER exceed 10.0s. It is better to have a dry cut than a boring scene.
     
     🗣️ FIELD RULES (STRICT, 'subject', 'action', 'cenario', 'props', and 'animation' MUST be in ENGLISH ONLY):
-    - action: The ONLY creative field. Make the action intensely cinematic and visually stunning. Use dramatic verbs, dynamic volumetric lighting cues, extreme composition, and highly evocative visual symbolism (English ONLY). For example: instead of 'walking', use 'striding through a volumetric neon mist'. ALWAYS vary the action dynamics wildly!
-    - subject: Return a string mentioning ONLY character nicknames or IDs (English ONLY). NO CHARACTERISTICS HERE.
-    - cenario: Return a string mentioning ONLY location/prop names or IDs (English ONLY). PHYSICAL ANCHORING ONLY. NO SYMBOLISM OR CREATIVITY.
-    - camera: Pick a camera angle from: [Wide shot, Close-up, Low angle, Eye level, Bird's eye view] based on 'action'. YOU MUST VARY THE CAMERA ANGLE! Never repeat the same angle consecutively.
-    - animation: Pick one logic from: [Dynamic Zoom-In Drift, Contextual Zoom-Out Reveal, Cinematic Dolly Slide, Elegant Diagonal Lift, Fluid Descending Sweep]. Justify in English based strictly on the creative 'action'. YOU MUST VARY THE ANIMATION! Never repeat consecutively.
-    - DURATION LIMITS: Each scene must fall between 5.0 and 10.0 seconds. The text assigned to it must fit comfortably (target of approx 2.5 words per second / max 25 words). If a logical segment exceeds this heavily, you MUST SPLIT IT into two or more >=5s scenes.
+    - action: The ONLY creative field. Make the action intensely cinematic. Use Conceptual Surrealism or Magical Realism as the core aesthetic. 
+    - subject: Nickname: Full Description (English ONLY).
+    - cenario: Nickname: Full Description (English ONLY).
+    - camera: Pick a camera angle from: [Wide shot, Close-up, Low angle, Eye level, Bird's eye view, Dutch angle]. YOU MUST VARY THE CAMERA ANGLE WILDLY!
+    - animation: Create a UNIQUE and CREATIVE animation concept for this specific scene. DO NOT use technical names like "Zoompan". Instead, describe a visual idea (e.g., "The camera floats through the dust motes like a silent ghost", "Time slows down as the character rotates in a frozen sunset").
     - NO PLACEHOLDERS: NEVER use "(continua)", "(pausa)", or empty strings for the 'text' field.
-    - NO CREATIVE BLEED: Fields 'subject' and 'cenario' must be ID-ONLY mappings or literal descriptions. Symbolic language is FORBIDDEN in 'cenario'. Move it all to 'action'.
-    - DO NOT SKIP TEXT: You must transcribe 100% of the spoken text in the audio chunk. Do not cut or skip ANY words.
-    - SYNC PARAMOUNT (CRITICAL): The timeline markers (startSeconds/endSeconds) MUST perfectly reflect reality. Text MUST be assigned EXACTLY to the timestamps when they are spoken. If the natural speaker is speaking very fast (e.g. 20 words in a 5 second timeframe), YOU MUST PRIORITIZE REALITY OVER THE WORD-DENSITY TABLE. Do not shift words into the next scene just to obey the flow, as this causes catastrophic audio desync.
-    - MUSIC/SILENCE HANDLING: Even if the chunk has NO spoken words (e.g., only instrumental music or silence), YOU MUST NOT RETURN AN EMPTY ARRAY. You must generate at least ONE scene covering the duration, setting text to " ", and describing a visual that matches the mood of the music/silence.
+    - DO NOT SKIP TEXT: You must transcribe 100% of the spoken text.
+    - SYNC PARAMOUNT: Timestamps MUST match reality perfectly.
     
     Return JSON: { items: [...] } following the TranscriptionResponse schema.`,
 

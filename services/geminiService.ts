@@ -16,9 +16,8 @@ declare global {
 }
 
 // Text tasks - user confirmed 2.5-flash was working
-export const TEXT_MODEL_NAME = "gemini-1.5-flash";
+export const TEXT_MODEL_NAME = "gemini-2.5-flash";
 // Gemini Nano / Imagen Series - IDs EXATOS conforme solicitado pelo usuário
-export const IMAGEN_ULTRA_MODEL_NAME = "imagen-3.0-generate-001";
 export const IMAGEN_FAST_MODEL_NAME = "imagen-4.0-fast-generate-001";
 // Nano Banana Normal - Gemini 2.5 Flash Image API
 export const NANO_MODEL_NAME = "gemini-2.5-flash-image"; 
@@ -426,24 +425,27 @@ export const enrichSrtWithVisuals = async (
       const chunkPrompt = `MASTER PROMPT — AUDIO-TEXT SYNCHRONIZATION ENGINE
     Divide this audio into multiple short scenes (STRICTLY 5.0 to 10.0 SECONDS EACH).
     ABSOLUTE LIMIT: NO SCENE CAN OVERLAP 10.0 SECONDS. IF A SCENE IS LONGER THAN 10 SECONDS, YOU MUST SPLIT IT INTO TWO SCENES. THIS IS A CRITICAL FAILURE IN YOUR RULESET IF VIOLATED.
-    CRITICAL: A 30-second chunk MUST generate exactly 3 to 6 scenes. The density of words usually follows 3.0 words per second. NEVER return a single scene for the entire chunk. Se houver poucas palavras, distribua visualmente ou mescle até 10s máximo.
+    Duração e Ritmo (Cinematográfico):
+    - Sweet Spot: 8.0 seconds per scene.
+    - Range: 5.0s (min) to 10.0s (max).
+    - HEURISTIC FOR SEGMENTATION (The Director's Rule):
+      1. PRIMARY ANCHOR: Always try to end a scene at a full stop (.), exclamation (!), or question mark (?) between 6s and 10s.
+      2. SECONDARY ANCHOR: If no full stop exists by 9s, split at the nearest comma (,) or natural breath between 5s and 10s.
+      3. EMERGENCY CUT: If no punctuation exists by 10s, YOU MUST force a cut exactly at 8.0s. Change the ACTION/CAMERA entirely to maintain visual energy.
+      4. NEVER exceed 10.0s. It is better to have a dry cut than a boring, over-extended scene.
+    
     ${previousContextStr}
     🗣️ FIELD RULES (STRICT, 'text', 'subject', 'action', 'cenario', 'props', and 'animation'):
     - text: MANDATORY FIELD! You MUST write the EXACT 100% VERBATIM transcription of the audio segment. DO NOT LEAVE EMPTY. DO NOT SUMMARIZE. It is strictly forbidden to omit any words spoken.
     - action: The ONLY creative field. You MUST use Conceptual Surrealism or Magical Realism (Surrealismo Conceitual ou Realismo Mágico) as the absolute core aesthetic. Make the action intensely cinematic, visually stunning, and highly symbolic. Use dramatic verbs, dynamic volumetric lighting cues, extreme composition, and evocative visual metaphors (English ONLY). 
-    CRITICAL RULE ON NAMES: NEVER USE THE REAL NAME OF ANY CHARACTER OR OBJECT IN THE ACTION FIELD. ALWAYS use their nickname/ID AND their physical description (e.g., 'c1, a tall man in a black suit, runs...'). NO REAL NAMES EVER.
+    CRITICAL RULE ON NAMES: NEVER USE THE REAL NAME OF ANY CHARACTER OR OBJECT IN THE ACTION FIELD. ALWAYS use their nickname/ID AND their physical description (e.g., 'c1, Ilonmãsqui, a middle-aged man with short dark hair, runs...'). NO REAL NAMES EVER.
     CRITICAL RULE ON CONTINUITY: "CONTINUATION" DOES NOT EXIST. DO NOT CREATE SCENES THAT LOOK LIKE A CONTINUATION OF THE PREVIOUS ONE. EACH SCENE IS A BRAND NEW DRAMATIC CUT. ACTION MUST CHANGE ENTIRELY.
     CRITICAL: AVOID REPETITIVE FRAMING! Every scene MUST feel visually unique from the previous one. Use a mix of abstract concepts, extreme close-ups, and giant-scale landscapes. NEVER repeat the same visual setup twice in a row.
     - subject: Return a string mentioning ONLY character nicknames or IDs (English ONLY). NO CHARACTERISTICS HERE.
     - cenario: Return a string mentioning ONLY location/prop names or IDs (English ONLY). PHYSICAL ANCHORING ONLY. NO SYMBOLISM OR CREATIVITY.
     - camera: Pick a camera angle from: [Wide shot, Close-up, Low angle, Eye level, Bird's eye view, Dutch angle, Extreme Close-up, High Angle]. YOU MUST VARY THE CAMERA ANGLE WILDLY! Never repeat the same angle consecutively. Avoid boring head-on eye-level shots.
-    - animation: YOU MUST strictly choose EXACTLY ONE of the following 5 predefined animation effects for this scene, passing ONLY its exact name in English (do NOT create new effects):
-      1. Dynamic Zoom-In Drift
-      2. Contextual Zoom-Out Reveal
-      3. Cinematic Dolly Slide
-      4. Elegant Diagonal Lift
-      5. Fluid Descending Sweep
-      NEVER repeat the same effect in consecutive scenes!
+    - animation: Create a UNIQUE and CREATIVE animation concept for this specific scene. Analyze the text, the scenario, the characters, the objects, and the emotional tone to craft an original cinematic motion idea. Think like a film director — describe HOW the visual should move, transform, or evolve during this scene. Examples: "Camera slowly pushes through fog to reveal the character standing alone", "Objects levitate and orbit the subject as light fractures into prismatic shards", "The city skyline compresses and stretches like breathing lungs". Be cinematic, evocative, and never generic. Each scene MUST have a completely different animation concept from the previous one.
+    - animationRationale: Briefly explain WHY this animation concept enhances the scene's narrative and emotional impact.
     - SYNC: O início e fim devem bater com a locução exata no áudio.
     - MUSIC/SILENCE: Use "(🎵)" apenas se não houver NENHUMA VOZ narrada num trecho superior a 5 segundos. MAS SE HOUVER LOCUÇÃO, a transcrição é absoluta.
     
@@ -490,7 +492,7 @@ export const enrichSrtWithVisuals = async (
                         locationIds: { type: "array", items: { type: "string" } },
                         propIds: { type: "array", items: { type: "string" } }
                       },
-                      required: ["startSeconds", "endSeconds", "text", "subject", "action", "cenario", "camera"]
+                      required: ["startSeconds", "endSeconds", "text", "subject", "action", "cenario", "camera", "animation"]
                     }
                   }
                 },
@@ -968,7 +970,7 @@ export const enrichSrtWithVisuals = async (
                        locationIds: [],
                        propIds: [],
                        action: "Cinematic atmospheric shot. Highly dramatic lighting, surreal empty space. Wide shot.",
-                       animation: "Dynamic Zoom-In Drift"
+                       animation: "Slow atmospheric drift through empty space, camera floating weightlessly as shadows stretch and contract"
                    });
                }
             }
@@ -999,7 +1001,7 @@ export const enrichSrtWithVisuals = async (
                  propIds: [],
                  isGapFiller: true,
                  action: "Cinematic trailing shot, atmospheric closing mood. Highly dramatic lighting, surreal empty space. Wide shot.",
-                 animation: "Contextual Zoom-Out Reveal"
+                 animation: "Gradual pullback revealing the vast emptiness, light fading as the world expands into silence"
              });
         }
     }

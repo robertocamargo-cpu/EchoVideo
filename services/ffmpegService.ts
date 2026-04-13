@@ -1,7 +1,7 @@
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { toBlobURL } from '@ffmpeg/util';
 import { TranscriptionItem, SubtitleStyleOption, MotionEffect, TransitionType } from '../types';
-import { parseEffectInstruction, preselectEffectsForScenes, EffectParams } from './effectSelectionService';
+import { parseEffectInstruction, EffectParams } from './effectSelectionService';
 
 // ─── Singleton ─────────────────────────────────────────────────────────────
 let ffmpegInstance: FFmpeg | null = null;
@@ -125,10 +125,11 @@ export const renderWithFFmpeg = async (
     for (const f of files) if (f.name !== '.' && f.name !== '..') await ff.deleteFile(f.name).catch(() => {});
   } catch (e) {}
 
-  const width  = 640; // REDUÇÃO DE TESTE: 360p é ultra estável no Chrome
-  const height = 360;
+  const width  = 1280; // 720p HD: qualidade de preview profissional
+  const height = 720;
   const FPS = 24;
   const sessionID = Date.now();
+  console.log(`🚀 [FFmpeg-WASM] Motor v2.6.5-HOTFIX iniciado. (Zoom 1.12 ativo)`);
 
   // Carregar Áudio e Fonte
   const audioFilename = `master_audio_${sessionID}.mp3`;
@@ -143,23 +144,8 @@ export const renderWithFFmpeg = async (
     }
   } catch (e) {}
 
-  // Pré-selecionar efeitos para TODAS as cenas de imagem de uma vez (Continuidade Visual)
-  const globalEffectMap = new Map<number, EffectParams>();
-  const imageOnlyItems = itemsWithMedia.map((item, i) => ({ item, i })).filter(({ item }) => !item.importedVideoUrl);
-  
-  if (options.motionEffects?.length && imageOnlyItems.length > 0) {
-    try {
-      const preselectedMap = await preselectEffectsForScenes(imageOnlyItems.map(x => x.item), options.motionEffects);
-      // Corrigindo mapeamento: preselectedMap usa índices 0, 1, 2... relativos à lista imageOnlyItems
-      preselectedMap.forEach((effect, sceneIdx) => {
-          const globalSceneIdx = imageOnlyItems[sceneIdx].i;
-          globalEffectMap.set(globalSceneIdx, parseEffectInstruction(effect.instruction));
-      });
-      console.log(`🎬 [FFmpeg] ${globalEffectMap.size} cenas de imagem receberam animação Ken Burns roteada.`);
-    } catch (e) {
-      console.warn("[FFmpeg] Falha na pré-seleção global de efeitos:", e);
-    }
-  }
+  // A seleção de efeitos agora será feita cena a cena no renderChunk para garantir aleatoriedade real
+  // igual ao script render_native.ts (Desktop)
 
   const chunkFiles: string[] = [];
   const numChunks = Math.ceil(itemsWithMedia.length / CHUNK_SIZE);
@@ -168,20 +154,12 @@ export const renderWithFFmpeg = async (
     const startIdx = c * CHUNK_SIZE;
     const endIdx = Math.min(startIdx + CHUNK_SIZE, itemsWithMedia.length);
     const chunkItems = itemsWithMedia.slice(startIdx, endIdx);
-    
-    // Sub-mapa de efeitos para este chunk específico
-    const chunkEffects = new Map<number, EffectParams>();
-    for (let i = startIdx; i < endIdx; i++) {
-        if (globalEffectMap.has(i)) {
-            chunkEffects.set(i - startIdx, globalEffectMap.get(i)!);
-        }
-    }
 
     onProgress(10 + Math.floor((c / numChunks) * 75), `Processando bloco ${c + 1} de ${numChunks}...`);
 
     const chunkPath = await renderChunk(ff, chunkItems, {
       width, height, FPS, sessionID, chunkIdx: c, hasFont, subtitleStyle, 
-      motionEffects: chunkEffects
+      availableEffects: options.motionEffects || []
     });
     chunkFiles.push(chunkPath);
   }
@@ -222,9 +200,9 @@ export const renderWithFFmpeg = async (
 async function renderChunk(
   ff: FFmpeg,
   items: TranscriptionItem[],
-  cfg: { width: number, height: number, FPS: number, sessionID: number, chunkIdx: number, hasFont: boolean, subtitleStyle?: SubtitleStyleOption, motionEffects?: Map<number, EffectParams> }
+  cfg: { width: number, height: number, FPS: number, sessionID: number, chunkIdx: number, hasFont: boolean, subtitleStyle?: SubtitleStyleOption, availableEffects: MotionEffect[] }
 ): Promise<string> {
-  const { width, height, FPS, sessionID, chunkIdx, hasFont, subtitleStyle, motionEffects } = cfg;
+  const { width, height, FPS, sessionID, chunkIdx, hasFont, subtitleStyle, availableEffects } = cfg;
   const chunkFilename = `part_${chunkIdx}_${sessionID}.mp4`;
   const localFiles: string[] = [];
 
@@ -243,11 +221,13 @@ async function renderChunk(
     }
 
     const { data, mime } = mediaBuffer;
-    const filename = `c${chunkIdx}_s${i}_${sessionID}.${detectExtension(url, mime)}`;
+    const isActuallyVideo = (item.importedVideoUrl && (url.includes('.mp4') || mime.includes('video'))) || url.toLowerCase().endsWith('.mp4');
+    const filename = `c${chunkIdx}_s${i}_${sessionID}.${isActuallyVideo ? 'mp4' : 'jpg'}`;
+    
     await ff.writeFile(filename, data);
     localFiles.push(filename);
     const duration = Math.max(0.3, item.endSeconds - item.startSeconds);
-    scenes.push({ filename, isVideo: !!item.importedVideoUrl, duration });
+    scenes.push({ filename, isVideo: isActuallyVideo, duration });
   }
 
   // PROTEÇÃO: Se o bloco não tem nenhuma cena válida (ex: falha de download total)
@@ -264,29 +244,43 @@ async function renderChunk(
   let filterScript = '';
   const N = scenes.length;
   const defaultParams: EffectParams = { scaleStart: 1.15, scaleEnd: 1.30, moveXStart: -0.02, moveXEnd: 0.02, moveYStart: 0, moveYEnd: 0 };
-
-  const chunkEffectParams = motionEffects || new Map<number, EffectParams>();
+  let lastEffectId = '';
 
   for (let i = 0; i < N; i++) {
     const s = scenes[i];
     const frames = Math.ceil(s.duration * FPS);
     
     if (s.isVideo) {
-        // Cenas MP4: Zoom fixo de 12% (1.12) sem animação - Forçado via scale e setsar
+        // Cenas MP4: Zoom fixo de 112% (1.12) — Mesmo método do Desktop
         const zW = Math.round(width * 1.12);
         const zH = Math.round(height * 1.12);
-        const ozW = width;
-        const ozH = height;
-        // Adicionando pad na escala para garantir que o enquadramento não mude por causa do aspect ratio
-        const scaleBase = `scale=${zW}:${zH}:force_original_aspect_ratio=increase,crop=${ozW}:${ozH}:(iw-ow)/2:(ih-oh)/2,setsar=1`;
-        filterScript += `[${i}:v]${scaleBase},fps=${FPS},setpts=PTS-STARTPTS,format=yuv420p[v${i}];\n`;
+        console.log(`🎥 [FFmpeg-WASM] Cena ${i} VÍDEO MP4. Zoom 112%: scale=${zW}x${zH} → crop=${width}x${height}`);
+        filterScript += `[${i}:v]scale=${zW}:${zH},crop=${width}:${height},fps=${FPS},setpts=PTS-STARTPTS,format=yuv420p[v${i}];\n`;
     } else {
-        // Imagens: Aplica Zoompan com base 1.11
-        const params = chunkEffectParams.get(i) || defaultParams;
-        const zoom = buildZoompanFilter(params, frames, width, height);
-        // Escala maior antes do zoompan para manter qualidade (supersampling)
-        const scaleIn = `scale=${width*1.5}:${height*1.5}:force_original_aspect_ratio=increase,crop=${width*1.5}:${height*1.5}`;
-        filterScript += `[${i}:v]${scaleIn},${zoom},fps=${FPS},setpts=PTS-STARTPTS,format=yuv420p[v${i}];\n`;
+        // Imagens: Efeitos do banco de dados (mesma lógica do Desktop)
+        if (availableEffects.length > 0) {
+            let effectIndex;
+            do {
+                effectIndex = Math.floor(Math.random() * availableEffects.length);
+            } while (availableEffects[effectIndex].id === lastEffectId && availableEffects.length > 1);
+            
+            const effect = availableEffects[effectIndex];
+            lastEffectId = effect.id;
+            console.log(`🖼️ [FFmpeg-WASM] Cena ${i} IMAGEM. Efeito: ${effect.name || effect.id}`);
+            const params = parseEffectInstruction(effect.instruction);
+            console.log(`   📐 Parâmetros: scale=${params.scaleStart}→${params.scaleEnd}, moveX=${params.moveXStart}→${params.moveXEnd}`);
+            const zoom = buildZoompanFilter(params, frames, width, height);
+            // Mesmo supersampling do Desktop: 1.5x input → zoompan output na resolução final
+            const zoomW = Math.round(width * 1.5);
+            const zoomH = Math.round(height * 1.5);
+            filterScript += `[${i}:v]scale=${zoomW}:${zoomH},crop=${zoomW}:${zoomH},${zoom},fps=${FPS},setpts=PTS-STARTPTS,format=yuv420p[v${i}];\n`;
+        } else {
+            console.warn(`⚠️ [FFmpeg-WASM] Cena ${i} sem efeitos. Usando padrão.`);
+            const zoom = buildZoompanFilter(defaultParams, frames, width, height);
+            const zoomW = Math.round(width * 1.5);
+            const zoomH = Math.round(height * 1.5);
+            filterScript += `[${i}:v]scale=${zoomW}:${zoomH},crop=${zoomW}:${zoomH},${zoom},fps=${FPS},setpts=PTS-STARTPTS,format=yuv420p[v${i}];\n`;
+        }
     }
   }
 
@@ -294,12 +288,10 @@ async function renderChunk(
   filterScript += `${concatV}concat=n=${N}:v=1:a=0[vbase];\n`;
 
   let finalMap = '[vbase]';
-  // Bypass total de legendas para teste de estabilidade
   filterScript += '[vbase]copy[vfinal]';
   finalMap = '[vfinal]';
 
   const scriptPath = `filter_c${chunkIdx}.ff`;
-  console.log(`🎬 [FFmpeg] Script de Filtro para Chunk ${chunkIdx}:\n`, filterScript);
   await ff.writeFile(scriptPath, filterScript);
   localFiles.push(scriptPath);
 
@@ -307,7 +299,7 @@ async function renderChunk(
     '-y', ...scenes.flatMap(s => s.isVideo ? ['-t', s.duration.toFixed(3), '-i', s.filename] : ['-loop', '1', '-t', s.duration.toFixed(3), '-i', s.filename]),
     '-filter_complex_script', scriptPath, 
     '-map', finalMap,
-    '-vcodec', 'libx264', '-crf', '28', '-pix_fmt', 'yuv420p', '-an', '-r', String(FPS), chunkFilename
+    '-vcodec', 'libx264', '-crf', '24', '-pix_fmt', 'yuv420p', '-an', '-r', String(FPS), chunkFilename
   ];
 
   const exitCode = await ff.exec(args);

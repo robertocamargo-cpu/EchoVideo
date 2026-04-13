@@ -86,13 +86,93 @@ function runFFmpeg(args: string[]): Promise<number | null> {
     });
 }
 
-function buildZoompanFilter(params: any, frames: number, width: number, height: number): string {
-    const s = params.scale_start || 1.1;
-    const e = params.scale_end || 1.3;
-    const mx_s = params.move_x_start || 0;
-    const mx_e = params.move_x_end || 0;
-    const my_s = params.move_y_start || 0;
-    const my_e = params.move_y_end || 0;
+function runFFprobe(args: string[]): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const ffprobePath = '/opt/homebrew/opt/ffmpeg-full/bin/ffprobe';
+        const process = spawn(ffprobePath, args);
+        let output = '';
+        let errorMsg = '';
+        process.stdout.on('data', (data) => { output += data.toString(); });
+        process.stderr.on('data', (data) => { errorMsg += data.toString(); });
+        process.on('close', (code) => {
+            if (code === 0) resolve(output.trim());
+            else reject(new Error(`FFprobe falhou com código ${code}: ${errorMsg}`));
+        });
+    });
+}
+
+async function getVideoDuration(filePath: string): Promise<number> {
+    try {
+        const output = await runFFprobe([
+            '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            filePath
+        ]);
+        return parseFloat(output);
+    } catch (e) {
+        console.warn(`⚠️ Erro ao obter duração do vídeo (${filePath}):`, (e as any).message);
+        return 0;
+    }
+}
+
+// Parser de instrução técnica (mesma lógica do Browser effectSelectionService.ts)
+function parseEffectInstruction(instruction: string): { scaleStart: number, scaleEnd: number, moveXStart: number, moveXEnd: number, moveYStart: number, moveYEnd: number } {
+    const defaults = { scaleStart: 1.15, scaleEnd: 1.25, moveXStart: 0, moveXEnd: 0, moveYStart: 0, moveYEnd: 0 };
+    if (!instruction) return defaults;
+    try {
+        const text = instruction.toLowerCase();
+        const params = { ...defaults };
+
+        // 1. Extrair Escalas (Ex: "scale from 1.16 to 1.20")
+        const scaleMatch = text.match(/scale\s+from\s+([\d.]+)\s+to\s+([\d.]+)/i);
+        if (scaleMatch) { params.scaleStart = parseFloat(scaleMatch[1]); params.scaleEnd = parseFloat(scaleMatch[2]); }
+
+        // 2. Detectar Tags de Movimento (Ex: "move:right")
+        let moveTag = 'none';
+        const tagMatch = text.match(/move:([a-z-]+)/i);
+        if (tagMatch) moveTag = tagMatch[1];
+
+        // 3. Extrair Eixos Nomeados
+        const hMatch = text.match(/horizontal axis.*?from\s+([+-]?\d+)%\s+to\s+([+-]?\d+)%/i);
+        const vMatch = text.match(/vertical axis.*?from\s+([+-]?\d+)%\s+to\s+([+-]?\d+)%/i);
+        
+        if (hMatch) { params.moveXStart = parseFloat(hMatch[1]) / 100; params.moveXEnd = parseFloat(hMatch[2]) / 100; }
+        if (vMatch) { params.moveYStart = parseFloat(vMatch[1]) / 100; params.moveYEnd = parseFloat(vMatch[2]) / 100; }
+
+        // 4. Fallback: busca range por moveTag
+        if (!hMatch && !vMatch) {
+            const specificPattern = new RegExp(`move:${moveTag}.*?from\\s+([+-]?\\d+)%\\s+to\\s+([+-]?\\d+)%`, 'i');
+            const specificMatch = text.match(specificPattern);
+            if (specificMatch) {
+                const s = parseFloat(specificMatch[1]) / 100;
+                const e = parseFloat(specificMatch[2]) / 100;
+                if (['left', 'right'].includes(moveTag)) { params.moveXStart = s; params.moveXEnd = e; }
+                else if (['up', 'down'].includes(moveTag)) { params.moveYStart = s; params.moveYEnd = e; }
+                else { params.moveXStart = s; params.moveXEnd = e; }
+            }
+        }
+
+        // 5. Fallback Geométrico
+        if (params.moveXStart === 0 && params.moveXEnd === 0 && params.moveYStart === 0 && params.moveYEnd === 0 && moveTag !== 'none') {
+            const range = 0.05;
+            if (moveTag === 'right') { params.moveXStart = -range; params.moveXEnd = range; }
+            else if (moveTag === 'left') { params.moveXStart = range; params.moveXEnd = -range; }
+            if (moveTag.includes('up')) { params.moveYStart = range; params.moveYEnd = -range; }
+            else if (moveTag.includes('down')) { params.moveYStart = -range; params.moveYEnd = range; }
+        }
+
+        return params;
+    } catch { return defaults; }
+}
+
+function buildZoompanFilter(params: { scaleStart: number, scaleEnd: number, moveXStart: number, moveXEnd: number, moveYStart: number, moveYEnd: number }, frames: number, width: number, height: number): string {
+    const s = params.scaleStart;
+    const e = params.scaleEnd;
+    const mx_s = params.moveXStart;
+    const mx_e = params.moveXEnd;
+    const my_s = params.moveYStart;
+    const my_e = params.moveYEnd;
 
     const zoomExpr = `${s}+((on/${frames})*(${e - s}))`;
     const xExpr = `(iw*${mx_s})+(on/${frames})*(iw*${mx_e - mx_s})`;
@@ -101,11 +181,98 @@ function buildZoompanFilter(params: any, frames: number, width: number, height: 
     return `zoompan=z='${zoomExpr}':x='${xExpr}':y='${yExpr}':d=${frames}:s=${width}x${height}:fps=25`;
 }
 
+// --- GERADOR DE LEGENDAS ASS (Substation Alpha) ---
+// --- GERADOR DE FILTROS DRAWTEXT (Estilo Browser) ---
+// --- GERADOR DE LEGENDAS ASS (Substation Alpha) ---
+// --- GERADOR DE FILTROS DRAWTEXT (Estilo Browser com Stacked Shadows para Blur) ---
+function generateDrawTextFilters(items: any[], style: any, isVertical: boolean, fontPath: string) {
+    const height = isVertical ? 1920 : 1080;
+    const scaleFactor = height / 720;
+    const fontSize = Math.round((style.fontSize || 42) * scaleFactor);
+    const filters: string[] = [];
+
+    const textColor = (style.textColor || '#FFD700').replace('#', '0x');
+    const outlineColor = (style.strokeColor || '#000000').replace('#', '0x');
+    const shadowColor = (style.shadowColor || '#000000').replace('#', '0x');
+    
+    const borderW = (style.fontSize * ((style.strokeWidth || 7) / 100)) * scaleFactor;
+    const yPosRatio = style.yPosition / 100;
+
+    items.forEach(item => {
+        const segments = item.srt_segments || [];
+        const processText = (t: string, start: number, end: number) => {
+            let text = t || '';
+            if (style.textCasing === 'uppercase') text = text.toUpperCase();
+            
+            const textLines = text.split('\n');
+            const lineHeight = fontSize * 1.25;
+            const x = '(w-text_w)/2';
+
+            textLines.forEach((line, idx) => {
+                const escapedLine = line
+                    .replace(/\\/g, '\\\\')
+                    .replace(/'/g, "'\\''")
+                    .replace(/:/g, '\\:')
+                    .replace(/,/g, '\\,')
+                    .replace(/;/g, '\\;')
+                    .replace(/%/g, '\\%');
+
+                const totalTextH = textLines.length * lineHeight;
+                const lineY = `h*${yPosRatio} - ${totalTextH}/2 + ${idx}*${lineHeight}`;
+                const enable = `between(t,${start.toFixed(3)},${end.toFixed(3)})`;
+
+                // --- TÉCNICA DE STACKED SHADOWS (Simulação de Blur) ---
+                const dist = (style.shadowDistance || 4) * scaleFactor;
+                const angleRad = ((style.shadowAngle || 111) * Math.PI) / 180;
+                const baseSX = Math.cos(angleRad) * dist;
+                const baseSY = Math.sin(angleRad) * dist;
+                
+                if (style.shadowOpacity > 0) {
+                    // Desenhamos 4 camadas de sombra com opacidade fraca e micro-offsets
+                    // para simular a borda suave (blur) do canvas.
+                    const shadowOpacity = (style.shadowOpacity || 0.6) / 4;
+                    const offsets = [
+                        { dx: baseSX - 1, dy: baseSY - 1 },
+                        { dx: baseSX + 1, dy: baseSY - 1 },
+                        { dx: baseSX - 1, dy: baseSY + 1 },
+                        { dx: baseSX + 1, dy: baseSY + 1 }
+                    ];
+
+                    offsets.forEach(off => {
+                        filters.push(`drawtext=text='${escapedLine}':fontfile='${fontPath}':fontsize=${fontSize}:fontcolor=${shadowColor}@${shadowOpacity.toFixed(2)}:x=${x}+${off.dx.toFixed(1)}:y=${lineY}+${off.dy.toFixed(1)}:enable='${enable}'`);
+                    });
+                }
+
+                // --- CAMADA PRINCIPAL (Texto Frontal) ---
+                filters.push(`drawtext=text='${escapedLine}':fontfile='${fontPath}':fontsize=${fontSize}:fontcolor=${textColor}:borderw=${borderW.toFixed(1)}:bordercolor=${outlineColor}:x=${x}:y=${lineY}:enable='${enable}'`);
+            });
+        };
+
+        if (segments.length > 0) {
+            segments.forEach((seg: any) => processText(seg.text, seg.start, seg.end));
+        } else if (item.text) {
+             const itStart = item.start_seconds;
+             const itDur = item.end_seconds - item.start_seconds;
+             const words = item.text.split(' ');
+             const groupSize = style.maxWordsPerLine || 4;
+             for (let i = 0; i < words.length; i += groupSize) {
+                 const group = words.slice(i, i + groupSize).join(' ');
+                 const start = itStart + (i / words.length) * itDur;
+                 const end = itStart + ((i + groupSize) / words.length) * itDur;
+                 processText(group, start, Math.min(end, item.end_seconds));
+             }
+        }
+    });
+
+    return filters.join(',');
+}
+
 // --- RENDERIZADOR ---
 async function main() {
   const args = process.argv.slice(2);
   const projectId = args.find(a => a.startsWith('--id='))?.split('=')[1];
   const includeSubs = args.find(a => a.startsWith('--subs='))?.split('=')[1] !== 'false';
+  const presetId = args.find(a => a.startsWith('--presetId='))?.split('=')[1];
 
   if (!projectId) {
     console.error('Uso: npx tsx scripts/render_native.ts --id=ID --subs=true/false');
@@ -156,6 +323,39 @@ async function main() {
   const sceneFiles: string[] = [];
   let lastEffectIndex = -1;
 
+  // Carregar preset de legenda se solicitado
+  let subStyle: any = null;
+  if (includeSubs) {
+      const stylesSnap = await getDocs(collection(db, 'subtitle_presets'));
+      const allStyles = stylesSnap.docs.map(d => {
+          const data = d.data();
+          return {
+              id: data.id || d.id,
+              label: data.label || 'Sem Nome',
+              maxWordsPerLine: data.max_words_per_line || data.maxWordsPerLine || 4,
+              fontSize: data.font_size || data.fontSize || 42,
+              fontFamily: data.font_family || data.fontFamily || 'Montserrat',
+              textColor: data.text_color || data.textColor || '#FFDD00',
+              strokeColor: data.stroke_color || data.strokeColor || '#000000',
+              strokeWidth: data.stroke_width || data.strokeWidth || 8,
+              yPosition: data.y_position || data.yPosition || 80,
+              textCasing: data.text_casing || data.textCasing || 'uppercase',
+              isBold: data.is_bold !== undefined ? data.is_bold : (data.isBold !== undefined ? data.isBold : true),
+              shadowColor: data.shadow_color || data.shadowColor || '#000000',
+              shadowOpacity: data.shadow_opacity !== undefined ? parseFloat(data.shadow_opacity) : (data.shadowOpacity !== undefined ? data.shadowOpacity : 0.6),
+              shadowBlur: data.shadow_blur !== undefined ? data.shadow_blur : (data.shadowBlur !== undefined ? data.shadowBlur : 12),
+              shadowDistance: data.shadow_distance !== undefined ? data.shadow_distance : (data.shadowDistance !== undefined ? data.shadowDistance : 6),
+              shadowAngle: data.shadow_angle !== undefined ? data.shadow_angle : (data.shadowAngle !== undefined ? data.shadowAngle : 111)
+          };
+      });
+      // Selecionar preset baseado no ID passado ou no aspect ratio
+      const defaultId = isVertical ? 'vertical-9-16' : 'horizontal-16-9';
+      const targetId = presetId || defaultId;
+      subStyle = allStyles.find((s: any) => s.id === targetId) || allStyles.find((s: any) => s.id === defaultId) || allStyles[0];
+      console.log(`📝 [Legendas] Usando preset: ${subStyle?.label || 'Padrão'} (ID: ${subStyle?.id})`);
+      console.log(`📝 [Legendas] maxWordsPerLine=${subStyle?.maxWordsPerLine}, fontSize=${subStyle?.fontSize}, textColor=${subStyle?.textColor}, yPosition=${subStyle?.yPosition}`);
+  }
+
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     const url = item.imported_video_url || item.image_url || item.google_image_url || item.pollinations_image_url || item.imported_image_url;
@@ -183,34 +383,43 @@ async function main() {
 
     let sceneFilter = '';
     if (isVideo) {
-        // Cenas MP4: Zoom fixox de 12% (1.12) sem animação
+        // Cenas MP4: Zoom fixo de 112% (1.12) sem animação
         const zW = Math.round(width * 1.12);
         const zH = Math.round(height * 1.12);
-        sceneFilter = `scale=${zW}:${zH}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1`;
+        
+        // Ajuste de Velocidade: Garantir que o vídeo dure exatamente a duração da cena tocando apenas 1 vez
+        const originalDuration = await getVideoDuration(assetPath);
+        const ptsScale = originalDuration > 0 ? (duration / originalDuration) : 1;
+        
+        sceneFilter = `scale=${zW}:${zH}:force_original_aspect_ratio=increase,crop=${width}:${height},setpts=${ptsScale.toFixed(4)}*PTS,setsar=1`;
+        console.log(`🎥 Cena ${i}: VÍDEO MP4 — Duração: ${originalDuration.toFixed(2)}s -> ${duration.toFixed(2)}s (Scale: ${ptsScale.toFixed(2)}x) | Zoom 112%`);
     } else {
-        // Imagens: Rodízio aleatório (sem repetir o anterior)
+        // Imagens: Rodízio aleatório de efeitos (sem repetir o anterior)
         let effectIndex;
-        do {
-            effectIndex = Math.floor(Math.random() * availableEffects.length);
-        } while (effectIndex === lastEffectIndex && availableEffects.length > 1);
-        
-        lastEffectIndex = effectIndex;
-        const effect = availableEffects[effectIndex];
-        
-        const frames = Math.ceil(duration * FPS);
-        const zoomWidth = width * 1.5; 
-        const zoomHeight = height * 1.5;
-        const zoom = buildZoompanFilter(effect, frames, width, height);
-        sceneFilter = `scale=${zoomWidth}:${zoomHeight}:force_original_aspect_ratio=increase,crop=${zoomWidth}:${zoomHeight},${zoom},setsar=1`;
+        if (availableEffects.length > 0) {
+            do {
+                effectIndex = Math.floor(Math.random() * availableEffects.length);
+            } while (effectIndex === lastEffectIndex && availableEffects.length > 1);
+            
+            lastEffectIndex = effectIndex;
+            const effect = availableEffects[effectIndex];
+            const instruction = (effect as any).instruction || '';
+            const parsedParams = parseEffectInstruction(instruction);
+            console.log(`🖼️ Cena ${i}: IMAGEM — Efeito: ${(effect as any).label || (effect as any).name || effectIndex}`);
+            console.log(`   📐 Instrução: ${instruction.substring(0, 80)}...`);
+            console.log(`   📐 Parâmetros: scale=${parsedParams.scaleStart}→${parsedParams.scaleEnd}, moveX=${parsedParams.moveXStart}→${parsedParams.moveXEnd}, moveY=${parsedParams.moveYStart}→${parsedParams.moveYEnd}`);
+            
+            const frames = Math.ceil(duration * FPS);
+            const zoomWidth = width * 1.5; 
+            const zoomHeight = height * 1.5;
+            const zoom = buildZoompanFilter(parsedParams, frames, width, height);
+            sceneFilter = `scale=${zoomWidth}:${zoomHeight}:force_original_aspect_ratio=increase,crop=${zoomWidth}:${zoomHeight},${zoom},setsar=1`;
+        } else {
+            sceneFilter = `scale=${width*1.12}:${height*1.12}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1`;
+        }
     }
     
-    if (includeSubs && item.text) {
-        const escaped = escapeDrawText(wrapText(item.text, 5));
-        const fontSize = Math.round(42 * (height / 720));
-        const yPos = Math.round(75 * (height / 100));
-        const fontParam = `:fontfile='${fontPath.replace(/\\/g, '/')}'`;
-        sceneFilter += `,drawtext=text='${escaped}'${fontParam}:fontcolor=0xFFD700:fontsize=${fontSize}:x=(w-text_w)/2:y=${yPos}-(text_h/2):borderw=5:bordercolor=0x000000`;
-    }
+
 
     const sceneArgs = [
         ...(isVideo ? [] : ['-loop', '1']), 
@@ -230,19 +439,28 @@ async function main() {
     sceneFiles.push(sceneOutputPath);
   }
 
-  // 4. Conectar Final
-  await updateStatus(projectId, "Finalizando Vídeo...", 95);
   const concatListPath = path.join(sessionPath, 'concat_list.txt');
   fs.writeFileSync(concatListPath, sceneFiles.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n'));
 
   const outputName = `OUTPUT_FIREBASE_${projectId}_${Date.now()}.mp4`;
+  
   const finalArgs = [
       '-f', 'concat', '-safe', '0', '-i', concatListPath,
       '-i', audioLocalPath,
       '-map', '0:v', '-map', '1:a',
-      '-c:v', 'copy', '-c:a', 'aac', '-shortest',
-      outputName
   ];
+
+  if (includeSubs && subStyle) {
+      // Usar a técnica de Multi-DrawText para garantir cor amarela + sombra suave
+      const drawTextFilters = generateDrawTextFilters(items, subStyle, isVertical, fontPath);
+      finalArgs.push('-vf', drawTextFilters);
+      finalArgs.push('-c:v', 'libx264', '-preset', 'fast', '-crf', '22');
+  } else {
+      // Sem legendas, podemos usar copy para velocidade máxima
+      finalArgs.push('-c:v', 'copy');
+  }
+
+  finalArgs.push('-c:a', 'aac', '-shortest', outputName);
 
   await runFFmpeg(finalArgs);
   await updateStatus(projectId, "Concluído!", 100);
@@ -250,6 +468,9 @@ async function main() {
 }
 
 main().catch(async err => {
-  await updateStatus("ERROR", err.message, 0);
+  const pid = process.argv.find(a => a.startsWith('--id='))?.split('=')[1] || "UNKNOWN";
+  if (pid !== "UNKNOWN") {
+      await updateStatus(pid, `Erro: ${err.message}`, 0);
+  }
   console.error('\n❌ Erro Crítico:', err);
 });
