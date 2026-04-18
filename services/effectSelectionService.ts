@@ -202,9 +202,9 @@ export const selectEffectForScene = async (
         }
     }
 
-    // 3. Tentar match contextual
+    // 3. Tentar match contextual (com 50% de chance de skip para aumentar aleatoriedade pura)
     const bestMatch = matchEffectToScene(scene, candidates);
-    if (bestMatch) {
+    if (bestMatch && Math.random() > 0.5) {
         console.log(`✨ Efeito selecionado por contexto: ${bestMatch.name} para cena: "${scene.text.substring(0, 50)}..."`);
         return bestMatch;
     }
@@ -315,7 +315,7 @@ export const preselectEffectsForScenes = async (
 
     // Histórico de efeitos para evitar repetição excessiva
     const effectHistory: MotionEffect[] = [];
-    const MAX_HISTORY = Math.min(3, availableEffects.length - 1);
+    const MAX_HISTORY = Math.min(5, availableEffects.length - 1); // v7.9.3: Aumentado para 5 para maior variedade
 
     for (let index = 0; index < scenes.length; index++) {
         const scene = scenes[index];

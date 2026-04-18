@@ -14,6 +14,7 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
 };
 
 export const POLLINATIONS_MODEL_NAME = "flux";
+export const GPT_MODEL_NAME = "zimage"; // v7.5.4: Alterado de gptimage para zimage conforme solicitado
 
 const FLUX_KEY = (import.meta as any).env.VITE_FLUX_KEY || '';
 
@@ -24,67 +25,104 @@ export const generatePollinationsImage = async (
   aspectRatio: '16:9' | '9:16' = '16:9'
 ): Promise<{ image: string, prompt: string }> => {
 
-  logApiCost('image', `pollinations-${model}`, 0, { prompt: fullPrompt, aspectRatio });
+  // Mapeamento inteligente de modelos (MANDATÓRIO para v7.5.0)
+  let activeModel = model;
+  if (model === 'gptimage' || model === 'zimage' || model === 'pollinations-gpt' || model === 'pollinations-zimage') {
+    activeModel = 'zimage'; // v7.8.4: Restaurado para 'zimage' conforme pedido do usuário
+  }
 
-  // Limpeza do prompt
+  logApiCost('image', `pollinations-${activeModel}`, 0, { prompt: fullPrompt, aspectRatio });
+
+  // Limpeza do prompt (v7.8.6: Reduzido para 1000 para evitar URLs gigantes)
   const finalPrompt = fullPrompt
     .replace(/(Character|Scene|Location|Style|Strictly|Negative|Identidade|Prompt|Cena|Cenário)[:：]/gi, '')
     .replace(/\n/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-    .substring(0, 1500);
+    .substring(0, 1000);
 
   const encodedPrompt = encodeURIComponent(finalPrompt);
   const width = aspectRatio === '9:16' ? 768 : 1024;
   const height = aspectRatio === '9:16' ? 1024 : 768;
   const seed = Math.floor(Math.random() * 9999999);
 
-  const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
+  // v7.8.7: MOTOR DE BYPASS VIA CANVAS (Anti-Bloqueio / Anti-Failed-to-Fetch)
+  const fetchImageViaCanvas = (url: string): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      
+      const timeout = setTimeout(() => {
+        img.src = "";
+        reject(new Error("Timeout carregando imagem via Canvas"));
+      }, 30000);
 
-  // URL: https://gen.pollinations.ai/image/{prompt}?model={model}&key={key}&width=...&height=...&seed=...
-  const tryGenerateOnce = async (useKey: boolean): Promise<string> => {
-    const keyParam = (useKey && FLUX_KEY) ? `&key=${FLUX_KEY}` : '';
-    // Pollinations images are generated via: https://gen.pollinations.ai/image/{prompt}?model={model}&...
-    const url = `https://gen.pollinations.ai/image/${encodedPrompt}?model=${model}&width=${width}&height=${height}&seed=${seed}&nologo=true${keyParam}`;
-    console.log(`[Pollinations] Gerando (${model}) — key: ${useKey} | ${url.substring(0, 120)}...`);
+      img.onload = () => {
+        clearTimeout(timeout);
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = img.width;
+          canvas.height = img.height;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) throw new Error("Falha ao obter contexto 2D");
+          ctx.drawImage(img, 0, 0);
+          resolve(canvas.toDataURL("image/png"));
+        } catch (e) {
+          reject(e);
+        }
+      };
 
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const blob = await response.blob();
-    if (blob.size < 1000) throw new Error("Imagem inválida (tamanho < 1KB)");
-    return await blobToBase64(blob);
+      img.onerror = () => {
+        clearTimeout(timeout);
+        reject(new Error("Erro no objeto Image (bloqueio de rede?)"));
+      };
+
+      img.src = url;
+    });
   };
 
-  const MAX_RETRIES = 3;
-  const RETRY_DELAY = 5000;
+  // v7.8.9: AJUSTE UNIVERSAL DE CHAVES + FALLBACK TURBO (Sincronia Total)
+  const tryGenerateOnce = async (useKey: boolean, useNoLogo: boolean = true, strategy: 'gen' | 'image' | 'p' = 'gen', forceModel?: string): Promise<string> => {
+    // v7.8.9: Enviar chave para todos os modelos conforme o código antigo
+    const keyParam = (useKey && FLUX_KEY) ? `&key=${FLUX_KEY}` : '';
+    const nologoParam = useNoLogo ? '&nologo=true' : '';
+    const currentModel = forceModel || activeModel;
+    
+    let baseUrl = 'https://gen.pollinations.ai/image/';
+    if (strategy === 'image') baseUrl = 'https://image.pollinations.ai/prompt/';
+    if (strategy === 'p') baseUrl = 'https://pollinations.ai/p/';
+    
+    const url = `${baseUrl}${encodedPrompt}?model=${currentModel}&width=${width}&height=${height}&seed=${seed}${nologoParam}${keyParam}`;
+    console.log(`[Pollinations] Estratégia: ${strategy} | Modelo: ${currentModel} | Key: ${useKey}`);
 
-  const tryWithRetry = async (useKey: boolean): Promise<string> => {
-    let lastError: any;
-    for (let i = 0; i < MAX_RETRIES; i++) {
-      try {
-        return await tryGenerateOnce(useKey);
-      } catch (e: any) {
-        lastError = e;
-        console.warn(`[Pollinations] Tentativa ${i + 1}/${MAX_RETRIES} falhou: ${e.message}`);
-        if (i < MAX_RETRIES - 1) {
-          console.log(`[Pollinations] Aguardando ${RETRY_DELAY / 1000}s para retentar...`);
-          await delay(RETRY_DELAY);
+    try {
+        return await fetchImageViaCanvas(url);
+    } catch (e: any) {
+        console.warn(`[Pollinations] Falha com ${currentModel} na estratégia ${strategy}:`, e.message);
+        
+        // Se zimage falhar, tenta turbo na mesma estratégia antes de mudar de endpoint
+        if (currentModel === 'zimage' && !forceModel) {
+            console.log(`[Pollinations] Tentando fallback de zimage -> turbo...`);
+            return await tryGenerateOnce(useKey, useNoLogo, strategy, 'turbo');
         }
-      }
+
+        // Cascata de Endpoints
+        if (strategy === 'gen') return await tryGenerateOnce(useKey, useNoLogo, 'image');
+        if (strategy === 'image') return await tryGenerateOnce(useKey, useNoLogo, 'p');
+        
+        // Cascata de Segurança
+        if (useNoLogo) return await tryGenerateOnce(useKey, false, 'gen');
+        if (useKey) return await tryGenerateOnce(false, useNoLogo, 'gen');
+        
+        throw e;
     }
-    throw lastError;
   };
 
   try {
-    // Tentativa 1: com chave (com retentativa)
-    return { image: await tryWithRetry(true), prompt: finalPrompt };
-  } catch (e1) {
-    console.warn(`[Pollinations] Falha definitiva com chave (após retentativas):`, e1, '— tentando sem chave...');
-    try {
-      // Tentativa 2: sem chave (fallback com retentativa)
-      return { image: await tryWithRetry(false), prompt: finalPrompt };
-    } catch (e2) {
-      throw new Error(`Pollinations indisponível após várias tentativas: ${(e2 as Error).message}`);
-    }
+    const base64 = await tryGenerateOnce(true);
+    return { image: base64, prompt: finalPrompt };
+  } catch (error: any) {
+    console.error("❌ [Pollinations] Erro crítico:", error);
+    throw new Error(`Falha definitiva no Pollinations (${activeModel}). Tente recarregar a página.`);
   }
 };

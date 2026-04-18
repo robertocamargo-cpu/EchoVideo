@@ -2,7 +2,7 @@ import { initializeApp } from 'firebase/app';
 import { getFirestore, doc, getDoc, collection, getDocs, query, orderBy, updateDoc } from 'firebase/firestore';
 import { getStorage, ref, getDownloadURL } from 'firebase/storage';
 import * as dotenv from 'dotenv';
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
@@ -27,6 +27,10 @@ const storage = getStorage(app);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const TEMP_DIR = path.join(process.cwd(), 'temp_render');
+
+// --- CONSTANTES DE BINÁRIOS ---
+const FFMPEG_PATH = '/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg';
+const FFPROBE_PATH = '/opt/homebrew/opt/ffmpeg-full/bin/ffprobe';
 
 // --- HELPERS ---
 const updateStatus = async (projectId: string, msg: string, progress: number) => {
@@ -75,8 +79,7 @@ const wrapText = (text: string, maxWords: number): string => {
 
 function runFFmpeg(args: string[]): Promise<number | null> {
     return new Promise((resolve, reject) => {
-        const ffmpegPath = '/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg';
-        const process = spawn(ffmpegPath, ['-y', ...args]);
+        const process = spawn(FFMPEG_PATH, ['-y', ...args]);
         let errorMsg = '';
         process.stderr.on('data', (data) => { errorMsg += data.toString(); });
         process.on('close', (code) => {
@@ -88,8 +91,7 @@ function runFFmpeg(args: string[]): Promise<number | null> {
 
 function runFFprobe(args: string[]): Promise<string> {
     return new Promise((resolve, reject) => {
-        const ffprobePath = '/opt/homebrew/opt/ffmpeg-full/bin/ffprobe';
-        const process = spawn(ffprobePath, args);
+        const process = spawn(FFPROBE_PATH, args);
         let output = '';
         let errorMsg = '';
         process.stdout.on('data', (data) => { output += data.toString(); });
@@ -113,6 +115,22 @@ async function getVideoDuration(filePath: string): Promise<number> {
     } catch (e) {
         console.warn(`⚠️ Erro ao obter duração do vídeo (${filePath}):`, (e as any).message);
         return 0;
+    }
+}
+
+async function getResolution(filePath: string): Promise<{ width: number, height: number }> {
+    try {
+        const output = await runFFprobe([
+            '-v', 'error',
+            '-select_streams', 'v:0',
+            '-show_entries', 'stream=width,height',
+            '-of', 'csv=s=x:p=0',
+            filePath
+        ]);
+        const [w, h] = output.split('x').map(n => parseInt(n));
+        return { width: w || 0, height: h || 0 };
+    } catch (e) {
+        return { width: 0, height: 0 };
     }
 }
 
@@ -186,8 +204,10 @@ function buildZoompanFilter(params: { scaleStart: number, scaleEnd: number, move
 // --- GERADOR DE LEGENDAS ASS (Substation Alpha) ---
 // --- GERADOR DE FILTROS DRAWTEXT (Estilo Browser com Stacked Shadows para Blur) ---
 function generateDrawTextFilters(items: any[], style: any, isVertical: boolean, fontPath: string) {
-    const height = isVertical ? 1920 : 1080;
-    const scaleFactor = height / 720;
+    // Calibração de Escala: 
+    // Em horizontal, usamos a altura (1080) / 720 como base.
+    // Em vertical, usamos a largura (1080) / 720 como base para evitar que o texto estoure as laterais.
+    const scaleFactor = isVertical ? (1080 / 720) : (1080 / 720); // Ambos resultam em 1.5x para resolução 1080p
     const fontSize = Math.round((style.fontSize || 42) * scaleFactor);
     const filters: string[] = [];
 
@@ -228,14 +248,16 @@ function generateDrawTextFilters(items: any[], style: any, isVertical: boolean, 
                 const baseSY = Math.sin(angleRad) * dist;
                 
                 if (style.shadowOpacity > 0) {
-                    // Desenhamos 4 camadas de sombra com opacidade fraca e micro-offsets
-                    // para simular a borda suave (blur) do canvas.
+                    // v7.9.6: Dispersão dinâmica baseada no shadowBlur configurado e na resolução do vídeo
+                    // Isso garante que a sombra tenha o mesmo aspecto "suave" tanto em 1080p quanto em resoluções verticais maiores.
                     const shadowOpacity = (style.shadowOpacity || 0.6) / 4;
+                    const blurDispersion = ((style.shadowBlur || 4) / 4) * scaleFactor;
+                    
                     const offsets = [
-                        { dx: baseSX - 1, dy: baseSY - 1 },
-                        { dx: baseSX + 1, dy: baseSY - 1 },
-                        { dx: baseSX - 1, dy: baseSY + 1 },
-                        { dx: baseSX + 1, dy: baseSY + 1 }
+                        { dx: baseSX - blurDispersion, dy: baseSY - blurDispersion },
+                        { dx: baseSX + blurDispersion, dy: baseSY - blurDispersion },
+                        { dx: baseSX - blurDispersion, dy: baseSY + blurDispersion },
+                        { dx: baseSX + blurDispersion, dy: baseSY + blurDispersion }
                     ];
 
                     offsets.forEach(off => {
@@ -282,7 +304,7 @@ async function main() {
   if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
   await updateStatus(projectId, "Iniciando...", 0);
 
-  console.log(`\n🚀 [FIREBASE MODE] Renderização Nativa: ${projectId} (Legendas: ${includeSubs ? 'SIM' : 'NÃO'})`);
+  console.log(`\n🚀 [FIREBASE MODE] v7.5.0 Nativa: ${projectId} (Legendas: ${includeSubs ? 'SIM' : 'NÃO'})`);
 
   // 1. Buscar dados
   const docRef = doc(db, 'projects', projectId);
@@ -296,7 +318,13 @@ async function main() {
   const effectsSnap = await getDocs(query(collection(db, 'motion_effects')));
   const availableEffects = effectsSnap.docs.map(d => d.data());
 
-  const isVertical = project.aspect_ratio === '9:16';
+  // Determinar aspecto: Priorizar parâmetro da linha de comando sobre o banco de dados
+  let isVertical = project.aspect_ratio === '9:16';
+  if (presetId) {
+      if (presetId.startsWith('vertical')) isVertical = true;
+      else if (presetId.startsWith('horizontal')) isVertical = false;
+  }
+  
   const width = isVertical ? 1080 : 1920;
   const height = isVertical ? 1920 : 1080;
   const FPS = 25;
@@ -375,11 +403,18 @@ async function main() {
     const sceneOutputPath = path.join(scenesPath, `scene_${String(i).padStart(4, '0')}.ts`);
     
     if (fs.existsSync(sceneOutputPath)) {
-        sceneFiles.push(sceneOutputPath);
-        continue;
+        const res = await getResolution(sceneOutputPath);
+        if (res.width === width && res.height === height) {
+            sceneFiles.push(sceneOutputPath);
+            continue;
+        } else {
+            console.log(`⚠️ Cena ${i} incompatível (${res.width}x${res.height}). Re-renderizando para ${width}x${height}...`);
+            fs.unlinkSync(sceneOutputPath);
+        }
     }
 
     await downloadFile(url, assetPath);
+    const originalDuration = isVideo ? await getVideoDuration(assetPath) : 0;
 
     let sceneFilter = '';
     if (isVideo) {
@@ -387,8 +422,6 @@ async function main() {
         const zW = Math.round(width * 1.12);
         const zH = Math.round(height * 1.12);
         
-        // Ajuste de Velocidade: Garantir que o vídeo dure exatamente a duração da cena tocando apenas 1 vez
-        const originalDuration = await getVideoDuration(assetPath);
         const ptsScale = originalDuration > 0 ? (duration / originalDuration) : 1;
         
         sceneFilter = `scale=${zW}:${zH}:force_original_aspect_ratio=increase,crop=${width}:${height},setpts=${ptsScale.toFixed(4)}*PTS,setsar=1`;
@@ -418,9 +451,6 @@ async function main() {
             sceneFilter = `scale=${width*1.12}:${height*1.12}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1`;
         }
     }
-    
-
-
     const sceneArgs = [
         ...(isVideo ? [] : ['-loop', '1']), 
         '-t', duration.toFixed(3),
@@ -439,28 +469,79 @@ async function main() {
     sceneFiles.push(sceneOutputPath);
   }
 
+
   const concatListPath = path.join(sessionPath, 'concat_list.txt');
   fs.writeFileSync(concatListPath, sceneFiles.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n'));
 
   const outputName = `OUTPUT_FIREBASE_${projectId}_${Date.now()}.mp4`;
+  const overlayVhsPath = path.join(process.cwd(), 'public', 'overlay-vhs.mp4');
+  const hasOverlayVhs = fs.existsSync(overlayVhsPath);
   
+  // v6.2.1: Máscara Circular Dinâmica por Resolução (Evita reaproveitar 16:9 em 9:16)
+  const maskPath = path.join(process.cwd(), `vignette_alpha_v62_${width}x${height}.png`);
+  if (!fs.existsSync(maskPath)) {
+      console.log(`🎨 Gerando máscara de vinheta v6.2.1 (${width}x${height})...`);
+      // Usar binário absoluto para evitar erro de PATH
+      const genMaskCmd = `"${FFMPEG_PATH}" -y -f lavfi -i "color=black:s=${width}x${height}" -vf "format=rgba,geq=r=0:g=0:b=0:a='255*(pow(hypot(X-W/2,Y-H/2)/hypot(W/2,H/2), 3.2))'" -vframes 1 "${maskPath}"`;
+      try { execSync(genMaskCmd); } catch (e) { console.error('Erro ao gerar máscara:', e); }
+  }
+
   const finalArgs = [
       '-f', 'concat', '-safe', '0', '-i', concatListPath,
       '-i', audioLocalPath,
-      '-map', '0:v', '-map', '1:a',
   ];
 
-  if (includeSubs && subStyle) {
-      // Usar a técnica de Multi-DrawText para garantir cor amarela + sombra suave
-      const drawTextFilters = generateDrawTextFilters(items, subStyle, isVertical, fontPath);
-      finalArgs.push('-vf', drawTextFilters);
-      finalArgs.push('-c:v', 'libx264', '-preset', 'fast', '-crf', '22');
-  } else {
-      // Sem legendas, podemos usar copy para velocidade máxima
-      finalArgs.push('-c:v', 'copy');
+  if (hasOverlayVhs) {
+      finalArgs.push('-stream_loop', '-1', '-i', overlayVhsPath);
   }
 
-  finalArgs.push('-c:a', 'aac', '-shortest', outputName);
+  // v5.8.0: Adicionar máscara como input extra
+  finalArgs.push('-i', maskPath);
+
+  finalArgs.push(
+      '-map', '1:a', // Mapear o áudio do input 1
+      '-c:a', 'aac', '-b:a', '192k',
+      '-shortest',
+      '-aspect', isVertical ? '9:16' : '16:9',
+  );
+
+  // v6.0.1: Hotfix ESM + Estética Refinada
+  const maskInputIdx = hasOverlayVhs ? '3' : '2';
+  const drawTextFilters = (includeSubs && subStyle) ? generateDrawTextFilters(items, subStyle, isVertical, fontPath) : '';
+  
+  // v6.2.0: Estética 'True Contrast' (Apenas Vinheta Mask, cores originais)
+  let visualEffects = '';
+  if (drawTextFilters && drawTextFilters.trim().length > 0) {
+      visualEffects += `${drawTextFilters},`;
+  }
+  visualEffects += `setsar=1`;
+
+  let filterComplex = '';
+  if (hasOverlayVhs) {
+      // 1. Processar Overlay (Chromakey da cor exata #00B140 + Rescale)
+      const vhsProcess = `[2:v]colorkey=0x00B140:0.3:0.1,scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}[vhs]`;
+      
+      // 2. Sobrepor VHS [vhs] nas cenas base [0:v]
+      const compose = `[0:v][vhs]overlay=0:0[mixed]`;
+      
+      // 3. Aplicar Filtros Finais (v5.8.0: Máscara de Vinheta + Legendas)
+      filterComplex = `${vhsProcess};${compose};[mixed][${maskInputIdx}:v]overlay=0:0,format=yuv420p,${visualEffects}[v_out]`;
+  } else {
+      filterComplex = `[0:v][${maskInputIdx}:v]overlay=0:0,format=yuv420p,${visualEffects}[v_out]`;
+  }
+
+  console.log(`📼 [VHS] Filter Complex: ${filterComplex}`);
+  finalArgs.push('-filter_complex', filterComplex, '-map', '[v_out]');
+  
+  if (includeSubs && subStyle) {
+      finalArgs.push('-c:v', 'libx264', '-preset', 'fast', '-crf', '22');
+  } else {
+      finalArgs.push('-c:v', 'libx264', '-preset', 'fast', '-crf', '18');
+  }
+
+  finalArgs.push(outputName);
+
+  console.log(`\n🎬 [FFMPEG] Comando final: ffmpeg ${finalArgs.join(' ')}\n`);
 
   await runFFmpeg(finalArgs);
   await updateStatus(projectId, "Concluído!", 100);

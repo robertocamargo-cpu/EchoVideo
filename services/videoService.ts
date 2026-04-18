@@ -298,7 +298,71 @@ export const generateTimelineVideo = async (
 
             const canvas = document.createElement('canvas');
             canvas.width = width; canvas.height = height;
-            const ctx = canvas.getContext('2d', { alpha: false });
+            const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true })!;
+
+            // v5.4.0: Efeito Vinheta (Browser)
+            const applyVignette = (targetCtx: CanvasRenderingContext2D) => {
+                const centerX = width / 2;
+                const centerY = height / 2;
+                const radius = Math.sqrt(centerX * centerX + centerY * centerY);
+                const grd = targetCtx.createRadialGradient(centerX, centerY, radius * 0.1, centerX, centerY, radius); // v7.9.4: Começa mais cedo (0.1)
+                grd.addColorStop(0, 'rgba(0,0,0,0)');
+                grd.addColorStop(0.4, 'rgba(0,0,0,0.1)');
+                grd.addColorStop(0.7, 'rgba(0,0,0,0.5)');
+                grd.addColorStop(1, 'rgba(0,0,0,0.95)'); // v7.9.4: 95% de sombra nas bordas
+                targetCtx.fillStyle = grd;
+                targetCtx.fillRect(0, 0, width, height);
+            };
+
+            // v7.8.0: Efeito VHS Overlay (Browser - Chromakey Verde #00B140)
+            const vhsCanvas = document.createElement('canvas');
+            vhsCanvas.width = width; vhsCanvas.height = height;
+            const vhsCtx = vhsCanvas.getContext('2d', { willReadFrequently: true })!;
+            
+            const applyVHS = (targetCtx: CanvasRenderingContext2D, vhsVideo: HTMLVideoElement | null) => {
+                if (!vhsVideo) return;
+                
+                // v7.9.5: Chromakey por distância de cor (Paridade com FFmpeg colorkey=0x00B140)
+                const targetR = 0, targetG = 177, targetB = 64;
+                const threshold = 110; // Sensibilidade do verde
+                
+                vhsCtx.drawImage(vhsVideo, 0, 0, width, height);
+                const imageData = vhsCtx.getImageData(0, 0, width, height);
+                const data = imageData.data;
+                
+                for (let i = 0; i < data.length; i += 4) {
+                    const r = data[i], g = data[i + 1], b = data[i + 2];
+                    
+                    // Cálculo de distância euclidiana simples
+                    const dist = Math.sqrt(
+                        Math.pow(r - targetR, 2) + 
+                        Math.pow(g - targetG, 2) + 
+                        Math.pow(b - targetB, 2)
+                    );
+                    
+                    if (dist < threshold) {
+                        data[i + 3] = 0; // Transparente
+                    } else if (dist < threshold + 40) {
+                        // Suavização de borda (Alpha blending)
+                        data[i + 3] = Math.round(((dist - threshold) / 40) * 255);
+                    }
+                }
+                
+                vhsCtx.putImageData(imageData, 0, 0);
+                targetCtx.globalAlpha = 0.8; // v7.9.5: Leve transparência global para o ruído não "matar" a imagem
+                targetCtx.drawImage(vhsCanvas, 0, 0);
+                targetCtx.globalAlpha = 1.0;
+            };
+            
+
+            // Forçar dimensões estilo para garantir que o Stream capture o aspecto correto
+            canvas.style.width = `${width}px`;
+            canvas.style.height = `${height}px`;
+            canvas.style.position = 'fixed';
+            canvas.style.left = '-9999px';
+            canvas.style.top = '-9999px';
+            document.body.appendChild(canvas);
+
             if (!ctx) throw new Error("Canvas context falhou.");
 
             const sortedItems = [...items].sort((a, b) => a.startSeconds - b.startSeconds);
@@ -421,6 +485,37 @@ export const generateTimelineVideo = async (
                 }));
             }
 
+            // Carregar Overlay VHS
+            let vhsVideo: HTMLVideoElement | null = null;
+            try {
+                vhsVideo = document.createElement('video');
+                vhsVideo.src = '/overlay-vhs.mp4';
+                vhsVideo.muted = true; vhsVideo.loop = true; vhsVideo.playsInline = true;
+                vhsVideo.crossOrigin = "anonymous";
+                await new Promise((res) => {
+                    vhsVideo!.onloadeddata = () => {
+                        console.log("[VideoService] ✅ VHS Overlay carregado com sucesso.");
+                        res(true);
+                    };
+                    vhsVideo!.onerror = () => {
+                        console.warn("[VideoService] ❌ Falha ao carregar VHS Overlay (Erro de arquivo)");
+                        res(false);
+                    };
+                    vhsVideo!.load();
+                    setTimeout(() => {
+                        if (vhsVideo!.readyState < 2) {
+                            console.warn("[VideoService] ⏳ Timeout carregando VHS (Timeout 5s)");
+                            res(false);
+                        } else {
+                            res(true);
+                        }
+                    }, 5000);
+                });
+                if (vhsVideo) {
+                    vhsVideo.play().catch(e => console.warn("[VideoService] Falha ao dar play inicial no VHS", e));
+                }
+            } catch (e) { console.warn("[VideoService] Falha ao carregar VHS Overlay"); }
+
             const loadAssetForScene = async (idx: number): Promise<HTMLImageElement | HTMLVideoElement | null> => {
                 if (loadedAssets.has(idx)) return loadedAssets.get(idx)!;
                 const url = assetUrls.get(idx);
@@ -459,6 +554,7 @@ export const generateTimelineVideo = async (
             const chunks: Blob[] = [];
             recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
             recorder.onstop = () => {
+                if (canvas.parentNode) canvas.parentNode.removeChild(canvas);
                 audioContext.close();
                 const mime = recorder.mimeType || 'video/webm';
                 resolve(new Blob(chunks, { type: mime }));
@@ -497,7 +593,7 @@ export const generateTimelineVideo = async (
                     const transitionDuration = 0.5;
                     const effectiveDuration = maxDuration ? Math.min(audioDuration, maxDuration) : audioDuration;
 
-                    // Safety: force stop if we're 10% past effectiveDuration (handles audioContext clock drift)
+                    // Safety: force stop if we're 10% past effectiveDuration
                     if (elapsed >= effectiveDuration * 1.1) {
                         console.warn('[VideoService] Safety timeout reached, forcing stop');
                         isFinished = true;
@@ -605,18 +701,33 @@ export const generateTimelineVideo = async (
                             const nextSceneProgress = Math.max(0, (elapsed - nextItem.startSeconds) / Math.max(nextItem.endSeconds - nextItem.startSeconds, 0.01));
                             drawSingleSource(ctx, loadedAssets.get(activeIdx + 1) || null, width, height, activeIdx + 1, nextSceneProgress, fadeProgress * nextLoopAlpha, effectMap.get(activeIdx + 1), motionEffects);
                         } else {
-                            drawSingleSource(ctx, loadedAssets.get(activeIdx) || null, width, height, activeIdx, progress, 1.0 * activeLoopAlpha, effectMap.get(activeIdx), motionEffects);
+                            // v7.9.2: Garantir que o efeito da cena atual seja passado
+                            const currentEffect = effectMap.get(activeIdx);
+                            drawSingleSource(ctx, loadedAssets.get(activeIdx) || null, width, height, activeIdx, progress, 1.0 * activeLoopAlpha, currentEffect, motionEffects);
                         }
 
                         if (subtitleStyle) {
-                            // Renderizar legendas com o tempo exato, sem antecipação artificial no canvas
+                            // v5.4.0: Restaurado sincronia simples das legendas
                             const currentChunk = allSubtitleChunks.find(c => elapsed >= c.startSeconds && elapsed < c.endSeconds);
                             if (currentChunk) {
                                 drawSubtitle(ctx, currentChunk.text, width, height, subtitleStyle);
                             }
                         }
-                        
+
                         lastActiveIdx = activeIdx;
+                    }
+
+                    // v7.9.6: VINHETA e VHS aplicados FORA do if(activeIdx)
+                    // Garante que estes efeitos aparecem em TODOS os frames, sem exceção
+                    applyVignette(ctx);
+
+                    if (vhsVideo) {
+                        if (vhsVideo.paused) vhsVideo.play().catch(() => {});
+                        const vhsTime = elapsed % (vhsVideo.duration || 10);
+                        if (Math.abs(vhsVideo.currentTime - vhsTime) > 1.5) {
+                            vhsVideo.currentTime = vhsTime;
+                        }
+                        applyVHS(ctx, vhsVideo);
                     }
 
                     if (Date.now() - lastProgressUpdate > 500) {
@@ -659,7 +770,10 @@ export const generateTimelineVideo = async (
             // 4. Start tick loop (rAF)
             animationFrameId = requestAnimationFrame(renderLoop);
 
-        } catch (e) { reject(e); }
+        } catch (e) { 
+            if (canvas && canvas.parentNode) canvas.parentNode.removeChild(canvas);
+            reject(e); 
+        }
     });
 };
 

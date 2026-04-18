@@ -80,5 +80,6 @@ Diretrizes para o Modal de Exportação Final:
 - **Reatividade**: O botão de "Copiar Comando" deve reagir aos toggles de UI (ex: incluir ou remover legendas via flag `--subs`).
 - **Limpeza**: O comando sugerido deve sempre incluir a limpeza de cache `rm -rf temp_render/*` para garantir integridade.
 
-**Feedback de Ambiente:**
-- A UI deve refletir o estado real da conexão com o **Firebase** no rodapé, indicando se o sistema está pronto para sincronizar o progresso do terminal.
+**Feedback de Ambiente (v7.9.4):**
+- **Modelos**: Exibir labels atualizadas (**IMAGEN 4, NANO, FLUX, ZIMAGE**).
+- **Status de API**: A UI deve refletir o estado real da conexão com o **Firebase** e o status de resiliência do **Pollinations** no rodapé, indicando se o sistema está operando em modo estável ou fallback.

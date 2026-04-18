@@ -28,11 +28,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
     
     🗣️ FIELD RULES (STRICT, 'subject', 'action', 'cenario', 'props', and 'animation' MUST be in ENGLISH ONLY):
     - action: The ONLY creative field. Make the action intensely cinematic. Use Conceptual Surrealism or Magical Realism as the core aesthetic. 
-    - subject: Nickname: Full Description (English ONLY).
-    - cenario: Nickname: Full Description (English ONLY).
+    - subject: ONE SINGLE FLUID PARAGRAPH (English ONLY). Follow the ANATOMY PROTOCOL: Archetype, Facial Features (detailed for real figures, NO names), Hair, Face/Skin, Upper/Lower Clothing, Footwear, Accessories. NO LABELS.
+    - cenario: ONE SINGLE DENSE PARAGRAPH (English ONLY). Follow THE MASTER SCENARIO BLOCK: 1. Structure/Limits (Skeleton), 2. Fixed Anchors with positions, 3. Materials/Textures, 4. Lighting/Colors. LITERAL descriptions only, NO metaphors.
     - camera: Pick a camera angle from: [Wide shot, Close-up, Low angle, Eye level, Bird's eye view, Dutch angle]. YOU MUST VARY THE CAMERA ANGLE WILDLY!
     - animation: Create a UNIQUE and CREATIVE animation concept for this specific scene. DO NOT use technical names like "Zoompan". Instead, describe a visual idea (e.g., "The camera floats through the dust motes like a silent ghost", "Time slows down as the character rotates in a frozen sunset").
     - NO PLACEHOLDERS: NEVER use "(continua)", "(pausa)", or empty strings for the 'text' field.
+    - NO METADATA IN TEXT: The 'text' field MUST contain ONLY the spoken words. NEVER include system instructions, labels, or technical markers (e.g., "Densidade", "Scene X") inside it.
     - DO NOT SKIP TEXT: You must transcribe 100% of the spoken text.
     - SYNC PARAMOUNT: Timestamps MUST match reality perfectly.
     
@@ -65,16 +66,56 @@ Texto na Imagem: [2 a 3 palavras]
 Escolha os 2 melhores candidatos e justifique por que eles teriam o CTR mais alto.`,
 
     items: [
-        { id: 'disney', label: 'Disney / Pixar (Animação 3D)', prompt: 'Disney Pixar 3D animation, bright vibrant colors, warm magical lighting, subsurface scattering, smooth textures, whimsical atmosphere, clean composition, octane render, 4k.' },
-        { id: 'ultrarealistic', label: 'Ultra-realista (Fotografia)', prompt: 'Ultra-realistic photography, 35mm lens f/1.8, hyper-detailed skin texture, natural lighting, soft shadows, bokeh background, lifelike eyes, 8k raw photo, raytracing.' },
-        { id: 'cinematic', label: 'Cinemático Dramático (Blockbuster)', prompt: 'Cinematic blockbuster shot, anamorphic lens, teal and orange grading, volumetric fog, rim lighting, dramatic atmosphere, shallow depth of field, epic composition, 4k detailed.' },
-        { id: 'papercut', label: 'Paper Cut (Arte em Papel)', prompt: 'Layered paper art, intricate cutout shapes, 3D depth effect, soft diffuse lighting, pastel colors, visible paper texture, handmade diorama, clean lines, origami influence.' },
-        { id: 'sketch', label: 'Desenho a Lápis (Sketch)', prompt: 'Traditional pencil drawing, graphite sketch, cross-hatching shading, monochromatic greyscale, visible paper grain, rough strokes, unfinished edges, artistic hand-drawn.' },
-        { id: 'sincity', label: 'Sin City (Noir Graphic Novel)', prompt: 'Sin City graphic novel style, Frank Miller art, stark high contrast black and white, deep shadows, heavy ink outlines, chiaroscuro, splash of vibrant yellow, gritty texture.' },
-        { id: 'stickman', label: 'Stickman (Homem Palito)', prompt: 'Minimalist hand-drawn doodle illustration, stickman style, thin black lines, soft light blue background (#c7d7e5), light purple accent (#b39ddb), flat whiteboard-explainer, clean composition, no shadows, no 3D.' },
-        { id: 'goldenage', label: 'Golden Age (Vintage Anos 40/50)', prompt: 'Vintage Golden Age comic, Ben-Day dots, CMYK offset printing look, aged yellow paper texture, retro 1940s aesthetic, bold primary colors, coarse production, simple background.' },
-        { id: 'hqcartoon', label: 'HQ Cartoon (Comics Ocidentais)', prompt: 'Western comic book style, bold black outlines, vibrant flat colors, dynamic cel shading, halftone dot texture, expressive character design, clean vector finish, action pose, detailed inking. 90s animated series style.' },
-        { id: 'ligneclaire', label: 'Ligne Claire (Franco-Belga)', prompt: 'Ligne Claire style, Hergé aesthetic, clear line art, uniform line weight, flat vivid colors, no hatching, clean background, minimal shadows, precise architectural details.' }
+        { 
+            id: 'disney', 
+            label: 'Disney / Pixar (3D)', 
+            prompt: '3D animated feature film style, stylized character design, vibrant colors, warm soft lighting, subsurface scattering, smooth textures, clean shapes, polished cinematic render, high detail.' 
+        },
+        { 
+            id: 'ultrarealistic', 
+            label: 'Ultra-realista', 
+            prompt: 'Ultra-realistic photography, 35mm lens, shallow depth of field, highly detailed skin texture, natural lighting, soft shadows, realistic colors, photographic realism, high detail.' 
+        },
+        { 
+            id: 'cinematic', 
+            label: 'Cinemático Dramático', 
+            prompt: 'Cinematic film still, anamorphic lens look, teal and orange color grading, volumetric haze, rim lighting, controlled contrast, shallow depth of field, high production value, detailed image.' 
+        },
+        { 
+            id: 'papercut', 
+            label: 'Paper Cut (Arte em Papel)', 
+            prompt: 'Layered paper cut art, multi-layered cutout shapes, handcrafted diorama look, visible paper texture, soft diffuse lighting, pastel color palette, clean edges, strong depth separation.' 
+        },
+        { 
+            id: 'sketch', 
+            label: 'Sketch (Lápis)', 
+            prompt: 'Traditional graphite pencil sketch, monochromatic greyscale, visible paper grain, cross-hatching shading, rough hand-drawn strokes, unfinished edges, natural sketch texture.' 
+        },
+        { 
+            id: 'noir', 
+            label: 'Noir Graphic Novel', 
+            prompt: 'Noir graphic novel style, stark high-contrast black and white, deep shadows, heavy ink outlines, strong chiaroscuro, gritty texture, minimal selective yellow accent only, black, grey and white dominant palette, no red accents.' 
+        },
+        { 
+            id: 'stickman', 
+            label: 'Stickman (Palito)', 
+            prompt: 'Minimalist stickman illustration, thin black lines, flat simple shapes, light blue background, subtle light purple accents, clean composition, no shadows, no 3D, whiteboard explainer look.' 
+        },
+        { 
+            id: 'goldenage', 
+            label: 'Golden Age (Vintage 40/50)', 
+            prompt: 'Vintage Golden Age comic style, Ben-Day dots, CMYK offset print look, aged yellowed paper texture, retro 1940s to 1950s aesthetic, bold primary colors, slightly worn print finish, simple backgrounds.' 
+        },
+        { 
+            id: 'hqcartoon', 
+            label: 'HQ Cartoon', 
+            prompt: 'Western comic book style, bold black outlines, vibrant flat colors, dynamic cel shading, halftone texture, expressive character design, detailed inking, clean graphic finish, 1990s animation influence.' 
+        },
+        { 
+            id: 'ligneclaire', 
+            label: 'Ligne Claire (Franco-Belga)', 
+            prompt: 'Ligne Claire comic style, clear line art, uniform line weight, flat vivid colors, no hatching, clean backgrounds, minimal shadows, precise architectural details.' 
+        }
     ],
     subtitleStyles: [
         {
@@ -274,7 +315,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, s
                 <div className="p-8 border-b border-slate-800/50 flex justify-between items-center bg-slate-900/40">
                     <div>
                         <h1 className="text-3xl font-black text-white uppercase tracking-tighter italic">Painel <span className="text-brand-400">Master</span></h1>
-                        <p className="text-[10px] text-slate-500 font-black uppercase tracking-[0.3em] mt-1">Configuração de Engine v2.6</p>
+                        <p className="text-[10px] text-slate-500 font-black uppercase tracking-[0.3em] mt-1">Configuração de Engine v7.5.0</p>
                     </div>
                     <button
                         onClick={handleCloseAndSave}

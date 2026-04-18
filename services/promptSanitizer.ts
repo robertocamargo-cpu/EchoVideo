@@ -7,10 +7,14 @@
 const FORBIDDEN_LABELS = [
   'Subject Archetype:', 'Hair:', 'Face Shape:', 'Face Shape/Eyes:', 'Eyes:', 'Upper:', 'Lower:', 'Vestuário:', 'Calçado:',
   'Structure:', 'Anchors:', 'Materials:', 'Lighting:', 'someone', 'Upper someone:', 'Shoes:', 'someone Eyes:', 'someone-up',
-  'Generic -', 'Master Assets:', 'Objects:', 'Visual Integrity:', 'Archetype:'
+  'Generic -', 'Master Assets:', 'Objects:', 'Visual Integrity:', 'Archetype:', 'Densidade:', '(Densidade', 'Density:',
+  'Cabelo/Barba:', 'Rosto:', 'Vestuário Superior:', 'Vestuário Inferior:', 'Calçados:', 'Acessórios:', 'Face:', 'Footwear:', 'Upper Clothing:', 'Lower Clothing:',
+  'Fixed Anchors:', 'Structure & Limits:', 'Materials & Textures:', 'Lighting & Color:', 'Skeleton:',
+  'MASTER PROMPT', 'SYNCHRONIZATION ENGINE', 'FIELD RULES', 'DIRECTOR\'S RULE', 'Return JSON', 'TranscriptionResponse'
 ];
 
-const TECHNICAL_ID_REGEX = /\b([c|l|p]\d+|char\d+|loc\d+|prop\d+)\b/gi;
+const TECHNICAL_ID_REGEX = /\b(char_|prop_|loc_|c|l|p|pro|prop|char|loc)\d+\b/gi;
+const DENSITY_CLEAN_REGEX = /\(Densidade\s*\d+\)/gi;
 
 const TRANSLATION_MAP: Record<string, string> = {
   'ar-condicionado': 'air conditioner',
@@ -36,12 +40,15 @@ export const cleanDescription = (text: string): string => {
   if (!text) return "";
   let clean = text;
 
-  // 1. Remover IDs técnicos (c1, char001, etc.)
+  // 1. Remover IDs técnicos (c1, char001, etc.) e rótulos de densidade residuais
   clean = clean.replace(TECHNICAL_ID_REGEX, '');
+  clean = clean.replace(DENSITY_CLEAN_REGEX, '');
 
   // 2. Remover rótulos conhecidos (insensível a maiúsculas)
   FORBIDDEN_LABELS.forEach(label => {
-    const regex = new RegExp(label, 'gi');
+    // Escapar caracteres especiais para evitar SyntaxError em New RegExp
+    const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(escapedLabel, 'gi');
     clean = clean.replace(regex, '');
   });
 
@@ -79,10 +86,14 @@ export const normalizeCamera = (text: string): string => {
  */
 export const sanitizeNickname = (name: string): string => {
   if (!name) return "";
-  // Mantém apenas letras e números, remove prefixos de ID
-  let clean = name.replace(/^(char_|prop_|loc_|c|l|p)\d+/gi, '').trim();
-  // Se sobrar apenas o nome real (ex: "Elon Musk"), removemos espaços extras
-  return clean.split(/[:\s]/)[0]; // Pega a primeira palavra se houver sujeira
+  // 1. Remover parênteses e conteúdo técnico (ex: char01 (Elon) -> Elon)
+  let clean = name.replace(/\(.*\)/g, '').trim();
+  // 2. Mantém apenas letras e números, remove prefixos de ID
+  clean = clean.replace(/^(char_|prop_|loc_|c|l|p|char|prop|loc|pro)\d+/gi, '').trim();
+  // 3. Remove caracteres especiais remanescentes no início/fim
+  clean = clean.replace(/^[:\s-]+|[:\s-]+$/g, '').trim();
+  // Se sobrar apenas o nome real, removemos espaços extras
+  return clean.split(/[:\s]/)[0];
 };
 
 /**

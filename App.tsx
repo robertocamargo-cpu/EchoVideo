@@ -4,10 +4,10 @@ import { TranscriptionTable } from './components/TranscriptionTable';
 import { SystemInfo } from './components/SystemInfo';
 import { ImageStylesGallery } from './components/ImageStylesGallery';
 import { TranscriptionItem, ProcessingStatus, Project, AppSettings, MasterAsset, MotionEffect } from './types';
-import { enrichSrtWithVisuals, getApiInfrastructure, TEXT_MODEL_NAME } from './services/geminiService';
-import { saveProject, getProjects, getProjectById, deleteProject, saveSettingsToDB, getSettingsFromDB, getProjectAudio, getUsageFromDB, getImageStylePrompts, getSubtitlePresets, findProjectByName, getMotionEffects, getProjectFileUrl } from './services/storageService';
+import { saveProject, getProjects, getProjectById, deleteProject, saveSettingsToDB, getSettingsFromDB, getProjectAudio, getUsageFromDB, getImageStylePrompts, getSubtitlePresets, findProjectByName, getMotionEffects, getProjectFileUrl, deleteProjectInCascade, uploadProjectFile } from './services/storageService';
+import { fetchRealUsage, logApiCost, incrementUsage, DailyUsage } from './services/usageService';
+import { enrichSrtWithVisuals, syncScenesWithAudio, getApiInfrastructure, TEXT_MODEL_NAME } from './services/geminiService';
 import { preselectEffectsForScenes } from './services/effectSelectionService';
-import { getDailyUsage, fetchRealUsage, DailyUsage } from './services/usageService';
 import { getAudioDuration } from './services/audioService';
 import { DEFAULT_SETTINGS, SettingsModal } from './components/SettingsModal';
 import { ChangelogModal } from './components/ChangelogModal';
@@ -38,6 +38,8 @@ const App: React.FC = () => {
   const [transcriptionDuration, setTranscriptionDuration] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+  const [lastDeletedProjectId, setLastDeletedProjectId] = useState<string | null>(null); // v5.6.2: Para comando de limpeza
+  const [copiedId, setCopiedId] = useState<string | null>(null); // v7.5.4: Feedback de cópia
   const [editingProjectName, setEditingProjectName] = useState<string>('');
   const [firebaseStatus, setFirebaseStatus] = useState<'connecting' | 'stable' | 'error'>('connecting');
   // Estado de renderização global — persistente entre navegações de tela
@@ -123,7 +125,7 @@ const App: React.FC = () => {
 
   const refreshUsage = async () => {
     try {
-      const u = await getDailyUsage();
+      const u = await fetchRealUsage();
       setUsage(u);
     } catch (e) {
       console.error("Failed to refresh usage:", e);
@@ -271,7 +273,7 @@ const App: React.FC = () => {
     }
   };
 
-  const handleSaveProject = async (updatedProject: Project) => {
+  const handleSaveProject = async (updatedProject: Project, includeAudio: boolean = true) => {
     // Mutex: aguarda save anterior terminar para evitar race condition de duplicação
     if (isSavingRef.current) {
       console.warn('[App] Save em andamento, aguardando...');
@@ -283,8 +285,8 @@ const App: React.FC = () => {
     }
     isSavingRef.current = true;
     try {
-      console.log("[App] Saving project to DB:", updatedProject.id);
-      await saveProject(updatedProject, file ?? undefined);
+      console.log(`[App] Saving project ${updatedProject.id} (Audio: ${includeAudio})`);
+      await saveProject(updatedProject, includeAudio ? (file ?? undefined) : undefined);
 
       // Refresh list
       const list = await getProjects();
@@ -300,15 +302,18 @@ const App: React.FC = () => {
     try {
       const proj = await getProjectById(id);
       if (proj) {
-        // Reset estados voláteis antes de carregar o novo projeto
+        // 1. Reset estados voláteis antes de qualquer mudança de visualização
         setFile(null);
         setSrtText('');
         setScriptText('');
         setAudioDuration(0);
         setTranscriptionDuration(0);
         
+        // 2. Montar dados fundamentais
         setCurrentProject(proj);
         setItems(proj.items);
+
+        // 3. AGORA SIM: Mudar status para abrir Storyboard com dados prontos (Fim da Tela Preta)
         setStatus(ProcessingStatus.COMPLETED);
         setIsProjectsOpen(false);
         setViewMode('transcription');
@@ -317,10 +322,10 @@ const App: React.FC = () => {
         if (proj.projectStyle) setSelectedStyle(proj.projectStyle);
         if (proj.context) setContext(proj.context);
 
-        console.log(`[App] Carregando projeto "${proj.name}" — ${proj.items.length} cenas`);
+        console.log(`[App] Projeto "${proj.name}" carregado com sucesso — ${proj.items.length} cenas`);
 
         // Carregar áudio para habilitar a renderização e o preview
-        console.log(`[App] Restaurando Sessão de Áudio: ${id}`);
+        console.log(`\n🚀 [FIREBASE MODE] v7.5.0 Nativa: ${id} (Legendas: SIM)`);
         try {
           let audioBlob: Blob | null = null;
 
@@ -370,19 +375,33 @@ const App: React.FC = () => {
 
 
   const handleDeleteProject = async (id: string) => {
-    if (window.confirm("Tem certeza que deseja excluir este projeto?")) {
-      try {
-        await deleteProject(id);
+    try {
+      // v5.5.0: Feedback visual e exclusão resiliente
+      setStatus(ProcessingStatus.SAVING); // Reutilizando estado de load/save para travar UI
+      const success = await deleteProject(id);
+      
+      if (success) {
         if (currentProject?.id === id) {
           setCurrentProject(null);
           setItems([]);
           setStatus(ProcessingStatus.IDLE);
         }
+        
         const list = await getProjects();
         setProjects(list);
-      } catch (e) {
-        console.error("Failed to delete project:", e);
+        
+        // v5.6.2: Feedback visual na tela ao invés de apenas alert
+        setLastDeletedProjectId(id);
+        
+        console.log(`\n🧹 [ECHO CLEANUP] Comando para limpeza local do projeto ${id}:\nnpx tsx scripts/cleanup_local.ts --id=${id}\n`);
+      } else {
+        alert("Falha parcial ao excluir. Verifique o console.");
       }
+    } catch (e) {
+      console.error("Failed to delete project:", e);
+      alert("Erro crítico ao excluir projeto.");
+    } finally {
+      if (status === ProcessingStatus.SAVING) setStatus(ProcessingStatus.IDLE);
     }
   };
 
@@ -446,59 +465,78 @@ const App: React.FC = () => {
       )}
 
       {/* Header */}
-      <header className="h-12 border-b border-slate-800 bg-slate-900/50 backdrop-blur-xl flex items-center justify-between px-3 sticky top-0 z-40">
-        <div className="flex items-center space-x-2">
+      <header className="h-14 border-b border-white/5 bg-slate-950/80 backdrop-blur-2xl flex items-center justify-between px-4 sticky top-0 z-40 shadow-2xl">
+        <div className="flex items-center space-x-6">
           <button
             onClick={() => { setStatus(ProcessingStatus.IDLE); setCurrentProject(null); setItems([]); setFile(null); setViewMode('transcription'); }}
-            className="flex items-center space-x-2 mr-4 hover:opacity-80 transition-opacity cursor-pointer group"
+            className="flex items-center space-x-3 hover:opacity-90 transition-all cursor-pointer group"
           >
-            <div className="w-8 h-8 bg-gradient-to-br from-brand-600 to-brand-400 rounded-sm flex items-center justify-center shadow-lg shadow-brand-500/20 group-hover:shadow-brand-500/40 transition-all">
-              <Zap className="w-5 h-5 text-white fill-white" />
+            <div className="w-9 h-9 bg-gradient-to-br from-indigo-600 to-brand-400 rounded-xl flex items-center justify-center shadow-[0_0_20px_rgba(14,165,233,0.3)] group-hover:shadow-[0_0_30px_rgba(14,165,233,0.5)] group-hover:scale-105 transition-all duration-300 border border-white/10">
+              <Zap className="w-5 h-5 text-white fill-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.3)]" />
             </div>
-            <h1 className="text-sm font-black tracking-tight text-white uppercase italic">echo<span className="text-brand-400">VID</span> <span className="ml-1 text-[9px] font-mono bg-slate-800 text-slate-400 px-1 py-0.5 rounded-sm border border-slate-700 align-middle not-italic">v4.2.6</span></h1>
+            <div className="flex flex-col">
+              <h1 className="text-base font-black tracking-tighter text-white uppercase italic leading-none">echo<span className="text-brand-400">VID</span></h1>
+              <span className="text-[8px] font-black tracking-[0.2em] text-slate-500 uppercase mt-0.5">Engine <span className="text-brand-500/80">v7.5.0</span></span>
+            </div>
           </button>
-          {currentProject && (
-            <div className="flex flex-col max-w-[200px]">
-              <div className="flex items-center gap-1">
-                <span className="text-[9px] font-black uppercase text-slate-600 tracking-widest">|</span>
-                <span className="text-[12px] font-black text-brand-400 uppercase tracking-tight truncate leading-tight">{currentProject.name}</span>
-              </div>
-              <span className="text-[9px] font-mono text-slate-500 tracking-tighter opacity-50 ml-2 leading-none">{currentProject.id}</span>
-            </div>
-          )}
-
           <nav className="flex items-center bg-slate-950/50 p-0.5 rounded-sm border border-slate-800">
             <button
               onClick={() => setViewMode('transcription')}
-              className={`px-3 py-1 rounded-sm text-[12px] font-bold transition-all flex items-center space-x-1.5 ${viewMode === 'transcription' ? 'bg-slate-800 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
+              className={`px-3 py-1.5 rounded-sm text-[13px] font-black uppercase tracking-widest transition-all flex items-center space-x-2 ${viewMode === 'transcription' ? 'bg-slate-800 text-brand-400 shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
             >
-              <Layout className="w-3.5 h-3.5" />
+              <Layout className="w-4 h-4" />
               <span>Editor</span>
             </button>
+            
+            <button
+              onClick={() => setIsProjectsOpen(true)}
+              className="px-3 py-1.5 rounded-sm text-[13px] font-black uppercase tracking-widest text-slate-500 hover:text-slate-300 transition-all flex items-center space-x-2"
+            >
+              <FolderOpen className="w-4 h-4" />
+              <span>Projetos</span>
+            </button>
+
             <button
               onClick={() => setViewMode('styles')}
-              className={`px-3 py-1 rounded-sm text-[12px] font-bold transition-all flex items-center space-x-1.5 ${viewMode === 'styles' ? 'bg-slate-800 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
+              className={`px-3 py-1.5 rounded-sm text-[13px] font-black uppercase tracking-widest transition-all flex items-center space-x-2 ${viewMode === 'styles' ? 'bg-slate-800 text-brand-400 shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
             >
-              <Palette className="w-3.5 h-3.5" />
+              <Palette className="w-4 h-4" />
               <span>Galeria</span>
             </button>
+
+            <button
+              onClick={() => setIsSettingsOpen(true)}
+              className="px-3 py-1.5 rounded-sm text-[13px] font-black uppercase tracking-widest text-slate-500 hover:text-slate-300 transition-all flex items-center space-x-2"
+            >
+              <Settings className="w-4 h-4" />
+              <span>Config</span>
+            </button>
+
             <button
               onClick={() => setViewMode('analytics')}
-              className={`px-3 py-1 rounded-sm text-[12px] font-bold transition-all flex items-center space-x-1.5 ${viewMode === 'analytics' ? 'bg-slate-800 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
+              className={`px-3 py-1.5 rounded-sm text-[13px] font-black uppercase tracking-widest transition-all flex items-center space-x-2 ${viewMode === 'analytics' ? 'bg-slate-800 text-brand-400 shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
             >
-              <Activity className="w-3.5 h-3.5" />
+              <Activity className="w-4 h-4" />
               <span>Métricas</span>
             </button>
+
+            {currentProject && (
+              <div className="flex items-center gap-2 pl-3 pr-4 py-1 border-l border-white/5 ml-1">
+                <div className="flex items-center gap-1.5 bg-slate-900/50 px-2.5 py-1.5 rounded-lg border border-white/5 shadow-inner">
+                    <span className="text-[13px] font-black text-white/90 uppercase tracking-tight truncate max-w-[250px]">
+                        {currentProject.name}
+                    </span>
+                    <span className="text-[11px] font-mono text-slate-500 tracking-tighter bg-slate-950 px-2 py-0.5 rounded border border-white/5 uppercase">
+                        {currentProject.id}
+                    </span>
+                </div>
+              </div>
+            )}
           </nav>
         </div>
 
         <div className="flex items-center space-x-2">
-          <button onClick={() => setIsProjectsOpen(true)} className="p-1.5 rounded-sm bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition-all border border-slate-700/50">
-            <FolderOpen className="w-4 h-4" />
-          </button>
-          <button onClick={() => setIsSettingsOpen(true)} className="p-1.5 rounded-sm bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 transition-all border border-slate-700/50">
-            <Settings className="w-4 h-4" />
-          </button>
+          {/* Lado direito do header agora reservado para status específicos se necessário */}
         </div>
       </header>
 
@@ -613,7 +651,7 @@ const App: React.FC = () => {
               }}
               onForceSave={() => {
                 setCurrentProject(prevProject => {
-                  if (prevProject) handleSaveProject(prevProject);
+                  if (prevProject) handleSaveProject(prevProject, false);
                   return prevProject;
                 });
               }}
@@ -701,10 +739,46 @@ const App: React.FC = () => {
                 Projetos Salvos
               </h3>
               <button onClick={() => setIsProjectsOpen(false)} className="p-2 rounded-lg hover:bg-slate-800 transition-colors">
-                <X className="w-5 h-5" />
+                <X size={20} />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              {/* v5.6.2: Banner de Comando de Limpeza Após Delete */}
+              {lastDeletedProjectId && (
+                <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-2xl p-4 mb-4 animate-in slide-in-from-top-4 duration-500 group relative">
+                  <div className="flex items-start justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                        <Terminal size={14} className="text-emerald-500" />
+                        <p className="text-[10px] text-slate-500 font-black uppercase tracking-[0.3em] mt-1">Configuração de Engine v7.5.0</p>
+                        <span className="text-[10px] font-black uppercase text-emerald-500 tracking-widest">Ação Necessária: Limpeza Local</span>
+                    </div>
+                    <button onClick={() => setLastDeletedProjectId(null)} className="text-slate-500 hover:text-white transition-colors">
+                        <X size={14} />
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-300 mb-3 leading-relaxed">
+                    O projeto foi removido da nuvem. Para liberar espaço em disco, execute no terminal:
+                  </p>
+                  <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex items-center gap-3">
+                    <code className="text-[11px] font-mono text-emerald-400 truncate flex-1 leading-none select-all">
+                        {`npx tsx scripts/cleanup_local.ts --id=${lastDeletedProjectId}`}
+                    </code>
+                    <button 
+                        onClick={() => {
+                            navigator.clipboard.writeText(`npx tsx scripts/cleanup_local.ts --id=${lastDeletedProjectId}`);
+                            setCopiedId(lastDeletedProjectId);
+                            setTimeout(() => setCopiedId(null), 2000);
+                        }}
+                        className={`p-2 rounded-lg transition-all active:scale-95 shrink-0 flex items-center gap-2 ${copiedId === lastDeletedProjectId ? 'bg-emerald-600 text-white' : 'bg-emerald-500 hover:bg-emerald-400 text-white'}`}
+                        title="Copiar Comando"
+                    >
+                        {copiedId === lastDeletedProjectId ? <Check size={12} /> : <Copy size={12} />}
+                        {copiedId === lastDeletedProjectId && <span className="text-[9px] font-black uppercase">Copiado</span>}
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {projects.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-64 text-slate-500">
                   <History className="w-12 h-12 mb-4 opacity-20" />
@@ -764,7 +838,7 @@ const App: React.FC = () => {
                                 <span className="text-[9px] font-mono text-slate-500 tracking-tighter opacity-60 leading-none mt-0.5">{proj.id}</span>
                             </div>
                         )}
-                        <div className="flex items-center text-xs text-slate-500 space-x-3">
+                        <div className="flex items-center text-[13px] text-slate-500 space-x-3">
                           <span className="flex items-center"><Clock className="w-3 h-3 mr-1" /> {proj.date}</span>
                           <span className="flex items-center"><Layout className="w-3 h-3 mr-1" /> {proj.itemsCount ?? proj.items.length} cenas</span>
                         </div>
@@ -796,7 +870,7 @@ const App: React.FC = () => {
       )}
 
       {/* Footer Info */}
-      <footer className="h-10 bg-slate-900/80 border-t border-slate-800 px-6 flex items-center justify-between text-[10px] font-medium tracking-widest text-slate-500 uppercase">
+      <footer className="h-10 bg-slate-900/80 border-t border-slate-800 px-6 flex items-center justify-between text-[11px] font-medium tracking-widest text-slate-500 uppercase">
         <div className="flex items-center space-x-6">
           {firebaseStatus === 'stable' && <span className="flex items-center"><ShieldCheck className="w-3 h-3 mr-1.5 text-emerald-500" /> Firebase Connected</span>}
           {firebaseStatus === 'connecting' && <span className="flex items-center"><Loader2 className="w-3 h-3 mr-1.5 text-yellow-400 animate-spin" /> Conectando ao Firebase...</span>}
@@ -805,10 +879,26 @@ const App: React.FC = () => {
             <Cpu className="w-3.5 h-3.5 text-brand-400" />
             <span className="text-[10px] font-mono text-slate-400 uppercase tracking-widest">{TEXT_MODEL_NAME}</span>
           </div>
-          <span className="flex items-center"><Activity className="w-3 h-3 mr-1.5 text-brand-400" /> API Latency: 42ms</span>
+
+          {/* AI Image Registry */}
+          <div className="flex items-center space-x-4 border-l border-slate-800 pl-6">
+            <div className="flex flex-col items-start leading-none space-y-1">
+              <span className="text-[8px] font-black text-slate-600 tracking-tighter">IMAGE API STACK</span>
+              <div className="flex items-center space-x-3">
+                <span className="flex items-center text-slate-400 group cursor-default">
+                  <div className="w-1 h-1 rounded-full bg-brand-500 mr-1.5"></div>
+                  GOOGLE CLOUD <span className="text-slate-600 ml-1.5">(IMAGEN 4 / GEMINI 2.5)</span>
+                </span>
+                <span className="flex items-center text-slate-400 group cursor-default">
+                  <div className="w-1 h-1 rounded-full bg-purple-500 mr-1.5"></div>
+                  POLLINATIONS AI <span className="text-slate-600 ml-1.5">(FLUX / GPT)</span>
+                </span>
+              </div>
+            </div>
+          </div>
         </div>
         <div className="flex items-center space-x-4">
-          <button onClick={() => setIsChangelogOpen(true)} className="hover:text-brand-400 transition-colors cursor-pointer">v4.2.6 Build 2026.03.07</button>
+          <button onClick={() => setIsChangelogOpen(true)} className="hover:text-brand-400 transition-colors cursor-pointer">v7.5.0 Build 2026.04.16</button>
         </div>
       </footer>
     </div>

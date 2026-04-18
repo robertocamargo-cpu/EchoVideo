@@ -1,11 +1,11 @@
-
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Clapperboard, Download, Edit3, FileArchive, FileSpreadsheet, FileText, Image as ImageIcon, Loader2, MapPin, Monitor, Play, PlayCircle, RefreshCw, Sparkles, Square, Type, Upload, Users, Video, X, Zap, Ban, Activity, Wallet, Target, Layers, Video as VideoIcon, HelpCircle, Box, Plus, Trash2, AlertTriangle, Clock, AlertCircle, MonitorPlay, Terminal, Copy, Cpu } from 'lucide-react';
+import { Clapperboard, Download, Edit3, FileArchive, FileSpreadsheet, FileText, Image as ImageIcon, Loader2, MapPin, Monitor, Play, PlayCircle, RefreshCw, Sparkles, Square, Type, Upload, Users, Video, X, Zap, Ban, Activity, Wallet, Target, Layers, Video as VideoIcon, HelpCircle, Box, Plus, Trash2, AlertTriangle, Clock, AlertCircle, MonitorPlay, Terminal, Copy, Cpu, Check } from 'lucide-react';
 import { TranscriptionItem, AppSettings, TransitionType, ViralTitle, MasterAsset, MotionEffect, RenderEngine } from '../types';
 import { db } from '../services/firebaseClient';
 import { onSnapshot, doc as fireDoc } from 'firebase/firestore';
-import { generateImage, generateViralTitles, getApiInfrastructure, generateText, TEXT_MODEL_NAME, IMAGEN_MODEL_NAME, IMAGE_MODEL_NAME, syncScenesWithAudio } from '../services/geminiService';
-import { generatePollinationsImage } from '../services/pollinationsService';
+import { generateImageUnified } from '../services/mediaService';
+import { generateViralTitles, getApiInfrastructure, generateText, TEXT_MODEL_NAME, IMAGEN_MODEL_NAME, IMAGE_MODEL_NAME, syncScenesWithAudio } from '../services/geminiService';
+import { generatePollinationsImage, GPT_MODEL_NAME } from '../services/pollinationsService';
 import { logApiCost } from '../services/usageService';
 import { generateTimelineVideo, generatePreviewVideo, generatePresetSRT } from '../services/videoService';
 import { renderWithFFmpeg } from '../services/ffmpegService';
@@ -79,6 +79,7 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
     const [generatedTitles, setGeneratedTitles] = useState<ViralTitle[]>([]);
     const [isGeneratingTitles, setIsGeneratingTitles] = useState(false);
     const [generatingThumbnailMap, setGeneratingThumbnailMap] = useState<Record<number, boolean>>({});
+    const [errorMap, setErrorMap] = useState<Record<number, string>>({}); // v5.6.1: Erros por cena
     const [previewVideoUrl, setPreviewVideoUrl] = useState<string | null>(null);
     const [isPreviewing, setIsPreviewing] = useState(false);
     const [isTimelinePreviewActive, setIsTimelinePreviewActive] = useState(false);
@@ -90,6 +91,7 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
     const [comparisonAsset, setComparisonAsset] = useState<{ asset: MasterAsset, type: 'characters' | 'locations' | 'props' } | null>(null);
     const [isComparing, setIsComparing] = useState(false);
     const [comparisonResults, setComparisonResults] = useState<{ modelId: string, label: string, imageUrl: string, loading: boolean, error?: string }[]>([]);
+    const [linkingAsset, setLinkingAsset] = useState<{ index: number, type: 'characters' | 'locations' | 'props' } | null>(null);
     const renderTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const [renderEngine, setRenderEngine] = useState<RenderEngine>('browser');
 
@@ -97,6 +99,10 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
 
     const bulkAbortRef = useRef<boolean>(false);
     const importInputRef = useRef<HTMLInputElement>(null);
+    const [isExportingZip, setIsExportingZip] = useState(false);
+    const [uploadingManual, setUploadingManual] = useState<Record<number, boolean>>({});
+    const [bulkUploadProgress, setBulkUploadProgress] = useState<{ total: number, current: number, percentage: number } | null>(null);
+    const [isDraggingImport, setIsDraggingImport] = useState(false);
 
     useEffect(() => {
         refreshApiInfo();
@@ -179,39 +185,204 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         onUpdateAllItems(updatedData);
     };
 
+    const handleDragOverImport = (e: React.DragEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsDraggingImport(true);
+    };
 
+    const handleDragLeaveImport = (e: React.DragEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsDraggingImport(false);
+    };
 
-    const handleManualImageUpload = async (index: number, file: File) => {
+    const handleDropImport = async (e: React.DragEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsDraggingImport(false);
+        const files = e.dataTransfer.files;
+        if (files && files.length > 0) {
+            console.log(`[Drop] ${files.length} arquivos detectados`);
+            await startBulkImport(Array.from(files));
+        }
+    };
+
+    const handleBulkImportImages = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const files = e.target.files;
+        if (!files || files.length === 0) return;
+        await startBulkImport(Array.from(files));
+    };
+
+    const startBulkImport = async (files: File[]) => {
         if (!projectId) {
-            alert("Aviso: Salve o projeto pelo menos uma vez antes de subir imagens manuais para garantir persistência.");
-            // Mesmo sem ID, podemos gerar uma URL local temporária se for o caso, 
-            // mas o ideal é ter o projectId para subir pro bucket correto.
-            const localUrl = URL.createObjectURL(file);
-            onUpdateItem(index, { 
-                imageUrl: localUrl, 
-                importedVideoUrl: file.type.includes('video') ? localUrl : '', 
-                importedImageUrl: file.type.includes('image') ? localUrl : '',
-                googleImageUrl: '',
-                pollinationsImageUrl: ''
-            });
+            alert("Aviso: Salve o projeto pelo menos uma vez antes de realizar a importação em lote para gerar o ID de armazenamento.");
             return;
         }
         
+        console.log(`[Import] Iniciando importação em lote de ${files.length} arquivos para o projeto ${projectId}...`);
+        setBulkUploadProgress({ total: files.length, current: 0, percentage: 0 });
+
+        const originalLength = data.length;
+        const usedIndices = new Set<number>();
+
+        const extractSceneNumber = (name: string): number | null => {
+            const cleanName = name.toLowerCase();
+            
+            // Ignorar números comuns que não são cenas (resoluções e noise)
+            const ignoreList = ['1080', '720', '480', '2160', '1920', '3840', '4k', '8k', '3d', '2d'];
+            
+            // Padrão 1: cena05, scene_5, s05, item-5, #5, capitulo 5
+            const keywordMatch = cleanName.match(/(?:cena|scene|item|s|c|n|#|capitulo)[\s_.-]*(\d+)/);
+            if (keywordMatch) {
+                const num = parseInt(keywordMatch[1], 10);
+                if (!ignoreList.includes(String(num))) {
+                    console.log(`[Import] ${name} -> Detectado via keyword: ${num}`);
+                    return num;
+                }
+            }
+
+            // Padrão 2: Número em parênteses (muito comum em downloads duplicados ou indicações de cena)
+            const parenMatch = cleanName.match(/\((\d+)\)/);
+            if (parenMatch) {
+                console.log(`[Import] ${name} -> Detectado via parênteses: ${parenMatch[1]}`);
+                return parseInt(parenMatch[1], 10);
+            }
+
+            // Padrão 3: número isolado entre separadores ou no fim (ex: image_05.png ou 05.mp4)
+            // IMPORTANTE: Garantir que não seja precedido por letra para evitar '3d'
+            const isolatedMatch = cleanName.match(/(?:^|[^a-z0-9])(\d+)(?:\.|$|[^a-z0-9])/);
+            if (isolatedMatch) {
+                const num = parseInt(isolatedMatch[1], 10);
+                if (!ignoreList.includes(String(num))) {
+                    console.log(`[Import] ${name} -> Detectado via isolado: ${num}`);
+                    return num;
+                }
+            }
+
+            // Padrão 4: Qualquer número que caiba no range (tentando do fim para o início)
+            const allMatches = cleanName.match(/\d+/g);
+            if (allMatches) {
+                for (let i = allMatches.length - 1; i >= 0; i--) {
+                    const numString = allMatches[i];
+                    // Verifica se o número não está "colado" em 'd' ou 'k' (ex: 3d, 4k)
+                    const isNoise = cleanName.includes(numString + 'd') || cleanName.includes(numString + 'k') || ignoreList.includes(numString);
+                    if (isNoise) {
+                        console.log(`[Import] ${name} -> Ignorando número ruidoso: ${numString}`);
+                        continue;
+                    }
+
+                    const num = parseInt(numString, 10);
+                    if (num > 0 && num <= originalLength) {
+                        console.log(`[Import] ${name} -> Detectado via range: ${num}`);
+                        return num;
+                    }
+                }
+            }
+
+            console.log(`[Import] ${name} -> Nenhum número válido detectado.`);
+            return null;
+        };
+
+        console.log(`[Import] Mapeamento de Arquivos:`);
+        const fileArray = files.sort((a, b) => {
+            const numA = extractSceneNumber(a.name) || 999999;
+            const numB = extractSceneNumber(b.name) || 999999;
+            console.log(`  - ${a.name} -> Cena ${numA === 999999 ? '?' : numA}`);
+            if (numA !== numB) return numA - numB;
+            return a.name.localeCompare(b.name);
+        });
+
+        let completed = 0;
+        const updateGlobalProgress = (p: number) => {
+            const baseProgress = (completed / files.length) * 100;
+            const currentFileContribution = (p / files.length);
+            setBulkUploadProgress(prev => prev ? { ...prev, percentage: Math.min(99, baseProgress + currentFileContribution) } : null);
+        };
+
+        const unmappedFiles: File[] = [];
+        for (const file of fileArray) {
+            const sceneNum = extractSceneNumber(file.name);
+            if (sceneNum !== null) {
+                const targetIdx = sceneNum - 1;
+
+                if (targetIdx >= 0 && targetIdx < originalLength && !usedIndices.has(targetIdx)) {
+                    await processFileImport(file, targetIdx);
+                } else {
+                    unmappedFiles.push(file);
+                }
+            } else {
+                unmappedFiles.push(file);
+            }
+        }
+
+        for (const file of unmappedFiles) {
+            // BUG FIX: Se não houver match por número, pegamos o próximo slot disponível que ainda não foi usado NESTA importação
+            // Independente de já ter imagem ou não, para permitir substituição em lote.
+            const targetIdx = data.findIndex((_, idx) => !usedIndices.has(idx));
+            
+            if (targetIdx !== -1) {
+                await processFileImport(file, targetIdx);
+            }
+        }
+
+        async function processFileImport(file: File, targetIdx: number) {
+            try {
+                usedIndices.add(targetIdx);
+                const isVideo = file.type.startsWith('video/') || file.name.toLowerCase().endsWith('.mp4') || file.name.toLowerCase().endsWith('.mov') || file.name.toLowerCase().endsWith('.webm');
+                const fileType = isVideo ? 'video' : 'image';
+
+                // Sinaliza carregamento específico para este slot (reusando o estado que o manual usa para consistência visual)
+                setUploadingManual(prev => ({ ...prev, [targetIdx]: true }));
+                
+                const publicUrl = await uploadProjectFile(projectId!, file, fileType, file.name, (p) => updateGlobalProgress(p));
+
+                if (publicUrl) {
+                    onUpdateItem(targetIdx, {
+                        importedVideoUrl: isVideo ? publicUrl : '',
+                        importedImageUrl: !isVideo ? publicUrl : '',
+                        imageUrl: !isVideo ? publicUrl : (data[targetIdx].imageUrl || ''),
+                        selectedProvider: 'imported' as any,
+                        isGeneratingGoogle: false
+                    });
+                }
+            } catch (err) {
+                console.error("Erro importando arquivo:", err);
+            } finally {
+                setUploadingManual(prev => ({ ...prev, [targetIdx]: false }));
+                completed++;
+                setBulkUploadProgress(prev => prev ? { ...prev, current: completed, percentage: (completed / files.length) * 100 } : null);
+            }
+        }
+
+        setTimeout(() => setBulkUploadProgress(null), 3000);
+        if (onForceSave) onForceSave();
+    };
+
+    const handleManualImageUpload = async (index: number, file: File) => {
+        if (!projectId) {
+            alert("Aviso: Salve o projeto pelo menos uma vez antes de subir imagens manuais.");
+            return;
+        }
+        
+        setUploadingManual(prev => ({ ...prev, [index]: true }));
         try {
-            const publicUrl = await uploadProjectFile(projectId, file, 'image', file.name);
+            const isVideo = file.type.includes('video') || file.name.toLowerCase().endsWith('.mp4');
+            const publicUrl = await uploadProjectFile(projectId, file, isVideo ? 'video' : 'image', file.name);
             if (publicUrl) {
                 onUpdateItem(index, { 
-                    imageUrl: publicUrl, 
-                    importedVideoUrl: file.type.includes('video') ? publicUrl : '',
-                    importedImageUrl: file.type.includes('image') ? publicUrl : '',
-                    googleImageUrl: '',
-                    pollinationsImageUrl: ''
+                    imageUrl: isVideo ? '' : publicUrl, 
+                    importedVideoUrl: isVideo ? publicUrl : '',
+                    importedImageUrl: !isVideo ? publicUrl : '',
+                    selectedProvider: 'imported' as any
                 });
                 if (onForceSave) onForceSave();
             }
         } catch (error) {
             console.error("Erro no upload manual:", error);
-            alert("Falha ao subir imagem.");
+            alert("Falha ao subir arquivo.");
+        } finally {
+            setUploadingManual(prev => ({ ...prev, [index]: false }));
         }
     };
 
@@ -221,22 +392,17 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         const relevantLocs = projectLocations.filter(l => item.locationIds?.includes(l.id));
         const relevantProps = projectProps.filter(p => item.propIds?.includes(p.id) || (item as any).prop_ids?.includes(p.id));
 
-        // (1) MEDIUM - Override manual > Estilo Global
         const medium = item.medium || (activeStylePrompt ? activeStylePrompt.split(',')[0].trim() : '');
 
-        // (2) SUBJECT - Nome + Características físicas dos personagens
         let subject = '';
         if (relevantChars.length > 0) {
-            // Combina Nome + Descrição para cada personagem
             subject = relevantChars.map(c => `${c.name}: ${c.description || ''}`).join(", ");
         }
         
-        // Se o subject manual tiver algo, apenda
         if (item.subject && !subject.includes(item.subject)) {
             subject = subject ? `${subject}, ${item.subject}` : item.subject;
         }
 
-        // (3) ACTION / SYMBOLISM - A ideia da cena
         let action = (item.action || item.imagePrompt || '')
             .replace(/style:.*$/gi, '')
             .replace(/master cinematic.*$/gi, '')
@@ -245,13 +411,11 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         const pAction = action.split(/,(?:\s*)Strictly:|,(?:\s*)Visual Integrity:/i);
         action = pAction[0].trim();
 
-        // (4) CENARIO / LOCATION & PROPS (OBJETOS) - Características do local e dos objetos
         let cenario = item.cenario || '';
         if (!cenario && relevantLocs.length > 0) {
             cenario = relevantLocs.map(l => `${l.name}: ${l.description || ''}`).join(" ");
         }
 
-        // Integra Objetos (Props) no Cenário
         let propsText = '';
         if (relevantProps.length > 0) {
             propsText = relevantProps.map(p => `${p.name}: ${p.description || ''}`).join(", ");
@@ -260,30 +424,23 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         }
 
         if (propsText) {
-            // Adiciona as características dos objetos ao cenário
             cenario = cenario ? `${cenario}. Objects: ${propsText}` : `Objects: ${propsText}`;
         }
 
-        // Quantidade de personagens: não exportar no prompt, removido por redução de ruído
-
-        // --- SISTEMA ANTI-NOMES REAIS (AGRESSIVO v2.1.1) ---
         const allAssets = [...projectCharacters, ...projectLocations, ...projectProps];
         
         const cleanRealNames = (text: string) => {
             if (!text) return '';
             let sanitized = text;
 
-            // 1. Limpeza de Nomes Reais Cadastrados
             allAssets.forEach(asset => {
                 if (asset.realName && asset.realName.trim().length > 2) {
                     const escaped = asset.realName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                     const regex = new RegExp(`\\b${escaped}\\b`, 'gi');
-                    // Substitui o nome real pela descrição física (se houver) ou pelo apelido
                     const replacement = asset.description ? asset.description.split('.')[0] : asset.name;
                     sanitized = sanitized.replace(regex, replacement);
                 }
                 
-                // 2. Limpeza de Apelidos que parecem nomes (ex: "Elon Musk" como apelido)
                 if (asset.name && asset.name.includes(' ') && asset.name.length > 5) {
                     const escapedName = asset.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                     const regexName = new RegExp(`\\b${escapedName}\\b`, 'gi');
@@ -292,11 +449,7 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
                 }
             });
 
-            // 3. Heurística de Nomes Próprios (Palavras capitalizadas consecutivas)
-            // Tenta capturar "Nomes" que não foram cadastrados
             sanitized = sanitized.replace(/\b([A-Z][a-z]+)\s([A-Z][a-z]+)\b/g, (match) => {
-                // Se o match for um apelido válido cadastrado (sem espaços), não tocamos. 
-                // Mas aqui o regex já pegou com espaço.
                 return "someone";
             });
 
@@ -307,38 +460,29 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         action = cleanRealNames(action);
         cenario = cleanRealNames(cenario);
 
-        // (5) STYLE
         const styleName = project?.image_style_name || 'Generic';
         const stylePrompt = activeStylePrompt || item.style || '';
 
-        // (6) CAMERA
         const camera = item.camera || '';
 
-        // NOVO FORMATO DE PROMPT (CONCATENAÇÃO POR BLOCOS COM PONTOS)
         let finalPrompt = '';
 
-        // Se houver um estilo mestre selecionado na galeria do projeto, USAMOS ELE COM PRIORIDADE.
-        // Omitimos o item.style e item.medium gerados pela IA para evitar contradições e misturas visuais.
         if (activeStylePrompt) {
-            // Remove "Generic - " do prefixo do estilo para reduzir ruído no prompt
             const cleanStyle = activeStylePrompt.replace(/^generic\s*[-–]\s*/i, '');
             finalPrompt += `${styleName} - ${cleanStyle}. `;
         } else if (stylePrompt || medium) {
             finalPrompt += `${styleName} - ${stylePrompt} ${medium ? `(${medium})` : ''}. `;
         }
 
-        // Função para higienizar formatações rudes da inteligência artificial
         const cleanText = (str: string) => {
             if (!str) return '';
             return str
-                .replace(/[\[\]\/]/g, ' ') // Remove brackets and slashes
-                // Separa CamelCase (ex: ExplorerRafael -> Explorer Rafael)
+                .replace(/[\[\]\/]/g, ' ') 
                 .replace(/([a-z])([A-Z])/g, '$1 $2') 
-                .replace(/\s+/g, ' ') // Remove duplo espaço
+                .replace(/\s+/g, ' ') 
                 .trim();
         };
 
-        // Personagens: apelido (descrição física), sem palavra-chave "Subject:"
         if (subject) finalPrompt += `${cleanText(subject)}. `;
         if (action) finalPrompt += `${cleanText(action)}. `;
         if (camera) finalPrompt += `Camera: ${cleanText(camera)}. `;
@@ -352,7 +496,6 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
             finalPrompt = finalPrompt.replace(regex, '');
         });
 
-        // Limpeza de espaços extras
         finalPrompt = finalPrompt.replace(/\s+/g, ' ').replace(/\s*\.\s*\./g, '.').replace(/,\s*,/g, ',').replace(/, ,/g, ',').trim();
 
         return { medium, subject, action, cenario, propsPrompt: '', style: stylePrompt, camera, negative: '', finalPrompt };
@@ -391,7 +534,6 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         const exportedContent = data.map((item, index) => {
             const promptData = getPromptData(index);
             const animationIdea = item.animation?.trim();
-            // Prompt imagem + animacao na MESMA linha, continuando após o ponto final do prompt de imagem
             const base = promptData.finalPrompt.replace(/\.\s*$/, '');
             return animationIdea ? `${base}. ${animationIdea}` : base;
         }).join('\n\n');
@@ -422,11 +564,9 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
     const handleExportAllImages = async () => {
         const zip = new JSZip();
 
-        // 1. Prompts de Imagem
         const promptsContent = data.map((_, index) => getPromptData(index).finalPrompt).join('\n\n');
         zip.file(`${sanitizeFilename(projectName)}_prompts_imagem.txt`, promptsContent);
 
-        // 2a. Prompts de Imagem + Animação (mesma linha, após ponto final)
         const animComboContent = data.map((item, index) => {
             const promptData = getPromptData(index);
             const animationIdea = item.animation?.trim();
@@ -435,13 +575,11 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         }).join('\n\n');
         zip.file(`${sanitizeFilename(projectName)}_prompts_imagem_mais_anim.txt`, animComboContent);
 
-        // 2b. Somente animação (nada mais)
         const soloAnimContent = data.map((item) => {
             return (item.animation?.trim()) || '(sem animação)';
         }).join('\n\n');
         zip.file(`${sanitizeFilename(projectName)}_somente_animacao.txt`, soloAnimContent);
 
-        // 3. Planilha CSV
         const headers = ["Número da Cena", "Total de Segundos", "Nome da Imagem", "Texto da Legenda"];
         const rows = data.map((item, index) => [(index + 1).toString(), item.duration.toFixed(3), item.filename, `"${item.text.replace(/"/g, '""')}"`]);
         const csvContent = [headers, ...rows].map(e => e.join(",")).join("\n");
@@ -516,9 +654,14 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
     };
 
     const handleGenerateImage = async (index: number, providerParam?: 'google-nano' | 'google-fast' | 'pollinations' | 'pollinations-zimage', overrideItem?: Partial<TranscriptionItem>) => {
-        // Usar o modelo preferencial se existir, senão o parâmetro ou globalProvider
         const provider = providerParam || (project?.preferredImageModel as any) || globalProvider;
-        // Limpar a imagem anterior para feedback visual de regeneração
+
+        setErrorMap(prev => {
+            const next = { ...prev };
+            delete next[index];
+            return next;
+        });
+
         onUpdateItem(index, {
             ...overrideItem,
             imageUrl: '',
@@ -532,22 +675,10 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         try {
             const pData = getPromptData(index, overrideItem);
             const isPol = provider.startsWith('pollinations');
-            const isPollinationsZ = provider === 'pollinations-zimage';
-            const isGoogleNano = provider === 'google-nano';
-            const isGoogleFast = provider === 'google-fast';
 
-            const polModel = isPollinationsZ ? 'gpt-image-large' : 'flux';
-            
-            let geminiModel = IMAGEN_FAST_MODEL_NAME; // default
-            if (isGoogleFast) geminiModel = IMAGEN_FAST_MODEL_NAME;
-            if (isGoogleNano) geminiModel = NANO_MODEL_NAME;
+            const result = await generateImageUnified(pData.finalPrompt, provider, settings.aspectRatio);
 
-            const result = !isPol
-                ? await generateImage(pData.finalPrompt, settings.aspectRatio, geminiModel)
-                : await generatePollinationsImage(pData.finalPrompt, polModel, "", settings.aspectRatio);
-
-            // Upload da imagem gerada ao Supabase Storage para persistência
-            let finalImageUrl = result.image; // base64 como fallback imediato
+            let finalImageUrl = result.image; 
             if (projectId && result.image.startsWith('data:')) {
                 try {
                     const [meta, base64Data] = result.image.split(',');
@@ -556,11 +687,8 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
                     const byteArray = new Uint8Array(byteString.length);
                     for (let j = 0; j < byteString.length; j++) byteArray[j] = byteString.charCodeAt(j);
                     const blob = new Blob([byteArray], { type: mimeType });
-                    // Filename único por cena: scene_001.png, scene_002.png...
-                    // NÃO usar data[index].filename pois pode ser o nome do áudio (igual para todas as cenas)
                     const sceneFilename = `scene_${String(index + 1).padStart(3, '0')}.png`;
                     const publicUrl = await uploadProjectFile(projectId, blob, 'image', sceneFilename);
-                    // Adiciona o cache buster ?v=timestamp para forçar a atualização visual da UI
                     if (publicUrl) finalImageUrl = `${publicUrl}?v=${Date.now()}`;
                 } catch (uploadErr) {
                     console.warn('[TranscriptionTable] Falha no upload da imagem ao Storage, usando base64:', uploadErr);
@@ -577,11 +705,9 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
                 imageCost: !isPol ? 0.035000 : 0.000000
             });
 
-            // Auto-save após gerar imagem utilizando a nova closure funcional blindada contra stale-closures
             if (onForceSave) {
                 onForceSave();
             } else if (project) {
-                // Fallback (antigo método obsoleto, raramente atingido com a v1.9.32)
                 const updatedItems = data.map((it, i) => i === index ? {
                     ...it,
                     imageUrl: finalImageUrl,
@@ -591,11 +717,13 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
                 onSave({ ...project, items: updatedItems } as any);
             }
         } catch (error: any) {
+            console.error(`[TranscriptionTable] Erro na cena ${index}:`, error);
+            setErrorMap(prev => ({ ...prev, [index]: error.message || "Erro desconhecido na API" }));
             const isPol = provider.startsWith('pollinations');
             onUpdateItem(index, { [!isPol ? 'isGeneratingGoogle' : 'isGeneratingPollinations']: false });
-            alert(error.message);
         }
     };
+    
     const handleAddAsset = (type: 'characters' | 'locations' | 'props') => {
         const list = type === 'characters' ? [...projectCharacters] : type === 'locations' ? [...projectLocations] : [...projectProps];
         const newAsset: MasterAsset = {
@@ -619,52 +747,61 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         setIsComparing(true);
         
         const models = [
-            { id: 'google-fast', label: 'IMAGEN 4 FAST' },
-            { id: 'google-nano', label: 'NANO BANANA' },
-            { id: 'pollinations', label: 'FLUX CINEMATIC' },
-            { id: 'pollinations-zimage', label: 'GPT IMAGE' }
+            { id: 'google-fast', label: 'IMAGEN 4' },
+            { id: 'google-nano', label: 'NANO' },
+            { id: 'pollinations', label: 'FLUX' },
+            { id: 'pollinations-zimage', label: 'ZIMAGE' }
         ];
 
-        setComparisonResults(models.map(m => ({ modelId: m.id, label: m.label, imageUrl: '', loading: true })));
+        setComparisonResults(models.map(m => ({ modelId: m.id, label: m.label, imageUrl: '', loading: false })));
+    };
 
+    const handleToggleAsset = (sceneIndex: number, type: 'characters' | 'locations' | 'props', assetId: string) => {
+        const item = data[sceneIndex];
+        const field = type === 'characters' ? 'characterIds' : type === 'locations' ? 'locationIds' : 'propIds';
+        const currentIds = (item as any)[field] || [];
+        
+        const newIds = currentIds.includes(assetId)
+            ? currentIds.filter((id: string) => id !== assetId)
+            : [...currentIds, assetId];
+            
+        onUpdateItem(sceneIndex, { [field]: newIds });
+    };
+
+    const handleGenerateIndividualComparison = async (modelId: string) => {
+        if (!comparisonAsset) return;
+        const { asset } = comparisonAsset;
+        
+        setComparisonResults(prev => prev.map(r => r.modelId === modelId ? { ...r, loading: true, error: undefined } : r));
+        
         const assetPrompt = `${asset.description} style: ${activeStylePrompt}, Visual Integrity: "Pure image only: all surfaces are blank and free of any text or letters."`;
+        
+        try {
+            const result = await generateImageUnified(assetPrompt, modelId, '1:1' as any);
+            setComparisonResults(prev => prev.map(r => r.modelId === modelId ? { ...r, imageUrl: result.image, loading: false } : r));
+        } catch (err: any) {
+            setComparisonResults(prev => prev.map(r => r.modelId === modelId ? { ...r, loading: false, error: err.message } : r));
+        }
+    };
 
-        // Execução paralela
-        models.forEach(async (model) => {
-            try {
-                let result;
-                if (model.id === 'google-fast') {
-                    result = await generateImage(assetPrompt, '1:1' as any, IMAGEN_FAST_MODEL_NAME);
-                } else if (model.id === 'google-nano') {
-                    result = await generateImage(assetPrompt, '1:1' as any, NANO_MODEL_NAME);
-                } else {
-                    const polModel = model.id === 'pollinations-zimage' ? 'gpt-image-large' : 'flux';
-                    result = await generatePollinationsImage(assetPrompt, polModel, "", '1:1' as any);
-                }
-                
-                setComparisonResults(prev => prev.map(r => r.modelId === model.id ? { ...r, imageUrl: result.image, loading: false } : r));
-            } catch (err: any) {
-                setComparisonResults(prev => prev.map(r => r.modelId === model.id ? { ...r, loading: false, error: err.message } : r));
-            }
-        });
+    const handleGenerateAllComparison = async () => {
+        const models = comparisonResults.map(r => r.modelId);
+        await Promise.all(models.map(id => handleGenerateIndividualComparison(id)));
     };
 
     const handleSelectModel = async (modelId: string, imageUrl: string) => {
         if (!comparisonAsset) return;
         const { asset, type } = comparisonAsset;
 
-        // 1. Atualizar a imagem do asset
         const list = type === 'characters' ? [...projectCharacters] : type === 'locations' ? [...projectLocations] : [...projectProps];
         const newList = list.map(a => a.id === asset.id ? { ...a, imageUrl } : a);
         onUpdateProjectInfo(type, newList);
 
-        // 2. Definir este modelo como o PREFERENCIAL do projeto
         if (onUpdateAllItems && project) {
             onSave({ 
                 ...project, 
                 preferredImageModel: modelId as any 
             } as any);
-            alert(`Motor ${modelId.toUpperCase()} definido como padrão para o projeto!`);
         }
 
         setIsComparing(false);
@@ -672,7 +809,6 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
     };
 
     const handleGenerateAssetImage = async (asset: MasterAsset, type: 'characters' | 'locations' | 'props') => {
-        // Obrigatório: Usar a API do dropdown global e o aspect ratio definido do projeto
         const provider = globalProvider;
         const updateList = (update: Partial<MasterAsset>) => {
             onUpdateProjectInfo(type, (prevList: MasterAsset[]) => {
@@ -689,26 +825,7 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
                 : '';
             const assetPrompt = `${realWorldNote ? realWorldNote + ' ' : ''}${asset.description} style: ${activeStylePrompt}, Visual Integrity: "Pure image only: all surfaces are blank and free of any text or letters."`;
 
-            const isPollinationsZ = provider === 'pollinations-zimage';
-            const isGoogleNano = provider === 'google-nano';
-            const isGoogleFast = provider === 'google-fast';
-
-            const assetFinalProvider = (provider === 'pollinations' || provider === 'pollinations-zimage') ? 'pollinations' : 'google';
-            const polModel = isPollinationsZ ? 'gpt-image-large' : 'flux';
-            
-            let geminiModel = IMAGEN_MODEL_NAME; // default Imagen 3
-            if (isGoogleFast) geminiModel = 'imagen-3.0-generate-002'; // Ou o nome correto do Fast
-            if (isGoogleNano) geminiModel = 'gemini-nano'; // Se houver esse mapeamento no service
-
-            // Mas para garantir o mesmo código da galeria, vou usar as constantes do geminiService se estiverem lá
-            // Na galeria usa: IMAGEN_ULTRA_MODEL_NAME, IMAGEN_FAST_MODEL_NAME, NANO_MODEL_NAME
-            
-            const result = assetFinalProvider === 'google'
-                ? await generateImage(assetPrompt, settings.aspectRatio, 
-                    isGoogleFast ? 'imagen-3.0-generate-002' : 
-                    isGoogleNano ? 'gemini-nano' : 'imagen-3.0-generate-002'
-                  )
-                : await generatePollinationsImage(assetPrompt, polModel, "", settings.aspectRatio);
+            const result = await generateImageUnified(assetPrompt, provider, settings.aspectRatio);
 
             let finalImageUrl = result.image;
             if (projectId && result.image.startsWith('data:')) {
@@ -719,7 +836,6 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
                     const byteArray = new Uint8Array(byteString.length);
                     for (let j = 0; j < byteString.length; j++) byteArray[j] = byteString.charCodeAt(j);
                     const blob = new Blob([byteArray], { type: mimeType });
-                    // Save file identically to how scene images are preserved in storage to avoid breaking base64 JSON saves.
                     const assetFilename = `asset_${asset.id}_${Date.now()}.png`;
                     const publicUrl = await uploadProjectFile(projectId, blob, 'image', assetFilename);
                     if (publicUrl) finalImageUrl = `${publicUrl}?v=${Date.now()}`;
@@ -745,7 +861,6 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         bulkAbortRef.current = false;
         for (let i = 0; i < data.length; i++) {
             if (bulkAbortRef.current) break;
-            // Gera imagem para todos os itens exceto se o cara subiu um vídeo importado manualmente
             if (!data[i].importedVideoUrl) await handleGenerateImage(i, globalProvider as any);
         }
         setIsGeneratingAll(false);
@@ -831,7 +946,7 @@ Return ONLY a valid JSON:
             const isPol = provider.startsWith('pollinations');
             const isPollinationsZ = provider === 'pollinations-zimage';
             const isGoogleImagen = provider === 'google-imagen';
-            const polModel = isPollinationsZ ? 'gpt-image-large' : 'flux';
+            const polModel = isPollinationsZ ? GPT_MODEL_NAME : 'flux';
             const geminiModel = isGoogleImagen ? IMAGEN_MODEL_NAME : IMAGE_MODEL_NAME;
 
             const result = !isPol
@@ -839,7 +954,7 @@ Return ONLY a valid JSON:
                 : await generatePollinationsImage(prompt, polModel, "", settings.aspectRatio);
 
             const updatedTitlesList = [...generatedTitles];
-            (updatedTitlesList[idx] as any).imageUrl = result.image; // Extensão temporária para exibição
+            (updatedTitlesList[idx] as any).imageUrl = result.image;
             setGeneratedTitles(updatedTitlesList);
 
             setViewingImageState({
@@ -848,7 +963,6 @@ Return ONLY a valid JSON:
                 filename: `thumbnail_${idx + 1}.png`
             });
 
-            // Auto-save após gerar thumbnail (salva o estado do projeto)
             if (project) {
                 onSave({ ...project, items: data } as any);
             }
@@ -857,89 +971,6 @@ Return ONLY a valid JSON:
         } finally {
             setGeneratingThumbnailMap(prev => ({ ...prev, [idx]: false }));
         }
-    };
-
-    const handleBulkImportImages = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const files = e.target.files;
-        if (!files || files.length === 0 || !projectId) return;
-
-        console.log(`[Import] Iniciando importação em lote de ${files.length} arquivos...`);
-
-        // CRIAR CÓPIA LIMPA E CONTROLADA: Garante que nunca vamos ultrapassar o número original de cenas
-        const originalLength = data.length;
-        const updatedItems = data.map(item => ({ ...item }));
-        const usedIndices = new Set<number>();
-
-        // 1. Converter e ordenar arquivos numericamente pelo prefixo
-        const fileArray = (Array.from(files) as File[]).sort((a, b) => {
-            const numA = parseInt(a.name.match(/^(\d+)/)?.[1] || "999999", 10);
-            const numB = parseInt(b.name.match(/^(\d+)/)?.[1] || "999999", 10);
-            if (numA !== numB) return numA - numB;
-            return a.name.localeCompare(b.name);
-        });
-
-        // 2. PRIMEIRA PASSADA: Mapeamento Direto por Número (Prioridade)
-        const unmappedFiles: File[] = [];
-        for (const file of fileArray) {
-            const numberMatch = file.name.match(/^(\d+)/);
-            if (numberMatch) {
-                const sceneNum = parseInt(numberMatch[1], 10);
-                const targetIdx = sceneNum - 1;
-
-                if (targetIdx >= 0 && targetIdx < originalLength && !usedIndices.has(targetIdx)) {
-                    await processFileImport(file, targetIdx);
-                } else {
-                    unmappedFiles.push(file);
-                }
-            } else {
-                unmappedFiles.push(file);
-            }
-        }
-
-        // 3. SEGUNDA PASSADA: Preencher slots vazios com arquivos sem número ou conflitantes
-        for (const file of unmappedFiles) {
-            const targetIdx = updatedItems.findIndex((item, idx) => 
-                !item.imageUrl && !item.importedVideoUrl && !usedIndices.has(idx)
-            );
-            if (targetIdx !== -1) {
-                await processFileImport(file, targetIdx);
-            }
-        }
-
-        async function processFileImport(file: File, targetIdx: number) {
-            try {
-                usedIndices.add(targetIdx);
-                const isVideo = file.type.startsWith('video/') || file.name.toLowerCase().endsWith('.mp4');
-                const fileType = isVideo ? 'video' : 'image';
-
-                onUpdateItem(targetIdx, { isGeneratingGoogle: true });
-                const publicUrl = await uploadProjectFile(projectId, file, fileType, file.name);
-
-                if (publicUrl) {
-                    const update = {
-                        importedVideoUrl: isVideo ? publicUrl : '',
-                        importedImageUrl: !isVideo ? publicUrl : '',
-                        imageUrl: !isVideo ? publicUrl : updatedItems[targetIdx].imageUrl,
-                        selectedProvider: 'imported' as any,
-                        isGeneratingGoogle: false
-                    };
-                    updatedItems[targetIdx] = { ...updatedItems[targetIdx], ...update };
-                    onUpdateItem(targetIdx, update);
-                    console.log(`[Import] OK: ${file.name} -> Cena ${targetIdx + 1}`);
-                } else {
-                    onUpdateItem(targetIdx, { isGeneratingGoogle: false });
-                }
-            } catch (err) {
-                console.error(`[Import] Erro ao processar ${file.name}:`, err);
-                onUpdateItem(targetIdx, { isGeneratingGoogle: false });
-            }
-        }
-
-        if (importInputRef.current) importInputRef.current.value = '';
-
-        // IMPORTANTE: Corte final para garantir que o array tem o tamanho original
-        const finalItems = updatedItems.slice(0, originalLength);
-        onUpdateProjectInfo('items', finalItems);
     };
 
     const handlePreview = async () => {
@@ -956,7 +987,6 @@ Return ONLY a valid JSON:
     const handleFinalRender = async () => {
         if (!audioFile) return alert("Áudio global necessário.");
         
-        // Verifica Cenas Vazias
         const emptyScenes = data.map((item, index) => {
             const hasMedia = item.imageUrl || item.importedVideoUrl || item.googleImageUrl || item.pollinationsImageUrl || item.importedImageUrl;
             return hasMedia ? null : (index + 1);
@@ -972,7 +1002,6 @@ Return ONLY a valid JSON:
         setVideoStatus(`Sincronizando Master via ${renderEngine === 'ffmpeg' ? 'Desktop' : 'Browser'}...`);
         setRenderElapsed(0);
 
-        // Timer de render
         const startTime = Date.now();
         if (renderTimerRef.current) clearInterval(renderTimerRef.current);
         renderTimerRef.current = setInterval(() => {
@@ -1059,7 +1088,7 @@ Return ONLY a valid JSON:
                     settings.aspectRatio,
                     sub,
                     settings.motionEffects,
-                    60 // maxDuration: 60 segundos
+                    60 
                 );
             }
             
@@ -1081,14 +1110,10 @@ Return ONLY a valid JSON:
 
     return (
         <div className="w-full max-w-[1600px] mx-auto mt-3 flex flex-col gap-3 relative">
-
-            {/* O overlay de renderização agora é gerenciado globalmente pelo App.tsx */}
-
             {
                 showVideoSettings && (
                     <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/95 backdrop-blur-xl p-2 animate-in fade-in duration-300">
                         <div className="bg-slate-900 rounded-[2.5rem] border border-slate-800 w-full max-w-3xl h-auto flex flex-col shadow-2xl overflow-hidden relative">
-                            {/* Header compacto */}
                             <div className="px-3 py-2 border-b border-slate-800 flex justify-between items-center bg-slate-900/40">
                                 <div className="flex items-center gap-2">
                                     <Clapperboard className="text-brand-400" size={18} />
@@ -1096,9 +1121,7 @@ Return ONLY a valid JSON:
                                 </div>
                                 <button onClick={() => setShowVideoSettings(false)} className="p-1.5 hover:bg-slate-800 rounded-full text-slate-500 hover:text-white transition-all"><X size={20} /></button>
                             </div>
-                            {/* Corpo horizontal: legenda à esquerda + preview à direita */}
                             <div className="flex flex-row gap-2 p-2">
-                                {/* Coluna esquerda: controles de legenda + gerar */}
                                 <div className="flex flex-col gap-3 w-[220px] shrink-0">
                                     <label className="text-[10px] font-black uppercase text-brand-400 tracking-widest flex items-center gap-1.5"><MonitorPlay size={11} /> Motor</label>
                                     <div className="flex gap-2">
@@ -1134,7 +1157,6 @@ Return ONLY a valid JSON:
                                                     onClick={() => {
                                                         const cmd = `rm -rf temp_render/* && npx tsx scripts/render_native.ts --id=${projectId} --subs=${includeSubtitles} --presetId=${selectedSubtitlePresetId || (settings.aspectRatio === '16:9' ? 'horizontal-16-9' : 'vertical-9-16')}`;
                                                         navigator.clipboard.writeText(cmd);
-                                                        alert("Comando COMPLETO copiado! Cole no seu Terminal.");
                                                         setIsVideoGenerating(true);
                                                     }}
                                                     className="p-1 hover:bg-brand-500/20 text-brand-400 rounded-md transition-colors"
@@ -1170,7 +1192,6 @@ Return ONLY a valid JSON:
                                         </div>
                                     )}
                                 </div>
-                                {/* Coluna direita: preview */}
                                 <div className="flex-1 flex flex-col gap-2">
                                     <div className="flex justify-end items-center min-h-[28px]">
                                         <label className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex items-center gap-1"><Monitor size={11} /> Amostra</label>
@@ -1213,26 +1234,26 @@ Return ONLY a valid JSON:
                 <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2">
                     <div className="bg-slate-950/40 px-2 py-2 rounded-md border border-slate-800/50 flex flex-col md:flex-row items-center gap-2 shadow-inner flex-1 shadow-lg">
                         <div className="flex items-center gap-3 w-full lg:w-auto">
-                            <span className="text-[11px] font-bold uppercase text-brand-400 tracking-wider italic pr-2 border-r border-slate-800">Direção</span>
-                            <select value={settings.aspectRatio} onChange={(e) => onUpdateGlobalSetting('aspectRatio', e.target.value as '16:9' | '9:16')} className="bg-slate-950 border border-slate-800/60 rounded-sm px-2 py-1 text-[11px] text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white hover:border-slate-700 transition-colors">
+                            <span className="text-[12px] font-bold uppercase text-brand-400 tracking-wider italic pr-2 border-r border-slate-800">Direção</span>
+                            <select value={settings.aspectRatio} onChange={(e) => onUpdateGlobalSetting('aspectRatio', e.target.value as '16:9' | '9:16')} className="bg-slate-950 border border-slate-800/60 rounded-sm px-2 py-1 text-[12px] text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white hover:border-slate-700 transition-colors">
                                 <option value="16:9">16:9</option>
                                 <option value="9:16">9:16</option>
                             </select>
-                            <select value={selectedStyleId} onChange={(e) => onStyleChange(e.target.value)} className="bg-slate-950 border border-slate-800/60 rounded-sm px-2 py-1 text-[11px] text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white hover:border-slate-700 transition-colors min-w-[140px]">
+                            <select value={selectedStyleId} onChange={(e) => onStyleChange(e.target.value)} className="bg-slate-950 border border-slate-800/60 rounded-sm px-2 py-1 text-[12px] text-slate-200 font-bold uppercase outline-none cursor-pointer hover:text-white hover:border-slate-700 transition-colors min-w-[150px]">
                                 {settings.items.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
                             </select>
                             <div className="flex bg-slate-950 p-1 rounded-sm gap-1 border border-slate-800/60">
                                 {[
-                                    { id: 'google-fast', label: 'FAST', color: 'from-blue-400 to-cyan-500', title: 'Imagen 4 Fast' },
-                                    { id: 'google-nano', label: 'NANO', color: 'from-amber-400 to-orange-600', title: 'Nano Banana' },
+                                    { id: 'google-fast', label: 'IMAGEN 4', color: 'from-blue-400 to-cyan-500', title: 'Imagen 4 Fast' },
+                                    { id: 'google-nano', label: 'NANO', color: 'from-amber-400 to-orange-600', title: 'Nano' },
                                     { id: 'pollinations', label: 'FLUX', color: 'from-purple-500 to-pink-600', title: 'Flux Cinematic' },
-                                    { id: 'pollinations-zimage', label: 'GPTI', color: 'from-emerald-500 to-teal-600', title: 'GPT Image' }
+                                    { id: 'pollinations-zimage', label: 'ZIMAGE', color: 'from-emerald-500 to-teal-600', title: 'ZImage' }
                                 ].map(p => (
                                     <button 
                                         key={p.id}
                                         onClick={() => setGlobalProvider(p.id as any)}
                                         title={p.title}
-                                        className={`px-2 py-1 rounded-sm text-[9px] font-black uppercase tracking-tighter transition-all border ${globalProvider === p.id ? `bg-gradient-to-r ${p.color} text-white border-transparent shadow-[0_0_10px_rgba(255,100,0,0.2)]` : 'bg-transparent text-slate-500 border-transparent hover:text-slate-300'}`}
+                                        className={`px-2.5 py-1.5 rounded-sm text-[10px] font-black uppercase tracking-tighter transition-all border ${globalProvider === p.id ? `bg-gradient-to-r ${p.color} text-white border-transparent shadow-[0_0_10px_rgba(255,100,0,0.2)]` : 'bg-transparent text-slate-500 border-transparent hover:text-slate-300'}`}
                                     >
                                         {p.label}
                                     </button>
@@ -1240,55 +1261,61 @@ Return ONLY a valid JSON:
                             </div>
                         </div>
                         <div className="flex items-center gap-3 ml-auto w-full md:w-auto overflow-x-auto scrollbar-hide shrink-0 pb-1">
-                            <span className="text-[11px] font-bold uppercase tracking-wider text-brand-400 mr-2 border-r border-slate-800 pr-4 mt-1">
+                            <span className="text-[12px] font-bold uppercase tracking-wider text-brand-400 mr-2 border-r border-slate-800 pr-4 mt-1">
                                 {data.filter(i => i.imageUrl || i.importedVideoUrl || i.importedImageUrl).length} / {data.length}
                             </span>
                             <div className="flex items-center gap-1.5 h-full">
-                                {/* SINTONIA oculto por ora */}
-                                {/* AJUSTAR oculto por ora */}
-
-                                <div className="flex flex-col items-center gap-1 w-[80px]">
+                                <div className="flex flex-col items-center gap-1 w-[85px]">
                                     <button 
                                         onClick={handleGenerateMissing} 
                                         disabled={isGeneratingAll || data.length === 0}
-                                        className={`w-full h-8 rounded-sm transition-all border flex items-center justify-center shadow-lg ${isGeneratingAll ? 'bg-amber-500/20 border-amber-500/40 text-amber-400 animate-pulse' : 'bg-slate-900 border-slate-700 text-amber-400 hover:bg-amber-500 hover:text-white hover:border-amber-500 shadow-amber-500/5'}`}
+                                        className={`w-full h-9 rounded-sm transition-all border flex items-center justify-center shadow-lg ${isGeneratingAll ? 'bg-amber-500/20 border-amber-500/40 text-amber-400 animate-pulse' : 'bg-slate-900 border-slate-700 text-amber-400 hover:bg-amber-500 hover:text-white hover:border-amber-500 shadow-amber-500/5'}`}
                                     >
-                                        {isGeneratingAll ? <Loader2 size={14} className="animate-spin" /> : <Layers size={14} />}
+                                        {isGeneratingAll ? <Loader2 size={16} className="animate-spin" /> : <Layers size={16} />}
                                     </button>
-                                    <span className="text-[11px] font-bold uppercase text-slate-500 tracking-wider text-center mt-0.5">Faltas</span>
+                                    <span className="text-[12px] font-bold uppercase text-slate-500 tracking-wider text-center mt-0.5">Faltas</span>
                                 </div>
 
-                                <div className="flex flex-col items-center gap-1 w-[80px]">
+                                <div className="flex flex-col items-center gap-1 w-[85px]">
                                     <button 
                                         onClick={handleGenerateAll} 
                                         disabled={isGeneratingAll || data.length === 0}
-                                        className={`w-full h-8 rounded-sm transition-all border flex items-center justify-center shadow-lg ${isGeneratingAll ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400 animate-pulse' : 'bg-brand-500 border-brand-400 text-white hover:bg-brand-400'}`}
+                                        className={`w-full h-9 rounded-sm transition-all border flex items-center justify-center shadow-lg ${isGeneratingAll ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400 animate-pulse' : 'bg-brand-500 border-brand-400 text-white hover:bg-brand-400'}`}
                                     >
-                                        {isGeneratingAll ? <Ban size={16} /> : <RefreshCw size={16} />}
+                                        {isGeneratingAll ? <Ban size={18} /> : <RefreshCw size={18} />}
                                     </button>
-                                    <span className="text-[11px] font-bold uppercase text-slate-500 tracking-wider text-center mt-0.5">Tudo</span>
+                                    <span className="text-[12px] font-bold uppercase text-slate-500 tracking-wider text-center mt-0.5">Tudo</span>
                                 </div>
                             </div>
 
-                            <div className="h-8 w-px bg-slate-800 mx-1"></div>
+                            <div className="h-9 w-px bg-slate-800 mx-1"></div>
 
-                            {/* Upload + VIDEO grudados sem gap */}
                             <div className="flex items-center">
-                                <button onClick={() => importInputRef.current?.click()} title="Import em Lote" className="h-8 w-10 bg-slate-900 border border-slate-700 rounded-l-xl border-r-0 text-slate-400 hover:text-white transition-all flex items-center justify-center shadow-lg"><Upload size={14} /></button>
+                                <button 
+                                    onClick={() => importInputRef.current?.click()} 
+                                    onDragOver={handleDragOverImport}
+                                    onDragLeave={handleDragLeaveImport}
+                                    onDrop={handleDropImport}
+                                    title="Import em Lote (Arraste arquivos aqui)" 
+                                    className={`h-9 w-12 border rounded-l-2xl border-r-0 transition-all flex items-center justify-center shadow-lg ${isDraggingImport ? 'bg-brand-500 text-white border-brand-400 animate-pulse scale-110 z-50' : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-white'}`}
+                                >
+                                    <Upload size={16} className="pointer-events-none" />
+                                </button>
                                 <input type="file" multiple ref={importInputRef} onChange={handleBulkImportImages} className="hidden" accept="image/*,video/*" />
                                 <button 
                                     onClick={() => !isSyncError && setShowVideoSettings(true)} 
                                     disabled={isSyncError}
-                                    className={`h-8 flex items-center justify-center gap-1.5 px-2 rounded-r-xl border border-l-0 text-[11px] font-bold uppercase tracking-wider shadow-lg transition-all active:scale-95 ${isSyncError ? 'bg-slate-800 text-slate-500 cursor-not-allowed border-red-500/20' : 'bg-brand-500 hover:bg-brand-400 text-white border-brand-400/30'}`}
+                                    className={`h-9 flex items-center justify-center gap-1.5 px-3 rounded-r-2xl border border-l-0 text-[12px] font-black uppercase tracking-wider shadow-lg transition-all active:scale-95 ${isSyncError ? 'bg-slate-800 text-slate-500 cursor-not-allowed border-red-500/20' : 'bg-brand-500 hover:bg-brand-400 text-white border-brand-400/30'}`}
                                 >
-                                    VIDEO
+                                    <Play size={14} fill="currentColor" /> VIDEO
                                 </button>
                             </div>
                         </div>
                     </div>
                 </div>
+            </div>
 
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between border-b border-slate-800 pb-0 gap-2">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between border-b border-slate-800 pb-0 gap-2">
                 <div className="flex items-center gap-1 overflow-x-auto whitespace-nowrap scrollbar-hide">
                     {['scenes', 'characters', 'locations', 'props', 'titles'].map(tab => (
                         <button key={tab} onClick={() => setActiveTab(tab as TabMode)} className={`px-3 py-2 text-[12px] font-black uppercase tracking-widest border-b-2 transition-all ${activeTab === tab ? 'text-brand-400 border-brand-500 bg-brand-500/5' : 'text-slate-500 border-transparent hover:text-slate-300'}`}>
@@ -1327,9 +1354,8 @@ Return ONLY a valid JSON:
 
                 </div>
             </div>
-        </div>
 
-        <div className="px-3">
+            <div className="px-3">
                 <TimelineVisual ref={timelineRef} items={data} onPreviewStateChange={setIsTimelinePreviewActive} onImageClick={(idx) => {
                     const el = document.getElementById(`scene-card-${idx}`);
                     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1428,7 +1454,26 @@ Return ONLY a valid JSON:
                                                     {item.importedVideoUrl ? <video src={item.importedVideoUrl} className="w-full h-full object-cover" controls={false} muted autoPlay loop onClick={() => setViewingImageState({ imageUrl: item.importedVideoUrl!, promptData: getPromptData(index), filename: `cena_${index + 1}.mp4`, sourceIndex: index, sourceType: 'scene'})} /> : <img src={item.imageUrl} onClick={() => setViewingImageState({ imageUrl: item.imageUrl!, promptData: getPromptData(index), filename: `cena_${index + 1}.png`, sourceIndex: index, sourceType: 'scene' })} className="w-full h-full object-cover cursor-zoom-in" />}
                                                 </>
                                             ) : <div className="w-full h-full flex items-center justify-center opacity-20"><ImageIcon size={48} /></div>}
-                                            {(item.isGeneratingGoogle || item.isGeneratingPollinations) && <div className="absolute inset-0 bg-slate-950/95 flex flex-col items-center justify-center gap-2"><Loader2 className="animate-spin text-brand-400" size={40} /></div>}
+                                            {(item.isGeneratingGoogle || item.isGeneratingPollinations || uploadingManual[index]) && (
+                                                <div className="absolute inset-0 bg-slate-950/95 flex flex-col items-center justify-center gap-2 z-20">
+                                                    <Loader2 className="animate-spin text-brand-400" size={40} />
+                                                    {uploadingManual[index] && <span className="text-[10px] font-black uppercase text-brand-400 animate-pulse">Subindo Arquivo...</span>}
+                                                </div>
+                                            )}
+                                            
+                                            {errorMap[index] && (
+                                                <div className="absolute inset-0 bg-red-950/90 backdrop-blur-sm flex flex-col items-center justify-center p-4 text-center z-10 animate-in fade-in duration-300">
+                                                    <AlertTriangle className="text-red-500 mb-2" size={32} />
+                                                    <span className="text-[11px] font-black uppercase text-red-500 tracking-widest mb-1">Erro na Geração</span>
+                                                    <p className="text-[10px] text-red-200/70 line-clamp-2 mb-4 px-2 italic">{errorMap[index]}</p>
+                                                    <button 
+                                                        onClick={() => handleGenerateImage(index)}
+                                                        className="px-4 py-1.5 bg-red-500 hover:bg-red-400 text-white text-[11px] font-black uppercase rounded-full transition-all active:scale-95 flex items-center gap-2"
+                                                    >
+                                                        <RefreshCw size={12} /> Re-tentar
+                                                    </button>
+                                                </div>
+                                            )}
                                             <div className="absolute top-4 right-4 flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                                 <button onClick={() => handleGenerateImage(index, globalProvider as any)} title="Recriar Imagem (Manter Prompt)" className="p-2.5 bg-brand-500 hover:bg-brand-400 text-white rounded-full shadow-xl transition-colors"><Zap size={14} /></button>
                                                 <button onClick={() => {
@@ -1445,25 +1490,69 @@ Return ONLY a valid JSON:
                                         </div>
 
                                         {/* Assets Presentes na Cena */}
-                                        <div className="flex flex-wrap gap-2">
-                                            {item.characterIds?.map(charId => {
-                                                const char = projectCharacters.find(c => c.id === charId);
-                                                if (!char) return null;
-                                                return (
-                                                    <div key={charId} className="bg-fuchsia-500/10 border border-fuchsia-500/30 px-2.5 py-1 rounded-sm flex items-center gap-1.5 text-[10px] font-black text-fuchsia-400 uppercase tracking-widest">
-                                                        <Users size={10} /> {char.name}
-                                                    </div>
-                                                );
-                                            })}
-                                            {item.locationIds?.map(locId => {
-                                                const loc = projectLocations.find(l => l.id === locId);
-                                                if (!loc) return null;
-                                                return (
-                                                    <div key={locId} className="bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-sm flex items-center gap-1.5 text-[10px] font-black text-emerald-400 uppercase tracking-widest">
-                                                        <MapPin size={10} /> {loc.name}
-                                                    </div>
-                                                );
-                                            })}
+                                        <div className="flex flex-col gap-2 p-1 bg-slate-950/30 rounded-xl border border-white/5">
+                                            <div className="flex flex-wrap gap-1.5">
+                                                {((item.characterIds && item.characterIds.length > 0) ? item.characterIds : (item as any).character_ids)?.map(charId => {
+                                                    const char = projectCharacters.find(c => c.id === charId);
+                                                    if (!char) return null;
+                                                    return (
+                                                        <div key={charId} className="group/tag bg-fuchsia-500/10 border border-fuchsia-500/20 px-2 py-0.5 rounded-full flex items-center gap-1.5 text-[10px] font-black text-fuchsia-400 uppercase tracking-tighter">
+                                                            <Users size={8} /> {char.name}
+                                                            <button onClick={() => handleToggleAsset(index, 'characters', charId)} className="opacity-0 group-hover/tag:opacity-100 hover:text-white transition-opacity">
+                                                                <X size={10} />
+                                                            </button>
+                                                        </div>
+                                                    );
+                                                })}
+                                                {((item.locationIds && item.locationIds.length > 0) ? item.locationIds : (item as any).location_ids)?.map(locId => {
+                                                    const loc = projectLocations.find(l => l.id === locId);
+                                                    if (!loc) return null;
+                                                    return (
+                                                        <div key={locId} className="group/tag bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full flex items-center gap-1.5 text-[10px] font-black text-emerald-400 uppercase tracking-tighter">
+                                                            <MapPin size={8} /> {loc.name}
+                                                            <button onClick={() => handleToggleAsset(index, 'locations', locId)} className="opacity-0 group-hover/tag:opacity-100 hover:text-white transition-opacity">
+                                                                <X size={10} />
+                                                            </button>
+                                                        </div>
+                                                    );
+                                                })}
+                                                {((item.propIds && item.propIds.length > 0) ? item.propIds : (item as any).prop_ids)?.map(propId => {
+                                                    const prop = projectProps.find(p => p.id === propId);
+                                                    if (!prop) return null;
+                                                    return (
+                                                        <div key={propId} className="group/tag bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-full flex items-center gap-1.5 text-[10px] font-black text-amber-400 uppercase tracking-tighter">
+                                                            <Box size={8} /> {prop.name}
+                                                            <button onClick={() => handleToggleAsset(index, 'props', propId)} className="opacity-0 group-hover/tag:opacity-100 hover:text-white transition-opacity">
+                                                                <X size={10} />
+                                                            </button>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                            
+                                            <div className="flex items-center gap-1 mt-1 px-1">
+                                                <button 
+                                                    onClick={() => setLinkingAsset({ index, type: 'characters' })}
+                                                    className="p-1.5 bg-slate-800 hover:bg-fuchsia-500/20 text-slate-500 hover:text-fuchsia-400 rounded-lg transition-all border border-transparent hover:border-fuchsia-500/30"
+                                                    title="Relacionar Personagem"
+                                                >
+                                                    <Users size={12} />
+                                                </button>
+                                                <button 
+                                                    onClick={() => setLinkingAsset({ index, type: 'locations' })}
+                                                    className="p-1.5 bg-slate-800 hover:bg-emerald-500/20 text-slate-500 hover:text-emerald-400 rounded-lg transition-all border border-transparent hover:border-emerald-500/30"
+                                                    title="Relacionar Cenário"
+                                                >
+                                                    <MapPin size={12} />
+                                                </button>
+                                                <button 
+                                                    onClick={() => setLinkingAsset({ index, type: 'props' })}
+                                                    className="p-1.5 bg-slate-800 hover:bg-amber-500/20 text-slate-500 hover:text-amber-400 rounded-lg transition-all border border-transparent hover:border-amber-500/30"
+                                                    title="Relacionar Objeto"
+                                                >
+                                                    <Box size={12} />
+                                                </button>
+                                            </div>
                                         </div>
 
                                         <div className="space-y-4">
@@ -1499,16 +1588,17 @@ Return ONLY a valid JSON:
                                                 <div className="space-y-1">
                                                     <div className="flex justify-between items-center px-1">
                                                         <span className="text-[0.7rem] font-bold text-fuchsia-500/60 uppercase">Subject</span>
-                                                        {!item.subject && projectCharacters.some(c => item.characterIds?.includes(c.id)) && <span className="text-[0.55rem] text-fuchsia-500/40 italic uppercase tracking-tighter">Auto-Link Ativo</span>}
+                                                        {!item.subject && projectCharacters.some(c => (item.characterIds || (item as any).character_ids)?.includes(c.id)) && <span className="text-[0.55rem] text-fuchsia-500/40 italic uppercase tracking-tighter">Auto-Link Ativo</span>}
                                                     </div>
                                                     <input
                                                         value={item.subject || ''}
                                                         placeholder={(() => {
-                                                            const relevantChars = projectCharacters.filter(c => item.characterIds?.includes(c.id));
+                                                            const ids = (item.characterIds && item.characterIds.length > 0) ? item.characterIds : (item as any).character_ids;
+                                                            const relevantChars = projectCharacters.filter(c => ids?.includes(c.id));
                                                             return relevantChars.length > 0 ? relevantChars.map(c => c.name).join(", ") : "Personagem ou Assunto Principal...";
                                                         })()}
                                                         onChange={e => onUpdateItem(index, { subject: e.target.value })}
-                                                        className={`w-full bg-slate-950 border border-slate-800 rounded-sm p-2 text-[11px] outline-none focus:border-fuchsia-500/50 transition-colors ${!item.subject && projectCharacters.some(c => item.characterIds?.includes(c.id)) ? 'text-slate-500 italic' : 'text-slate-300'}`}
+                                                        className={`w-full bg-slate-950 border border-slate-800 rounded-sm p-2 text-[11px] outline-none focus:border-fuchsia-500/50 transition-colors ${!item.subject && projectCharacters.some(c => (item.characterIds || (item as any).character_ids)?.includes(c.id)) ? 'text-slate-500 italic' : 'text-slate-300'}`}
                                                     />
                                                 </div>
 
@@ -1878,7 +1968,7 @@ Return ONLY a valid JSON:
                                                 </div>
                                             </div>
                                             <div className="flex justify-between items-center pt-2 border-t border-slate-800/50">
-                                                <button onClick={() => { navigator.clipboard.writeText(item.title); alert("Copiado!"); }} className="text-brand-400 text-[11px] font-black uppercase">Copiar Título</button>
+                                                <button onClick={() => { navigator.clipboard.writeText(item.title); }} className="text-brand-400 text-[11px] font-black uppercase">Copiar Título</button>
                                                 {item.abWinnerReason && <span className="text-[11px] font-black text-slate-700 uppercase">A/B Winner Priority</span>}
                                             </div>
                                         </div>
@@ -1925,14 +2015,22 @@ Return ONLY a valid JSON:
                 <div className="fixed inset-0 z-[100] flex items-center justify-center p-2 bg-slate-950/90 backdrop-blur-xl">
                     <div className="bg-slate-900 border border-slate-800 rounded-[3rem] w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
                         <div className="p-8 border-b border-slate-800 flex justify-between items-center bg-slate-900/80">
-                            <div>
-                                <h3 className="text-[11px] font-black text-white uppercase tracking-tighter flex items-center gap-3">
-                                    <Sparkles className="text-brand-400" size={24} /> 
-                                    Comparar Modelos de IA
-                                </h3>
-                                <p className="text-slate-500 text-[11px] font-bold uppercase tracking-widest mt-1">
-                                    Escolha o melhor visual para definir o padrão do projeto
-                                </p>
+                            <div className="flex items-center gap-8">
+                                <div>
+                                    <h3 className="text-[11px] font-black text-white uppercase tracking-tighter flex items-center gap-3">
+                                        <Sparkles className="text-brand-400" size={24} /> 
+                                        Comparar Modelos de IA
+                                    </h3>
+                                    <p className="text-slate-500 text-[11px] font-bold uppercase tracking-widest mt-1">
+                                        Escolha o melhor visual para definir o padrão do projeto
+                                    </p>
+                                </div>
+                                <button 
+                                    onClick={handleGenerateAllComparison}
+                                    className="px-6 py-3 bg-brand-500 hover:bg-brand-400 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-xl shadow-brand-500/20 transition-all flex items-center gap-2"
+                                >
+                                    <Zap size={14} /> Gerar Todos
+                                </button>
                             </div>
                             <button 
                                 onClick={() => setIsComparing(false)}
@@ -1955,12 +2053,18 @@ Return ONLY a valid JSON:
                                             {res.imageUrl ? (
                                                 <>
                                                     <img src={res.imageUrl} className="w-full h-full object-cover" />
-                                                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center backdrop-blur-[2px]">
+                                                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-4 backdrop-blur-[2px]">
                                                         <button 
                                                             onClick={() => handleSelectModel(res.modelId, res.imageUrl)}
-                                                            className="bg-brand-500 hover:bg-brand-400 text-white px-8 py-3 rounded-full font-black uppercase text-[11px] tracking-widest shadow-2xl transform translate-y-4 group-hover:translate-y-0 transition-all active:scale-95"
+                                                            className="bg-brand-500 hover:bg-brand-400 text-white px-8 py-3 rounded-full font-black uppercase text-[11px] tracking-widest shadow-2xl transform translate-y-4 group-hover:translate-y-0 transition-all active:scale-95 w-48"
                                                         >
                                                             Escolher este Estilo
+                                                        </button>
+                                                        <button 
+                                                            onClick={() => handleGenerateIndividualComparison(res.modelId)}
+                                                            className="bg-slate-800/80 hover:bg-slate-700 text-white px-8 py-3 rounded-full font-black uppercase text-[11px] tracking-widest shadow-2xl transform translate-y-4 group-hover:translate-y-0 transition-all active:scale-95 w-48 border border-white/10 backdrop-blur-md"
+                                                        >
+                                                            Regerar
                                                         </button>
                                                     </div>
                                                 </>
@@ -1978,8 +2082,24 @@ Return ONLY a valid JSON:
                                                             <div className="text-center p-3 space-y-2">
                                                                 <Ban className="mx-auto text-red-500/50" size={32} />
                                                                 <p className="text-[10px] text-red-400 font-bold uppercase leading-tight">{res.error}</p>
+                                                                <button 
+                                                                    onClick={() => handleGenerateIndividualComparison(res.modelId)}
+                                                                    className="mt-4 px-6 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-[9px] font-black uppercase text-white tracking-widest transition-all"
+                                                                >
+                                                                    Re-tentar
+                                                                </button>
                                                             </div>
-                                                        ) : <Monitor size={48} />
+                                                        ) : (
+                                                            <button 
+                                                                onClick={() => handleGenerateIndividualComparison(res.modelId)}
+                                                                className="flex flex-col items-center gap-3 group/btn"
+                                                            >
+                                                                <div className="p-4 bg-slate-800 rounded-full group-hover/btn:bg-brand-500 group-hover/btn:text-white transition-all shadow-xl">
+                                                                    <Zap size={32} />
+                                                                </div>
+                                                                <span className="text-[10px] font-black uppercase tracking-widest opacity-40 group-hover/btn:opacity-100">Gerar Agora</span>
+                                                            </button>
+                                                        )
                                                     )}
                                                 </div>
                                             )}
@@ -1994,6 +2114,84 @@ Return ONLY a valid JSON:
                                 O modelo escolhido será aplicado automaticamente em todas as novas gerações de cena
                             </p>
                         </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Modal de Seleção de Ativos */}
+            {linkingAsset && (
+                <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-xl animate-in fade-in duration-200">
+                    <div className="bg-slate-900 border border-slate-800 rounded-[2.5rem] w-full max-w-lg overflow-hidden flex flex-col shadow-2xl">
+                        <div className="p-6 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
+                            <h3 className="text-xs font-black text-white uppercase tracking-widest flex items-center gap-3">
+                                {linkingAsset.type === 'characters' ? <Users size={16} className="text-fuchsia-400" /> : linkingAsset.type === 'locations' ? <MapPin size={16} className="text-emerald-400" /> : <Box size={16} className="text-amber-400" />}
+                                Selecionar {linkingAsset.type === 'characters' ? 'Personagem' : linkingAsset.type === 'locations' ? 'Cenário' : 'Objeto'}
+                            </h3>
+                            <button onClick={() => setLinkingAsset(null)} className="p-2 bg-slate-800 rounded-full hover:bg-slate-700 transition-colors">
+                                <X size={20} />
+                            </button>
+                        </div>
+                        
+                        <div className="p-4 max-h-[60vh] overflow-y-auto space-y-2 custom-scrollbar">
+                            {(linkingAsset.type === 'characters' ? projectCharacters : linkingAsset.type === 'locations' ? projectLocations : projectProps).length === 0 ? (
+                                <div className="p-8 text-center text-slate-500 text-[11px] uppercase font-black italic">
+                                    Nenhum item cadastrado nesta categoria.
+                                </div>
+                            ) : (
+                                (linkingAsset.type === 'characters' ? projectCharacters : linkingAsset.type === 'locations' ? projectLocations : projectProps).map(asset => {
+                                    const field = linkingAsset.type === 'characters' ? 'characterIds' : linkingAsset.type === 'locations' ? 'locationIds' : 'propIds';
+                                    const isSelected = (data[linkingAsset.index] as any)[field]?.includes(asset.id);
+                                    
+                                    return (
+                                        <button
+                                            key={asset.id}
+                                            onClick={() => handleToggleAsset(linkingAsset.index, linkingAsset.type, asset.id)}
+                                            className={`w-full flex items-center gap-4 p-3 rounded-2xl border transition-all ${isSelected ? 'bg-brand-500/10 border-brand-500 text-white' : 'bg-slate-800/50 border-slate-700 text-slate-400 hover:bg-slate-800'}`}
+                                        >
+                                            <div className="w-12 h-12 rounded-xl overflow-hidden bg-black shrink-0 border border-white/5">
+                                                {asset.imageUrl ? <img src={asset.imageUrl} className="w-full h-full object-cover" /> : <ImageIcon className="w-full h-full p-3 opacity-20" />}
+                                            </div>
+                                            <div className="flex-1 text-left">
+                                                <div className="text-[11px] font-black uppercase tracking-tight">{asset.name}</div>
+                                                <div className="text-[9px] opacity-40 line-clamp-1">{asset.description}</div>
+                                            </div>
+                                            <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${isSelected ? 'border-brand-500 bg-brand-500 text-white' : 'border-slate-700'}`}>
+                                                {isSelected && <Check size={12} />}
+                                            </div>
+                                        </button>
+                                    );
+                                })
+                            )}
+                        </div>
+                        
+                        <div className="p-6 bg-slate-900/80 border-t border-slate-800">
+                            <button 
+                                onClick={() => setLinkingAsset(null)}
+                                className="w-full py-4 bg-slate-800 hover:bg-slate-750 text-white rounded-2xl font-black uppercase text-[11px] tracking-widest transition-all"
+                            >
+                                Concluído
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {bulkUploadProgress && (
+                <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] w-full max-w-md animate-in slide-in-from-bottom duration-500">
+                    <div className="bg-slate-900/90 backdrop-blur-xl border border-brand-500/30 p-4 rounded-2xl shadow-[0_0_50px_rgba(14,165,233,0.2)] flex flex-col gap-3">
+                        <div className="flex justify-between items-end">
+                            <div className="flex flex-col">
+                                <span className="text-[10px] font-black uppercase text-brand-400 tracking-[0.2em] mb-1">Importação em Lote</span>
+                                <span className="text-xs font-bold text-white uppercase">{bulkUploadProgress.current} de {bulkUploadProgress.total} arquivos</span>
+                            </div>
+                            <span className="text-xl font-black text-brand-400 italic">{Math.round(bulkUploadProgress.percentage)}%</span>
+                        </div>
+                        <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden border border-white/5">
+                            <div 
+                                className="h-full bg-gradient-to-r from-brand-600 to-brand-400 transition-all duration-300 shadow-[0_0_15px_rgba(14,165,233,0.3)]" 
+                                style={{ width: `${bulkUploadProgress.percentage}%` }}
+                            />
+                        </div>
+                        <p className="text-[9px] font-mono text-slate-500 uppercase tracking-widest text-center">Enviando para o servidor... não feche a aba</p>
                     </div>
                 </div>
             )}

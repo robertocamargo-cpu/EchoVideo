@@ -1,10 +1,10 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { Palette, Sparkles, Zap, Loader2, ImageIcon, ArrowLeft, Download, Info, RefreshCw, Trash2, CheckCircle, PlayCircle } from 'lucide-react';
 import { AppSettings, ImageStyleOption, StyleExample } from '../types';
-import { generateImage, IMAGEN_FAST_MODEL_NAME, NANO_MODEL_NAME } from '../services/geminiService';
-import { generatePollinationsImage } from '../services/pollinationsService';
-import { saveStyleExample, getStyleExamples, clearStyleExamples } from '../services/storageService';
+import { generateImageUnified } from '../services/mediaService';
+import { getStyleExamples, saveStyleExample, clearStyleExamples } from '../services/storageService';
+import { generatePollinationsImage, GPT_MODEL_NAME } from '../services/pollinationsService';
+import { generateImage, IMAGEN_ULTRA_MODEL_NAME, IMAGEN_FAST_MODEL_NAME, NANO_MODEL_NAME } from '../services/geminiService';
 
 interface ImageStylesGalleryProps {
   settings: AppSettings;
@@ -16,7 +16,7 @@ const TEST_PROMPT_BASE = "Cenário: O interior de uma biblioteca antiga e mágic
 export const ImageStylesGallery: React.FC<ImageStylesGalleryProps> = ({ settings, onBack }) => {
   const [examples, setExamples] = useState<Record<string, StyleExample>>({});
   const [loadingStyles, setLoadingStyles] = useState<Record<string, boolean>>({});
-  const [provider, setProvider] = useState<'google-nano' | 'google-imagen' | 'pollinations-flux' | 'pollinations-zimage'>('google-imagen');
+  const [provider, setProvider] = useState<'google-fast' | 'google-nano' | 'pollinations-flux' | 'pollinations-gpt'>('google-fast');
   const [isAutoGenerating, setIsAutoGenerating] = useState(false);
   const [autoGenProgress, setAutoGenProgress] = useState(0);
   const [autoGenCurrentLabel, setAutoGenCurrentLabel] = useState('');
@@ -27,7 +27,7 @@ export const ImageStylesGallery: React.FC<ImageStylesGalleryProps> = ({ settings
     'google-fast': { url: '', loading: false, error: '' },
     'google-nano': { url: '', loading: false, error: '' },
     'pollinations-flux': { url: '', loading: false, error: '' },
-    'pollinations-zimage': { url: '', loading: false, error: '' }
+    'pollinations-gpt': { url: '', loading: false, error: '' }
   });
 
   const abortRef = useRef(false);
@@ -45,7 +45,7 @@ export const ImageStylesGallery: React.FC<ImageStylesGalleryProps> = ({ settings
         'google-fast': { url: '', loading: false, error: '' },
         'google-nano': { url: '', loading: false, error: '' },
         'pollinations-flux': { url: '', loading: false, error: '' },
-        'pollinations-zimage': { url: '', loading: false, error: '' }
+        'pollinations-gpt': { url: '', loading: false, error: '' }
       };
 
       cached.forEach(ex => {
@@ -54,7 +54,9 @@ export const ImageStylesGallery: React.FC<ImageStylesGalleryProps> = ({ settings
             benchMap[ex.providerId as keyof typeof benchMap] = { url: ex.imageUrl, loading: false, error: '' };
           }
         } else {
-          map[ex.styleId] = ex;
+          // Chave composta: styleId_providerId
+          const key = ex.providerId ? `${ex.styleId}_${ex.providerId}` : ex.styleId;
+          map[key] = ex;
         }
       });
       setExamples(map);
@@ -80,7 +82,7 @@ export const ImageStylesGallery: React.FC<ImageStylesGalleryProps> = ({ settings
       if (targetProvider === 'google-fast') result = await generateImage(finalPrompt, '16:9', IMAGEN_FAST_MODEL_NAME);
       else if (targetProvider === 'google-nano') result = await generateImage(finalPrompt, '16:9', NANO_MODEL_NAME);
       else if (targetProvider === 'pollinations-flux') result = await generatePollinationsImage(finalPrompt, 'flux', "", '16:9');
-      else if (targetProvider === 'pollinations-zimage') result = await generatePollinationsImage(finalPrompt, 'gpt-image-large', "", '16:9');
+      else if (targetProvider === 'pollinations-gpt') result = await generatePollinationsImage(finalPrompt, GPT_MODEL_NAME, "", '16:9');
       else throw new Error("Provedor inválido");
 
       const masterExample: StyleExample = {
@@ -99,7 +101,7 @@ export const ImageStylesGallery: React.FC<ImageStylesGalleryProps> = ({ settings
 
   const handleGlobalBenchmark = async () => {
     // Dispara as 4 simultaneamente
-    const providers = ['google-fast', 'google-nano', 'pollinations-flux', 'pollinations-zimage'];
+    const providers = ['google-fast', 'google-nano', 'pollinations-flux', 'pollinations-gpt'];
     await Promise.all(providers.map(p => handleGenerateBenchmark(p)));
   };
 
@@ -109,12 +111,7 @@ export const ImageStylesGallery: React.FC<ImageStylesGalleryProps> = ({ settings
       const promptBase = userIdea.trim() || TEST_PROMPT_BASE;
       const finalPrompt = `${promptBase} style: ${style.prompt}, Strictly: Absolutely no text, no written characters, no alphabet, no letters, no words, no typography. Pure imagery only.`;
 
-      let result: { image: string };
-      if (targetProvider === 'google-fast') result = await generateImage(finalPrompt, '16:9', IMAGEN_FAST_MODEL_NAME);
-      else if (targetProvider === 'google-nano') result = await generateImage(finalPrompt, '16:9', NANO_MODEL_NAME);
-      else if (targetProvider === 'pollinations-flux') result = await generatePollinationsImage(finalPrompt, 'flux', "", '16:9');
-      else if (targetProvider === 'pollinations-zimage') result = await generatePollinationsImage(finalPrompt, 'gpt-image-large', "", '16:9');
-      else throw new Error("Provedor inválido");
+      const result = await generateImageUnified(finalPrompt, targetProvider, '16:9');
 
       const newExample: StyleExample = {
         styleId: style.id,
@@ -125,7 +122,8 @@ export const ImageStylesGallery: React.FC<ImageStylesGalleryProps> = ({ settings
       };
 
       await saveStyleExample(newExample);
-      setExamples(prev => ({ ...prev, [style.id]: newExample }));
+      const key = `${style.id}_${targetProvider}`;
+      setExamples(prev => ({ ...prev, [key]: newExample }));
     } catch (error: any) {
       if (!silent) alert(`Erro ao gerar estilo ${style.label} com ${targetProvider}: ${error.message}`);
       throw error;
@@ -134,7 +132,7 @@ export const ImageStylesGallery: React.FC<ImageStylesGalleryProps> = ({ settings
     }
   };
 
-  const handleManualBuild = async (targetProvider: 'google-fast' | 'google-nano' | 'pollinations-flux' | 'pollinations-zimage') => {
+  const handleManualBuild = async (targetProvider: 'google-fast' | 'google-nano' | 'pollinations-flux' | 'pollinations-gpt') => {
     if (isAutoGenerating) return;
     setProvider(targetProvider);
     setIsAutoGenerating(true);
@@ -168,7 +166,7 @@ export const ImageStylesGallery: React.FC<ImageStylesGalleryProps> = ({ settings
       'google-fast': { url: '', loading: false, error: '' },
       'google-nano': { url: '', loading: false, error: '' },
       'pollinations-flux': { url: '', loading: false, error: '' },
-      'pollinations-zimage': { url: '', loading: false, error: '' }
+      'pollinations-gpt': { url: '', loading: false, error: '' }
     });
   };
 
@@ -238,15 +236,26 @@ export const ImageStylesGallery: React.FC<ImageStylesGalleryProps> = ({ settings
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8">
           {[
             { id: 'google-fast', label: 'Imagen 4 Fast', color: 'from-blue-400 to-cyan-500' },
-            { id: 'google-nano', label: 'Nano Banana $0,039', color: 'from-amber-400 to-orange-600' },
+            { id: 'google-nano', label: 'Nano Banana', color: 'from-amber-400 to-orange-600' },
             { id: 'pollinations-flux', label: 'Flux Cinematic', color: 'from-purple-500 to-pink-600' },
-            { id: 'pollinations-zimage', label: 'GPT Image', color: 'from-emerald-500 to-teal-600' }
+            { id: 'pollinations-gpt', label: 'Image GPT', color: 'from-emerald-500 to-teal-600' }
           ].map((m) => (
             <div key={m.id} className={`bg-slate-900/30 border border-slate-800/50 rounded-[2.5rem] overflow-hidden flex flex-col shadow-2xl transition-all duration-500 group relative ${provider === m.id ? 'ring-2 ring-brand-500/50 scale-[1.02] bg-slate-900/60' : 'hover:border-slate-700 hover:scale-[1.01]'}`}>
               
               <div className="aspect-[4/5] bg-slate-950 relative flex items-center justify-center overflow-hidden">
                 {benchmarkStates[m.id].url ? (
-                  <img src={benchmarkStates[m.id].url} alt={m.label} className="w-full h-full object-cover transition-transform duration-1000 group-hover:scale-110" />
+                  <div className="relative w-full h-full group/img">
+                    <img src={benchmarkStates[m.id].url} alt={m.label} className="w-full h-full object-cover transition-transform duration-1000 group-hover:scale-110" />
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center justify-center backdrop-blur-[2px]">
+                      <button 
+                        onClick={() => handleGenerateBenchmark(m.id)}
+                        className="p-4 bg-white/10 hover:bg-white/20 border border-white/10 rounded-full text-white transition-all backdrop-blur-md shadow-2xl hover:scale-110 active:scale-95"
+                        title="Regerar este modelo"
+                      >
+                        <RefreshCw size={24} />
+                      </button>
+                    </div>
+                  </div>
                 ) : benchmarkStates[m.id].error ? (
                   <div className="p-8 text-center bg-red-500/5 h-full flex flex-col items-center justify-center">
                     <div className="bg-red-500/20 p-3 rounded-full text-red-400 mb-4">
@@ -257,9 +266,17 @@ export const ImageStylesGallery: React.FC<ImageStylesGalleryProps> = ({ settings
                     <button onClick={() => handleGenerateBenchmark(m.id)} className="px-6 py-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-[9px] font-black uppercase text-white tracking-widest transition-all">Re-tentar</button>
                   </div>
                 ) : (
-                  <div className="flex flex-col items-center gap-4 opacity-5 group-hover:opacity-10 transition-opacity">
-                    <ImageIcon size={64} />
-                    <span className="text-[10px] font-black uppercase tracking-[0.4em]">Standby</span>
+                  <div className="flex flex-col items-center gap-4 px-8 text-center group-hover:opacity-100 transition-opacity">
+                    <div className="opacity-10 group-hover:opacity-20 transition-opacity">
+                      <ImageIcon size={64} />
+                      <span className="text-[10px] font-black uppercase tracking-[0.4em] block mt-2">Standby</span>
+                    </div>
+                    <button 
+                      onClick={() => handleGenerateBenchmark(m.id)}
+                      className="mt-4 px-8 py-3 bg-brand-500/80 hover:bg-brand-500 border border-brand-400/30 rounded-2xl text-[10px] font-black uppercase tracking-widest text-white transition-all backdrop-blur-md shadow-xl shadow-brand-500/20"
+                    >
+                      Gerar Teste
+                    </button>
                   </div>
                 )}
 
@@ -344,7 +361,8 @@ export const ImageStylesGallery: React.FC<ImageStylesGalleryProps> = ({ settings
       {/* Grid de Estilos */}
       <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 ${isAutoGenerating ? 'opacity-50 pointer-events-none' : ''}`}>
         {settings.items.map((style) => {
-          const example = examples[style.id];
+          const key = `${style.id}_${provider}`;
+          const example = examples[key];
           const isLoading = loadingStyles[style.id];
 
           return (
@@ -385,15 +403,42 @@ export const ImageStylesGallery: React.FC<ImageStylesGalleryProps> = ({ settings
               </div>
 
               <div className="p-8 flex-1 flex flex-col gap-4">
-                <div className="flex justify-between items-start">
+                <div className="flex justify-between items-center gap-4">
                   <h3 className="text-xl font-black text-white uppercase tracking-tight italic">{style.label}</h3>
-                  <button
-                    onClick={() => handleGenerate(style, provider)}
-                    disabled={isLoading}
-                    className="p-2 bg-brand-500 hover:bg-brand-400 text-white rounded-xl transition-all disabled:opacity-50"
-                  >
-                    <RefreshCw size={18} className={isLoading ? 'animate-spin' : ''} />
-                  </button>
+                  <div className="flex gap-1.5">
+                    <button
+                      onClick={async () => {
+                        const models = ['google-fast', 'google-nano', 'pollinations-flux', 'pollinations-gpt'];
+                        setLoadingStyles(prev => ({ ...prev, [style.id]: true }));
+                        await Promise.all(models.map(m => handleGenerate(style, m, true)));
+                        setLoadingStyles(prev => ({ ...prev, [style.id]: false }));
+                      }}
+                      disabled={isLoading}
+                      title="Gerar em todos os modelos"
+                      className="w-9 h-9 flex items-center justify-center rounded-xl bg-slate-800 text-brand-400 hover:bg-brand-500 hover:text-white transition-all disabled:opacity-30 border border-brand-500/20"
+                    >
+                      <Sparkles size={16} />
+                    </button>
+                    {[
+                      { id: 'google-fast', label: 'Fast', color: 'from-blue-500 to-cyan-500' },
+                      { id: 'google-nano', label: 'Nano', color: 'from-amber-500 to-orange-500' },
+                      { id: 'pollinations-flux', label: 'Flux', color: 'from-purple-500 to-pink-500' },
+                      { id: 'pollinations-gpt', label: 'GPT', color: 'from-emerald-500 to-teal-500' }
+                    ].map(m => (
+                      <button
+                        key={m.id}
+                        onClick={() => {
+                          setProvider(m.id as any);
+                          handleGenerate(style, m.id);
+                        }}
+                        disabled={isLoading}
+                        title={`Gerar com ${m.label}`}
+                        className={`w-9 h-9 flex items-center justify-center rounded-xl text-white transition-all disabled:opacity-30 hover:scale-110 active:scale-95 bg-gradient-to-br shadow-lg ${m.color} ${isLoading && provider === m.id ? 'animate-pulse ring-2 ring-white' : ''}`}
+                      >
+                        <Zap size={14} />
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 <div className="bg-slate-950/60 p-4 rounded-2xl border border-slate-800 relative">

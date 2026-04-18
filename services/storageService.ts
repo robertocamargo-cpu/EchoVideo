@@ -2,7 +2,7 @@ import { Project, TranscriptionItem, AppSettings, StyleExample, MasterAsset, Ima
 import { DailyUsage } from "./usageService";
 import { db, storage } from "./firebaseClient";
 import { collection, doc, getDoc, getDocs, setDoc, deleteDoc, query, where, orderBy, limit, writeBatch } from "firebase/firestore";
-import { ref, uploadBytes, getDownloadURL, deleteObject, listAll } from "firebase/storage";
+import { ref, uploadBytes, uploadBytesResumable, getDownloadURL, deleteObject, listAll } from "firebase/storage";
 
 const generateId = () => crypto.randomUUID();
 
@@ -347,50 +347,77 @@ export const deleteProject = async (id: string): Promise<boolean> => {
     try {
         console.log(`[Storage] Iniciando exclusão em cascata do projeto: ${id}`);
 
-        const batch = writeBatch(db);
-
-        // Delete children
+        // 1. Deletar Itens de Transcrição (Cascata Segura com Lotes de 400)
         const itemsQuery = query(collection(db, 'projects', id, 'transcription_items'));
         const itemsSnap = await getDocs(itemsQuery);
-        itemsSnap.forEach(docSnap => batch.delete(docSnap.ref));
+        if (!itemsSnap.empty) {
+            let batch = writeBatch(db);
+            let count = 0;
+            for (const docSnap of itemsSnap.docs) {
+                batch.delete(docSnap.ref);
+                count++;
+                if (count >= 400) {
+                    await batch.commit();
+                    batch = writeBatch(db);
+                    count = 0;
+                }
+            }
+            if (count > 0) await batch.commit();
+            console.log(`[Storage] ${itemsSnap.size} itens de transcrição removidos.`);
+        }
 
+        // 2. Deletar Master Assets (Personagens, Locais, etc)
         const assetsQuery = query(collection(db, 'projects', id, 'master_assets'));
         const assetsSnap = await getDocs(assetsQuery);
-        assetsSnap.forEach(docSnap => batch.delete(docSnap.ref));
+        if (!assetsSnap.empty) {
+            let batch = writeBatch(db);
+            let count = 0;
+            for (const docSnap of assetsSnap.docs) {
+                batch.delete(docSnap.ref);
+                count++;
+                if (count >= 400) {
+                    await batch.commit();
+                    batch = writeBatch(db);
+                    count = 0;
+                }
+            }
+            if (count > 0) await batch.commit();
+            console.log(`[Storage] ${assetsSnap.size} assets removidos.`);
+        }
 
-        // Delete main document
-        batch.delete(doc(db, 'projects', id));
-        await batch.commit();
+        // 3. Deletar Documento Principal
+        await deleteDoc(doc(db, 'projects', id));
 
-        // Delete audio
-        try {
-            await deleteObject(ref(storage, `project-audio/${id}.mp3`));
-        } catch(e) {}
-        try {
-            await deleteObject(ref(storage, `project-audio/${id}.wav`));
-        } catch(e) {}
-        try {
-            await deleteObject(ref(storage, `project-audio/${id}`));
-        } catch(e) {}
-
+        // 4. Deletar Áudios no Storage
+        const audioExtensions = ['mp3', 'wav', ''];
+        await Promise.all(audioExtensions.map(async (ext) => {
+            try {
+                const path = ext ? `project-audio/${id}.${ext}` : `project-audio/${id}`;
+                await deleteObject(ref(storage, path));
+            } catch(e) {}
+        }));
         console.log(`[Storage] Áudio removido.`);
 
-        // Delete images
-        try {
-            const imagesRef = ref(storage, `project-images/${id}`);
-            const imagesList = await listAll(imagesRef);
-            await Promise.all(imagesList.items.map(item => deleteObject(item)));
-            console.log(`[Storage] Imagens removidas.`);
-        } catch(storageErr) {
-            console.warn("[Storage] Falha ao esvaziar a pasta de imagens do projeto:", storageErr);
-        }
-        
-        // Remove project folder root if possible
-        try {
-            await deleteObject(ref(storage, `project-images/${id}`));
-        } catch(e) {}
+        // 5. Deletar Imagens no Storage (Recursivo)
+        const deleteFolderRecursive = async (folderPath: string) => {
+            try {
+                const folderRef = ref(storage, folderPath);
+                const list = await listAll(folderRef);
+                
+                // Deletar arquivos
+                await Promise.all(list.items.map(item => deleteObject(item)));
+                
+                // Deletar subpastas
+                await Promise.all(list.prefixes.map(prefix => deleteFolderRecursive(prefix.fullPath)));
+            } catch (e) {
+                console.warn(`[Storage] Erro ao limpar pasta ${folderPath}:`, e);
+            }
+        };
 
-        console.log(`[Storage] Projeto ${id} erradicado com sucesso.`);
+        await deleteFolderRecursive(`project-images/${id}`);
+        console.log(`[Storage] Pasta de imagens removida.`);
+
+        console.log(`[Storage] Projeto ${id} erradicado da nuvem com sucesso.`);
         return true;
     } catch (error) {
         console.error("Error deleting project in cascade:", error);
@@ -445,10 +472,10 @@ export const getSettingsFromDB = async (): Promise<AppSettings | null> => {
 
 // ==================== STYLE EXAMPLES ====================
 export const saveStyleExample = async (example: StyleExample): Promise<void> => {
-    // Benchmark master mantém persistência separada, estilos normais sobrescrevem uns aos outros
+    // Agora todos os documentos incluem o providerId na chave para permitir multi-IA
     const docId = example.styleId === 'benchmark_master' 
         ? `benchmark_${example.providerId}` 
-        : example.styleId;
+        : `${example.styleId}_${example.providerId}`;
 
     let imageUrl = example.imageUrl;
 
@@ -633,7 +660,13 @@ export const saveMotionEffect = async (effect: MotionEffect, order: number): Pro
     }, { merge: true });
 };
 
-export const uploadProjectFile = async (projectId: string, file: File | Blob, type: string, filename?: string): Promise<string> => {
+export const uploadProjectFile = async (
+    projectId: string, 
+    file: File | Blob, 
+    type: string, 
+    filename?: string,
+    onProgress?: (p: number) => void
+): Promise<string> => {
     try {
         const folder = type === 'audio' ? 'project-audio' : 'project-images';
         const rawExt = filename?.split('.').pop() || 'png';
@@ -649,13 +682,30 @@ export const uploadProjectFile = async (projectId: string, file: File | Blob, ty
         const path = type === 'audio' ? `project-audio/${projectId}.${ext}` : `${folder}/${projectId}/${finalFilename}`;
 
         const fileRef = ref(storage, path);
-        await uploadBytes(fileRef, file, {
+        const metadata = {
             contentType: file instanceof File ? file.type : (type === 'audio' ? 'audio/mpeg' : 'image/png')
-        });
+        };
 
-        return await getDownloadURL(fileRef);
+        const uploadTask = uploadBytesResumable(fileRef, file, metadata);
+
+        return new Promise((resolve, reject) => {
+            uploadTask.on('state_changed', 
+                (snapshot) => {
+                    const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+                    if (onProgress) onProgress(progress);
+                },
+                (error) => {
+                    console.error('[Storage] Upload task failed:', error);
+                    reject(error);
+                },
+                async () => {
+                    const url = await getDownloadURL(fileRef);
+                    resolve(url);
+                }
+            );
+        });
     } catch (e) {
-        console.error('[Storage] uploadProjectFile failed:', e);
+        console.error('[Storage] uploadProjectFile catch:', e);
         return '';
     }
 };
