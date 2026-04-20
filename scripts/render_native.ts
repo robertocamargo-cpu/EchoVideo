@@ -68,14 +68,6 @@ const escapeDrawText = (t: string) => {
     .replace(/,/g, '\\,');
 };
 
-const wrapText = (text: string, maxWords: number): string => {
-  const words = text.split(/\s+/);
-  const lines: string[] = [];
-  for (let i = 0; i < words.length; i += maxWords) {
-    lines.push(words.slice(i, i + maxWords).join(' '));
-  }
-  return lines.join('\n');
-};
 
 function runFFmpeg(args: string[]): Promise<number | null> {
     return new Promise((resolve, reject) => {
@@ -201,7 +193,26 @@ function buildZoompanFilter(params: { scaleStart: number, scaleEnd: number, move
 
 // --- GERADOR DE LEGENDAS ASS (Substation Alpha) ---
 // --- GERADOR DE FILTROS DRAWTEXT (Estilo Browser) ---
-// --- GERADOR DE LEGENDAS ASS (Substation Alpha) ---
+// v7.9.8: Função de Word Wrap para FFmpeg
+function wrapText(text: string, maxWords: number, maxChars: number = 25) {
+    if (!text) return '';
+    const words = text.split(' ');
+    let lines = [];
+    let currentLine: string[] = [];
+    
+    for (const word of words) {
+        const testLine = [...currentLine, word].join(' ');
+        if (currentLine.length >= maxWords || testLine.length > maxChars) {
+            if (currentLine.length > 0) lines.push(currentLine.join(' '));
+            currentLine = [word];
+        } else {
+            currentLine.push(word);
+        }
+    }
+    if (currentLine.length > 0) lines.push(currentLine.join(' '));
+    return lines.join('\n');
+}
+
 // --- GERADOR DE FILTROS DRAWTEXT (Estilo Browser com Stacked Shadows para Blur) ---
 function generateDrawTextFilters(items: any[], style: any, isVertical: boolean, fontPath: string) {
     // Calibração de Escala: 
@@ -217,16 +228,25 @@ function generateDrawTextFilters(items: any[], style: any, isVertical: boolean, 
     
     const borderW = (style.fontSize * ((style.strokeWidth || 7) / 100)) * scaleFactor;
     const yPosRatio = style.yPosition / 100;
+    const SRT_ANTICIPATION_OFFSET = -0.5; // v7.9.9: Paridade com Browser (antecipação de 500ms)
 
     items.forEach(item => {
         const segments = item.srt_segments || [];
         const processText = (t: string, start: number, end: number) => {
-            let text = t || '';
+            // v7.9.9: Paridade Estrita com Browser
+            const defaultMaxWords = isVertical ? 2 : 4;
+            const maxChars = style.maxCharsPerLine || (isVertical ? 25 : 42);
+            const effectiveMaxWords = style.maxWordsPerLine || defaultMaxWords;
+            
+            let text = wrapText(t || '', effectiveMaxWords, maxChars);
             if (style.textCasing === 'uppercase') text = text.toUpperCase();
             
             const textLines = text.split('\n');
             const lineHeight = fontSize * 1.25;
             const x = '(w-text_w)/2';
+
+            const s = Math.max(0, start + SRT_ANTICIPATION_OFFSET);
+            const e = Math.max(0.1, end + SRT_ANTICIPATION_OFFSET);
 
             textLines.forEach((line, idx) => {
                 const escapedLine = line
@@ -239,7 +259,7 @@ function generateDrawTextFilters(items: any[], style: any, isVertical: boolean, 
 
                 const totalTextH = textLines.length * lineHeight;
                 const lineY = `h*${yPosRatio} - ${totalTextH}/2 + ${idx}*${lineHeight}`;
-                const enable = `between(t,${start.toFixed(3)},${end.toFixed(3)})`;
+                const enable = `between(t,${s.toFixed(3)},${e.toFixed(3)})`;
 
                 // --- TÉCNICA DE STACKED SHADOWS (Simulação de Blur) ---
                 const dist = (style.shadowDistance || 4) * scaleFactor;
@@ -276,7 +296,8 @@ function generateDrawTextFilters(items: any[], style: any, isVertical: boolean, 
              const itStart = item.start_seconds;
              const itDur = item.end_seconds - item.start_seconds;
              const words = item.text.split(' ');
-             const groupSize = style.maxWordsPerLine || 4;
+             // v7.9.9: Fallback de grupo também respeita limite vertical
+             const groupSize = style.maxWordsPerLine || (isVertical ? 2 : 4);
              for (let i = 0; i < words.length; i += groupSize) {
                  const group = words.slice(i, i + groupSize).join(' ');
                  const start = itStart + (i / words.length) * itDur;
@@ -324,6 +345,39 @@ async function main() {
       if (presetId.startsWith('vertical')) isVertical = true;
       else if (presetId.startsWith('horizontal')) isVertical = false;
   }
+
+  // Carregar preset de legenda se solicitado
+  let subStyle: any = null;
+  if (includeSubs) {
+      const stylesSnap = await getDocs(collection(db, 'subtitle_presets'));
+      const allStyles = stylesSnap.docs.map(d => {
+          const data = d.data();
+          return {
+              id: data.id || d.id,
+              label: data.label || 'Sem Nome',
+              maxWordsPerLine: data.max_words_per_line || data.maxWordsPerLine || (isVertical ? 2 : 4),
+              maxCharsPerLine: data.max_chars_per_line || data.maxCharsPerLine || (isVertical ? 25 : 42),
+              fontSize: data.font_size || data.fontSize || 42,
+              fontFamily: data.font_family || data.fontFamily || 'Montserrat',
+              textColor: data.text_color || data.textColor || '#FFDD00',
+              strokeColor: data.stroke_color || data.strokeColor || '#000000',
+              strokeWidth: data.stroke_width || data.strokeWidth || 8,
+              yPosition: data.y_position || data.yPosition || 80,
+              textCasing: data.text_casing || data.textCasing || 'uppercase',
+              isBold: data.is_bold !== undefined ? data.is_bold : (data.isBold !== undefined ? data.isBold : true),
+              shadowColor: data.shadow_color || data.shadowColor || '#000000',
+              shadowOpacity: data.shadow_opacity !== undefined ? parseFloat(data.shadow_opacity) : (data.shadowOpacity !== undefined ? data.shadowOpacity : 0.6),
+              shadowBlur: data.shadow_blur !== undefined ? data.shadow_blur : (data.shadowBlur !== undefined ? data.shadowBlur : 12),
+              shadowDistance: data.shadow_distance !== undefined ? data.shadow_distance : (data.shadowDistance !== undefined ? data.shadowDistance : 6),
+              shadowAngle: data.shadow_angle !== undefined ? data.shadow_angle : (data.shadowAngle !== undefined ? data.shadowAngle : 111)
+          };
+      });
+      const defaultId = isVertical ? 'vertical-9-16' : 'horizontal-16-9';
+      const targetId = presetId || defaultId;
+      subStyle = allStyles.find((s: any) => s.id === targetId) || allStyles.find((s: any) => s.id === defaultId) || allStyles[0];
+      console.log(`📝 [Legendas] Usando preset: ${subStyle?.label || 'Padrão'} (ID: ${subStyle?.id})`);
+      console.log(`📝 [Legendas] maxWordsPerLine=${subStyle?.maxWordsPerLine}, fontSize=${subStyle?.fontSize}, textColor=${subStyle?.textColor}, yPosition=${subStyle?.yPosition}`);
+  }
   
   const width = isVertical ? 1080 : 1920;
   const height = isVertical ? 1920 : 1080;
@@ -349,51 +403,33 @@ async function main() {
 
   // 3. Renderizar Cenas
   const sceneFiles: string[] = [];
-  let lastEffectIndex = -1;
+  // Histórico de efeitos para evitar repetição excessiva (5 cenas conforme instructions.md)
+  const effectHistory: any[] = [];
 
-  // Carregar preset de legenda se solicitado
-  let subStyle: any = null;
-  if (includeSubs) {
-      const stylesSnap = await getDocs(collection(db, 'subtitle_presets'));
-      const allStyles = stylesSnap.docs.map(d => {
-          const data = d.data();
-          return {
-              id: data.id || d.id,
-              label: data.label || 'Sem Nome',
-              maxWordsPerLine: data.max_words_per_line || data.maxWordsPerLine || 4,
-              fontSize: data.font_size || data.fontSize || 42,
-              fontFamily: data.font_family || data.fontFamily || 'Montserrat',
-              textColor: data.text_color || data.textColor || '#FFDD00',
-              strokeColor: data.stroke_color || data.strokeColor || '#000000',
-              strokeWidth: data.stroke_width || data.strokeWidth || 8,
-              yPosition: data.y_position || data.yPosition || 80,
-              textCasing: data.text_casing || data.textCasing || 'uppercase',
-              isBold: data.is_bold !== undefined ? data.is_bold : (data.isBold !== undefined ? data.isBold : true),
-              shadowColor: data.shadow_color || data.shadowColor || '#000000',
-              shadowOpacity: data.shadow_opacity !== undefined ? parseFloat(data.shadow_opacity) : (data.shadowOpacity !== undefined ? data.shadowOpacity : 0.6),
-              shadowBlur: data.shadow_blur !== undefined ? data.shadow_blur : (data.shadowBlur !== undefined ? data.shadowBlur : 12),
-              shadowDistance: data.shadow_distance !== undefined ? data.shadow_distance : (data.shadowDistance !== undefined ? data.shadowDistance : 6),
-              shadowAngle: data.shadow_angle !== undefined ? data.shadow_angle : (data.shadowAngle !== undefined ? data.shadowAngle : 111)
-          };
-      });
-      // Selecionar preset baseado no ID passado ou no aspect ratio
-      const defaultId = isVertical ? 'vertical-9-16' : 'horizontal-16-9';
-      const targetId = presetId || defaultId;
-      subStyle = allStyles.find((s: any) => s.id === targetId) || allStyles.find((s: any) => s.id === defaultId) || allStyles[0];
-      console.log(`📝 [Legendas] Usando preset: ${subStyle?.label || 'Padrão'} (ID: ${subStyle?.id})`);
-      console.log(`📝 [Legendas] maxWordsPerLine=${subStyle?.maxWordsPerLine}, fontSize=${subStyle?.fontSize}, textColor=${subStyle?.textColor}, yPosition=${subStyle?.yPosition}`);
+  // v7.9.8: Medir áudio ANTES do loop para garantir sincronia na última cena
+  const audioDuration = await getVideoDuration(audioLocalPath);
+  const totalItemsDuration = items.reduce((acc, item) => acc + (item.end_seconds - item.start_seconds), 0);
+  const finalGap = audioDuration > totalItemsDuration ? (audioDuration - totalItemsDuration) : 0;
+  
+  if (finalGap > 0) {
+      console.log(`⏳ Sincronia Master: Áudio é ${finalGap.toFixed(2)}s mais longo que as cenas. Ajustando última cena.`);
   }
 
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
-    const url = item.imported_video_url || item.image_url || item.google_image_url || item.pollinations_image_url || item.imported_image_url;
+    // v7.9.9: Prioridade Máxima para mídias IMPORTADAS pelo usuário
+    const url = item.imported_video_url || item.imported_image_url || item.image_url || item.google_image_url || item.pollinations_image_url;
     if (!url) continue;
 
     const progress = 10 + Math.round((i / items.length) * 80);
     await updateStatus(projectId, `Renderizando Cena ${i+1}/${items.length}...`, progress);
 
-    const duration = Math.max(0.1, item.end_seconds - item.start_seconds);
     const isVideo = !!item.imported_video_url;
+    
+    // v7.9.8: Se for a última cena, esticar para cobrir o gap do áudio
+    const duration = (i === items.length - 1) 
+        ? Math.max(0.1, (item.end_seconds - item.start_seconds) + finalGap)
+        : Math.max(0.1, item.end_seconds - item.start_seconds);
     
     // Extensão
     const urlParts = url.split('?')[0].split('/');
@@ -418,24 +454,35 @@ async function main() {
 
     let sceneFilter = '';
     if (isVideo) {
-        // Cenas MP4: Zoom fixo de 112% (1.12) sem animação
-        const zW = Math.round(width * 1.12);
-        const zH = Math.round(height * 1.12);
+        // v7.9.9: Vídeo 1:1 (Sem zoom forçado)
+        const zW = width;
+        const zH = height;
         
         const ptsScale = originalDuration > 0 ? (duration / originalDuration) : 1;
         
-        sceneFilter = `scale=${zW}:${zH}:force_original_aspect_ratio=increase,crop=${width}:${height},setpts=${ptsScale.toFixed(4)}*PTS,setsar=1`;
-        console.log(`🎥 Cena ${i}: VÍDEO MP4 — Duração: ${originalDuration.toFixed(2)}s -> ${duration.toFixed(2)}s (Scale: ${ptsScale.toFixed(2)}x) | Zoom 112%`);
+        // v7.9.9: Pipeline de alta velocidade 1:1
+        sceneFilter = `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setpts=(PTS-STARTPTS)*${ptsScale.toFixed(4)},fps=${FPS},setsar=1`;
+        console.log(`🎥 Cena ${i}: VÍDEO MP4 — Duração: ${originalDuration.toFixed(2)}s -> ${duration.toFixed(2)}s (Scale: ${ptsScale.toFixed(2)}x) | FPS: ${FPS}`);
     } else {
-        // Imagens: Rodízio aleatório de efeitos (sem repetir o anterior)
-        let effectIndex;
+        // Imagens: Rodízio aleatório de efeitos (sem repetir os últimos 5 conforme instructions.md)
+        let effect;
         if (availableEffects.length > 0) {
-            do {
-                effectIndex = Math.floor(Math.random() * availableEffects.length);
-            } while (effectIndex === lastEffectIndex && availableEffects.length > 1);
+            // Candidatos que não estão no histórico recente
+            let candidates = availableEffects.filter(e => !effectHistory.some(h => (h as any).id === (e as any).id));
             
-            lastEffectIndex = effectIndex;
-            const effect = availableEffects[effectIndex];
+            // Se esgotarmos todos os candidatos únicos, relaxamos a restrição mas ainda evitamos o imediatamente anterior
+            if (candidates.length === 0) {
+                const previousEffect = effectHistory[effectHistory.length - 1];
+                candidates = availableEffects.filter(e => (e as any).id !== (previousEffect as any)?.id);
+            }
+
+            const effectIndex = Math.floor(Math.random() * candidates.length);
+            effect = candidates[effectIndex];
+            
+            // Atualizar histórico (limite de 5 cenas)
+            effectHistory.push(effect);
+            if (effectHistory.length > 5) effectHistory.shift();
+
             const instruction = (effect as any).instruction || '';
             const parsedParams = parseEffectInstruction(instruction);
             console.log(`🖼️ Cena ${i}: IMAGEM — Efeito: ${(effect as any).label || (effect as any).name || effectIndex}`);
@@ -443,25 +490,22 @@ async function main() {
             console.log(`   📐 Parâmetros: scale=${parsedParams.scaleStart}→${parsedParams.scaleEnd}, moveX=${parsedParams.moveXStart}→${parsedParams.moveXEnd}, moveY=${parsedParams.moveYStart}→${parsedParams.moveYEnd}`);
             
             const frames = Math.ceil(duration * FPS);
-            const zoomWidth = width * 1.5; 
-            const zoomHeight = height * 1.5;
             const zoom = buildZoompanFilter(parsedParams, frames, width, height);
-            sceneFilter = `scale=${zoomWidth}:${zoomHeight}:force_original_aspect_ratio=increase,crop=${zoomWidth}:${zoomHeight},${zoom},setsar=1`;
+            sceneFilter = `scale=${width*1.12}:${height*1.12}:force_original_aspect_ratio=increase,crop=${width*1.12}:${height*1.12},${zoom},setsar=1`;
         } else {
             sceneFilter = `scale=${width*1.12}:${height*1.12}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1`;
         }
     }
     const sceneArgs = [
-        ...(isVideo ? [] : ['-loop', '1']), 
-        '-t', duration.toFixed(3),
+        ...(isVideo ? ['-stream_loop', '-1'] : ['-loop', '1', '-t', duration.toFixed(3)]), 
         '-i', assetPath,
         '-vf', sceneFilter,
         '-t', duration.toFixed(3),
         '-r', FPS.toString(),
         '-pix_fmt', 'yuv420p',
         '-c:v', 'libx264',
-        '-preset', 'ultrafast',
-        '-crf', '20',
+        '-preset', 'ultrafast', 
+        '-crf', '18',
         sceneOutputPath
     ];
 
@@ -474,6 +518,7 @@ async function main() {
   fs.writeFileSync(concatListPath, sceneFiles.map(p => `file '${p.replace(/'/g, "'\\''")}'`).join('\n'));
 
   const outputName = `OUTPUT_FIREBASE_${projectId}_${Date.now()}.mp4`;
+
   const overlayVhsPath = path.join(process.cwd(), 'public', 'overlay-vhs.mp4');
   const hasOverlayVhs = fs.existsSync(overlayVhsPath);
   
@@ -533,11 +578,13 @@ async function main() {
   console.log(`📼 [VHS] Filter Complex: ${filterComplex}`);
   finalArgs.push('-filter_complex', filterComplex, '-map', '[v_out]');
   
-  if (includeSubs && subStyle) {
-      finalArgs.push('-c:v', 'libx264', '-preset', 'fast', '-crf', '22');
-  } else {
-      finalArgs.push('-c:v', 'libx264', '-preset', 'fast', '-crf', '18');
-  }
+  // v7.9.9: Masterização de Alta Velocidade (Turbo)
+  finalArgs.push(
+      '-c:v', 'libx264', 
+      '-preset', 'fast', 
+      '-crf', '18', 
+      '-pix_fmt', 'yuv420p'
+  );
 
   finalArgs.push(outputName);
 

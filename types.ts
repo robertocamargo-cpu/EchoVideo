@@ -123,6 +123,7 @@ export interface SubtitleStyleOption {
   id: string;
   label: string;
   maxWordsPerLine: number;
+  maxCharsPerLine: number;
   fontSize: number;
   fontFamily: string;
   fontWeight: string;

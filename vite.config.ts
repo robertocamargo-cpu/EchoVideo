@@ -10,7 +10,7 @@ export default defineConfig(({ mode }) => {
       port: 3005,
       open: true,
       host: '0.0.0.0',
-      allowedHosts: ['echovid.url.com.br'],
+      allowedHosts: true,
       headers: {
         // COOP necessário para SharedArrayBuffer (FFmpeg WASM)
         // credentialless permite SharedArrayBuffer sem bloquear recursos externos

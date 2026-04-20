@@ -16,6 +16,36 @@ interface TimelineVisualProps {
     onPreviewStateChange?: (isActive: boolean) => void;
 }
 
+// v7.9.8: Componente de vídeo com ajuste de velocidade dinâmico para paridade com Desktop
+const AdaptiveVideo = ({ src, sceneDuration }: { src: string, sceneDuration: number }) => {
+    const videoRef = useRef<HTMLVideoElement>(null);
+
+    const handleMetadata = () => {
+        if (!videoRef.current) return;
+        const originalDuration = videoRef.current.duration;
+        if (originalDuration > 0 && sceneDuration > 0) {
+            // Se o vídeo tem 5s e a cena 10s, playbackRate = 0.5 (fica mais lento)
+            // Se o vídeo tem 10s e a cena 5s, playbackRate = 2.0 (fica mais rápido)
+            const rate = originalDuration / sceneDuration;
+            // Limites de segurança do navegador (0.0625 a 16.0)
+            videoRef.current.playbackRate = Math.max(0.1, Math.min(rate, 10));
+        }
+    };
+
+    return (
+        <video 
+            ref={videoRef}
+            src={src} 
+            className="w-full h-full object-cover pointer-events-none" 
+            muted 
+            autoPlay 
+            loop 
+            playsInline 
+            onLoadedMetadata={handleMetadata}
+        />
+    );
+};
+
 export const TimelineVisual = forwardRef<TimelineVisualHandle, TimelineVisualProps>(({ items, onImageClick, audioFile, videoUrl, onPreviewStateChange }, ref) => {
     const [playingIndex, setPlayingIndex] = useState<number | null>(null);
     const [isFullPreview, setIsFullPreview] = useState(false);
@@ -164,9 +194,9 @@ export const TimelineVisual = forwardRef<TimelineVisualHandle, TimelineVisualPro
                                 const widthPercent = (item.duration / totalTime) * 100;
                                 const isPlaying = playingIndex === index;
                                 
-                                // Mapeamento simplificado idêntico ao TranscriptionTable.tsx para garantir paridade
-                                const imageUrl = item.imageUrl || item.importedVideoUrl || item.importedImageUrl || (item as any).googleImageUrl || (item as any).pollinationsImageUrl;
-                                const isVideo = imageUrl?.match(/\.(mp4|webm|mov|m4v)(\?|$)/i) || !!item.importedVideoUrl;
+                                // v8.1.1: Mapeamento idêntico ao TranscriptionTable.tsx para garantir paridade total
+                                const imageUrl = item.importedVideoUrl || item.importedImageUrl || item.imageUrl || (item as any).googleImageUrl || (item as any).pollinationsImageUrl;
+                                const isVideo = !!item.importedVideoUrl || (typeof imageUrl === 'string' && !!imageUrl.match(/\.(mp4|webm|mov|m4v)(\?|$)/i));
                                 
                                 const isEmpty = !imageUrl;
 
@@ -184,11 +214,11 @@ export const TimelineVisual = forwardRef<TimelineVisualHandle, TimelineVisualPro
                                     >
                                         {imageUrl ? (
                                             isVideo
-                                                ? <video src={imageUrl} className="w-full h-full object-cover pointer-events-none" muted autoPlay loop playsInline />
+                                                ? <AdaptiveVideo src={imageUrl} sceneDuration={item.duration} />
                                                 : <img src={imageUrl} className="w-full h-full object-cover" />
                                         ) : (
-                                            <div className="w-full h-full bg-[#b026ff]/20 flex items-center justify-center border-b-2 border-[#b026ff]">
-                                                <div className="w-2 h-2 rounded-full bg-[#b026ff] animate-pulse"></div>
+                                            <div className="w-full h-full bg-slate-800 flex items-center justify-center border-b-2 border-brand-500/50">
+                                                <div className="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse"></div>
                                             </div>
                                         )}
                                         <div className={`absolute inset-0 flex flex-col items-center justify-center transition-opacity z-50 ${isPlaying ? 'bg-brand-500/20' : 'opacity-0 group-hover:opacity-100 bg-black/75 backdrop-blur-[2px]'}`}>

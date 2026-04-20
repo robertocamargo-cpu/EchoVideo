@@ -1,4 +1,4 @@
-console.log("🚀 [VideoService] Versão 4.0 (Anti-Alpha-Bug) Ativada - Cache Limpo!");
+console.log("🚀 [VideoService] v8.1.0 - Diagnóstico Ativo!");
 
 import { TranscriptionItem, TransitionType, SubtitleStyleOption, MotionEffect } from "../types";
 import { createSilentAudioBlob } from "./audioService";
@@ -36,6 +36,7 @@ const getPresetWeightedChunks = (
     sceneStart: number,
     sceneDuration: number,
     maxWordsFromStyle?: number,
+    maxCharsFromStyle?: number,
     srtSegments?: { start: number; end: number; text: string }[]
 ): WeightedChunk[] => {
     if (srtSegments && srtSegments.length > 0) {
@@ -53,8 +54,8 @@ const getPresetWeightedChunks = (
     if (words.length === 0) return [];
 
     const rawChunks: string[] = [];
-    const maxWords = maxWordsFromStyle || (isVertical ? 3 : 5);
-    const maxChars = isVertical ? 25 : 42; // Conforme instructions.md (Horizontal: 42, Vertical: 20-25)
+    const maxWords = maxWordsFromStyle || (isVertical ? 2 : 4);
+    const maxChars = maxCharsFromStyle || (isVertical ? 25 : 42); 
 
     let current: string[] = [];
     for (const word of words) {
@@ -113,7 +114,8 @@ const formatSRTTime = (seconds: number) => {
 export const generatePresetSRT = (
     items: TranscriptionItem[],
     preset: 'horizontal' | 'vertical',
-    audioDuration: number
+    audioDuration: number,
+    subtitleStyle?: SubtitleStyleOption
 ): string => {
     const isVertical = preset === 'vertical';
     let srt = "";
@@ -123,7 +125,7 @@ export const generatePresetSRT = (
 
     sortedItems.forEach((it) => {
         const duration = Math.max(0.1, it.endSeconds - it.startSeconds);
-        const chunks = getPresetWeightedChunks(it.text, isVertical, it.startSeconds, duration, undefined, it.srtSegments);
+        const chunks = getPresetWeightedChunks(it.text, isVertical, it.startSeconds, duration, subtitleStyle?.maxWordsPerLine, subtitleStyle?.maxCharsPerLine, it.srtSegments);
         chunks.forEach(chunk => {
             srt += `${counter}\n${formatSRTTime(chunk.startSeconds)} --> ${formatSRTTime(chunk.endSeconds)}\n${chunk.text}\n\n`;
             counter++;
@@ -140,22 +142,22 @@ const applyCasing = (text: string, casing: 'uppercase' | 'sentence' | 'title') =
     return text;
 };
 
-const wrapText = (ctx: CanvasRenderingContext2D, text: string, maxWidth: number) => {
+const wrapText = (text: string, maxWords: number, maxChars: number = 25) => {
+    if (!text) return [];
     const words = text.split(' ');
     const lines = [];
-    let currentLine = words[0];
-    for (let i = 1; i < words.length; i++) {
-        const word = words[i];
-        const width = ctx.measureText(currentLine + " " + word).width;
-        if (width < maxWidth) {
-            currentLine += " " + word;
+    let current: string[] = [];
+    for (const word of words) {
+        const test = [...current, word].join(' ');
+        if (current.length >= maxWords || test.length > maxChars) {
+            if (current.length > 0) lines.push(current.join(' '));
+            current = [word];
         } else {
-            lines.push(currentLine);
-            currentLine = word;
+            current.push(word);
         }
     }
-    lines.push(currentLine);
-    return lines.slice(0, 3);
+    if (current.length > 0) lines.push(current.join(' '));
+    return lines;
 };
 
 const drawSubtitle = (ctx: CanvasRenderingContext2D, text: string, width: number, height: number, style: SubtitleStyleOption) => {
@@ -166,8 +168,7 @@ const drawSubtitle = (ctx: CanvasRenderingContext2D, text: string, width: number
     ctx.font = `${style.isItalic ? 'italic ' : ''}${weight} ${style.fontSize}px "${style.fontFamily}", sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    const maxWidth = width * 0.90;
-    const lines = wrapText(ctx, displayText, maxWidth);
+    const lines = wrapText(displayText, style.maxWordsPerLine || 4, style.maxCharsPerLine || 42);
     const x = width / 2;
     const yBase = (height * style.yPosition) / 100;
     const lineHeight = style.fontSize * 1.25;
@@ -192,7 +193,6 @@ const drawSubtitle = (ctx: CanvasRenderingContext2D, text: string, width: number
 
         ctx.shadowColor = "transparent";
         ctx.fillStyle = style.textColor;
-        ctx.fillText(line, x, y);
     });
     ctx.restore();
 };
@@ -206,7 +206,8 @@ const drawSingleSource = (
     progress: number,
     alpha: number = 1.0,
     motionEffect?: MotionEffect,
-    availableEffects?: MotionEffect[]
+    availableEffects?: MotionEffect[],
+    placeholder?: HTMLImageElement
 ) => {
     if (!source || alpha <= 0) return;
     ctx.save();
@@ -228,12 +229,16 @@ const drawSingleSource = (
         // 1. Tentar ler o efeito pré-selecionado (vinculado ao índice global da cena)
         if (motionEffect && motionEffect.instruction) {
             params = parseEffectInstruction(motionEffect.instruction);
+            if (params && index % 5 === 0) console.log(`🎬 [VideoService] Aplicando: ${motionEffect.name} na cena ${index}`);
         } 
         
         // 2. Fallback: Se não tem efeito específico, tentar pegar um aleatório da biblioteca disponível
         if (!params && availableEffects && availableEffects.length > 0) {
             const fallbackEffect = availableEffects[Math.floor(Math.random() * availableEffects.length)];
-            if (fallbackEffect.instruction) params = parseEffectInstruction(fallbackEffect.instruction);
+            if (fallbackEffect.instruction) {
+                params = parseEffectInstruction(fallbackEffect.instruction);
+                console.warn(`⚠️ [VideoService] Usando FALLBACK ALEATÓRIO para cena ${index}: ${fallbackEffect.name}`);
+            }
         }
 
         if (params) {
@@ -251,6 +256,7 @@ const drawSingleSource = (
             }
         } else {
             // 3. FALLBACK ABSOLUTO: Zoom suave padrão 1.1x -> 1.25x para evitar imagem estática
+            if (index === 0) console.warn("🚨 [VideoService] NENHUM EFEITO VÁLIDO ENCONTRADO. Usando Fallback Absoluto (Zoom Único).");
             const zoomAmount = 0.15;
             finalScale = coverScale * (1.10 + (zoomAmount * progress));
             offsetX = 0;
@@ -265,10 +271,20 @@ const drawSingleSource = (
 
     if (isVideo) {
         const v = source as HTMLVideoElement;
-        // NÃO fazer seek agressivo por frame - isso causa o efeito de "soquinho" (jitter).
-        // Apenas garantir que o vídeo está tocando. Sincronia fina é feita no renderLoop via threshold.
         v.muted = true;
         if (v.paused) v.play().catch(() => {});
+
+        // v8.1.4: ANTI-FLASH - Desenha o placeholder se o vídeo não estiver pronto
+        if (v.readyState < 2 && placeholder && placeholder.complete) {
+            ctx.drawImage(placeholder, x, y, targetWidth, targetHeight);
+            ctx.restore();
+            return;
+        }
+        
+        // Se estiver pronto, ainda desenhamos o placeholder por baixo por segurança extrema
+        if (placeholder && placeholder.complete) {
+            ctx.drawImage(placeholder, x, y, targetWidth, targetHeight);
+        }
     }
 
     ctx.drawImage(source, x, y, targetWidth, targetHeight);
@@ -318,41 +334,47 @@ export const generateTimelineVideo = async (
             const vhsCanvas = document.createElement('canvas');
             vhsCanvas.width = width; vhsCanvas.height = height;
             const vhsCtx = vhsCanvas.getContext('2d', { willReadFrequently: true })!;
-            
-            const applyVHS = (targetCtx: CanvasRenderingContext2D, vhsVideo: HTMLVideoElement | null) => {
-                if (!vhsVideo) return;
-                
-                // v7.9.5: Chromakey por distância de cor (Paridade com FFmpeg colorkey=0x00B140)
-                const targetR = 0, targetG = 177, targetB = 64;
-                const threshold = 110; // Sensibilidade do verde
-                
-                vhsCtx.drawImage(vhsVideo, 0, 0, width, height);
-                const imageData = vhsCtx.getImageData(0, 0, width, height);
-                const data = imageData.data;
-                
-                for (let i = 0; i < data.length; i += 4) {
-                    const r = data[i], g = data[i + 1], b = data[i + 2];
-                    
-                    // Cálculo de distância euclidiana simples
-                    const dist = Math.sqrt(
-                        Math.pow(r - targetR, 2) + 
-                        Math.pow(g - targetG, 2) + 
-                        Math.pow(b - targetB, 2)
-                    );
-                    
-                    if (dist < threshold) {
-                        data[i + 3] = 0; // Transparente
-                    } else if (dist < threshold + 40) {
-                        // Suavização de borda (Alpha blending)
-                        data[i + 3] = Math.round(((dist - threshold) / 40) * 255);
-                    }
-                }
-                
-                vhsCtx.putImageData(imageData, 0, 0);
-                targetCtx.globalAlpha = 0.8; // v7.9.5: Leve transparência global para o ruído não "matar" a imagem
-                targetCtx.drawImage(vhsCanvas, 0, 0);
-                targetCtx.globalAlpha = 1.0;
-            };
+
+             const applyVHS = (targetCtx: CanvasRenderingContext2D, vhsVideo: HTMLVideoElement | null) => {
+                 if (!vhsVideo) return;
+                 
+                 if (vhsVideo.paused) vhsVideo.play().catch(() => {});
+                 
+                 // v8.1.2: Fallback de dimensões para garantir desenho imediato mesmo sem metadados
+                 const vWidth = vhsVideo.videoWidth || 1920;
+                 const vHeight = vhsVideo.videoHeight || 1080;
+
+                 try {
+                     // Técnica COVER (Proporcional)
+                     const scale = Math.max(width / vWidth, height / vHeight);
+                     const drawW = vWidth * scale;
+                     const drawH = vHeight * scale;
+                     const drawX = (width - drawW) / 2;
+                     const drawY = (height - drawH) / 2;
+
+                     vhsCtx.clearRect(0, 0, width, height);
+                     vhsCtx.drawImage(vhsVideo, drawX, drawY, drawW, drawH);
+                     
+                     const imageData = vhsCtx.getImageData(0, 0, width, height);
+                     const data = imageData.data;
+                     
+                     for (let i = 0; i < data.length; i += 4) {
+                         const r = data[i], g = data[i + 1], b = data[i + 2];
+                         // Chromakey equilibrado para browser
+                         if (g > 50 && g > r * 1.05 && g > b * 1.05) {
+                             data[i + 3] = 0;
+                         }
+                     }
+                     
+                     vhsCtx.putImageData(imageData, 0, 0);
+                     targetCtx.save();
+                     targetCtx.globalAlpha = 0.85; // Opacidade calibrada
+                     targetCtx.drawImage(vhsCanvas, 0, 0);
+                     targetCtx.restore();
+                 } catch (e) {
+                     // Silently ignore
+                 }
+             };
             
 
             // Forçar dimensões estilo para garantir que o Stream capture o aspecto correto
@@ -407,7 +429,7 @@ export const generateTimelineVideo = async (
                 // o iterado de texto cru da IA entre o inicio e o fim de cada cena.
                 sortedItems.forEach(it => {
                     const duration = it.endSeconds - it.startSeconds;
-                    const sceneChunks = getPresetWeightedChunks(it.text, isVertical, it.startSeconds, duration, subtitleStyle?.maxWordsPerLine, undefined);
+                    const sceneChunks = getPresetWeightedChunks(it.text, isVertical, it.startSeconds, duration, subtitleStyle?.maxWordsPerLine, subtitleStyle?.maxCharsPerLine, undefined);
 
                     sceneChunks.forEach(chunk => {
                         const key = `${chunk.startSeconds.toFixed(3)}_${chunk.text.trim()}`;
@@ -420,12 +442,11 @@ export const generateTimelineVideo = async (
             }
 
             // Re-sort global subtitles just in case
-            allSubtitleChunks.sort((a, b) => a.startSeconds - b.startSeconds);
-
             const loadedAssets = new Map<number, HTMLImageElement | HTMLVideoElement>();
-            const assetUrls = new Map<number, string>(); // URLs para recarregar depois
+            const loadedPlaceholders = new Map<number, HTMLImageElement>();
+            const assetUrls = new Map<number, string>();
             let loadedCount = 0;
-            const totalToLoad = sortedItems.filter(item => item.importedVideoUrl || item.imageUrl || item.googleImageUrl || item.pollinationsImageUrl || item.importedImageUrl).length;
+            const totalToLoad = sortedItems.length;
 
             if (totalToLoad > 0) {
                 onProgress(0, `Preparando Mídias (0/${totalToLoad})...`);
@@ -433,11 +454,15 @@ export const generateTimelineVideo = async (
                     const url = item.importedVideoUrl || item.imageUrl || item.googleImageUrl || item.pollinationsImageUrl || item.importedImageUrl;
                     if (!url) return Promise.resolve();
                     assetUrls.set(idx, url);
-                    return new Promise<void>((res) => {
+                    
+                    // Carregar placeholder se for vídeo
+                    const placeholderUrl = item.importedVideoUrl ? (item.imageUrl || item.googleImageUrl || item.pollinationsImageUrl || item.importedImageUrl) : null;
+
+                    return new Promise<void>(async (res) => {
                         const timeout = setTimeout(() => {
                             console.warn(`[VideoService] Timeout carregando mídia da cena ${idx + 1}`);
                             res(); 
-                        }, 15000); // 15s timeout por asset
+                        }, 15000);
 
                         const handleLoadSuccess = (asset: HTMLImageElement | HTMLVideoElement) => {
                             clearTimeout(timeout);
@@ -446,6 +471,14 @@ export const generateTimelineVideo = async (
                             onProgress(Math.floor((loadedCount / totalToLoad) * 5), `Preparando Mídias (${loadedCount}/${totalToLoad})...`);
                             res();
                         };
+
+                        // Se houver placeholder, carregar em paralelo
+                        if (placeholderUrl) {
+                            const pImg = new Image();
+                            pImg.crossOrigin = "anonymous";
+                            pImg.src = placeholderUrl;
+                            pImg.onload = () => loadedPlaceholders.set(idx, pImg);
+                        }
 
                         if (item.importedVideoUrl) {
                             const v = document.createElement('video');
@@ -456,28 +489,21 @@ export const generateTimelineVideo = async (
                         } else {
                             const img = new Image();
                             img.onload = () => handleLoadSuccess(img);
-                            img.onerror = () => { clearTimeout(timeout); console.warn(`[VideoService] Falha ao carregar imagem da cena ${idx + 1}`); res(); };
-
+                            img.onerror = () => { clearTimeout(timeout); res(); };
                             if (url.includes('data:')) {
                                 img.src = url;
                             } else {
-                                // Preservar os query parameters do Firebase (Tokens, alt=media, etc)
                                 const cleanUrl = url.includes('?') ? `${url}&cb=${Date.now()}_${idx}` : `${url}?cb=${Date.now()}_${idx}`;
                                 fetch(cleanUrl)
-                                    .then(r => {
-                                        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-                                        return r.blob();
-                                    })
+                                    .then(r => r.blob())
                                     .then(blob => {
                                         const blobUrl = URL.createObjectURL(blob);
-                                        const origOnload = img.onload;
-                                        img.onload = (e) => { URL.revokeObjectURL(blobUrl); if(origOnload) (origOnload as any)(e); };
+                                        img.onload = () => { URL.revokeObjectURL(blobUrl); handleLoadSuccess(img); };
                                         img.src = blobUrl;
                                     })
                                     .catch(() => {
-                                        console.warn(`[VideoService] fetch falhou para cena ${idx + 1}, tentando carregamento direto...`);
                                         img.crossOrigin = "anonymous";
-                                        img.src = url; // Usa a url original, não a limpa
+                                        img.src = url;
                                     });
                             }
                         }
@@ -485,36 +511,36 @@ export const generateTimelineVideo = async (
                 }));
             }
 
-            // Carregar Overlay VHS
+            // v7.9.9: Carregamento do VHS não-bloqueante para evitar travamento do render
             let vhsVideo: HTMLVideoElement | null = null;
-            try {
-                vhsVideo = document.createElement('video');
-                vhsVideo.src = '/overlay-vhs.mp4';
-                vhsVideo.muted = true; vhsVideo.loop = true; vhsVideo.playsInline = true;
-                vhsVideo.crossOrigin = "anonymous";
-                await new Promise((res) => {
-                    vhsVideo!.onloadeddata = () => {
-                        console.log("[VideoService] ✅ VHS Overlay carregado com sucesso.");
-                        res(true);
+            const loadVHS = () => {
+                try {
+                    const v = document.createElement('video');
+                    v.src = '/overlay-vhs.mp4'; // v8.0.9: Caminho raiz padrão
+                    v.muted = true; v.loop = true; 
+                    v.setAttribute('muted', '');
+                    v.setAttribute('playsinline', '');
+                    v.setAttribute('autoplay', '');
+                    v.crossOrigin = "anonymous";
+                    v.preload = "auto";
+                    vhsVideo = v; // v7.9.9: Atribuição imediata para o loop não pular o efeito
+                    v.onloadeddata = () => {
+                        console.log("[VideoService] ✅ VHS Overlay pronto.");
+                        v.play().catch(() => {});
                     };
-                    vhsVideo!.onerror = () => {
-                        console.warn("[VideoService] ❌ Falha ao carregar VHS Overlay (Erro de arquivo)");
-                        res(false);
+                    v.onerror = () => {
+                        console.warn("[VideoService] ❌ VHS indisponível");
+                        vhsVideo = null;
                     };
-                    vhsVideo!.load();
-                    setTimeout(() => {
-                        if (vhsVideo!.readyState < 2) {
-                            console.warn("[VideoService] ⏳ Timeout carregando VHS (Timeout 5s)");
-                            res(false);
-                        } else {
-                            res(true);
-                        }
-                    }, 5000);
-                });
-                if (vhsVideo) {
-                    vhsVideo.play().catch(e => console.warn("[VideoService] Falha ao dar play inicial no VHS", e));
-                }
-            } catch (e) { console.warn("[VideoService] Falha ao carregar VHS Overlay"); }
+                    v.style.position = 'fixed';
+                    v.style.top = '-9999px';
+                    v.style.left = '-9999px';
+                    v.style.opacity = '0';
+                    document.body.appendChild(v);
+                    v.load();
+                } catch (e) { console.warn("[VideoService] Falha ao preparar VHS"); }
+            };
+            loadVHS();
 
             const loadAssetForScene = async (idx: number): Promise<HTMLImageElement | HTMLVideoElement | null> => {
                 if (loadedAssets.has(idx)) return loadedAssets.get(idx)!;
@@ -572,6 +598,7 @@ export const generateTimelineVideo = async (
 
             let isFinished = false;
             let audioStartTime = 0;
+            const startTime = Date.now();
 
             let lastProgressUpdate = 0;
             let animationFrameId: number | null = null;
@@ -588,9 +615,15 @@ export const generateTimelineVideo = async (
                 }
 
                 try {
-                    const elapsed = audioContext.currentTime - audioStartTime;
+                    // v7.9.9: Relógio Híbrido (Audio + Backup de Tempo Real)
+                    const audioElapsed = audioContext.currentTime - audioStartTime;
+                    const wallElapsed = (Date.now() - startTime) / 1000;
                     
-                    const transitionDuration = 0.5;
+                    // Se o áudio estiver muito atrasado (> 200ms) em relação ao tempo real, usamos o tempo real
+                    // Isso evita congelamentos se o hardware de áudio do navegador travar.
+                    const elapsed = Math.max(audioElapsed, wallElapsed);
+                    
+                    const transitionDuration = 0.1; // v8.0.6: Quase um corte seco para evitar frames mortos
                     const effectiveDuration = maxDuration ? Math.min(audioDuration, maxDuration) : audioDuration;
 
                     // Safety: force stop if we're 10% past effectiveDuration
@@ -664,13 +697,20 @@ export const generateTimelineVideo = async (
 
                             // SYNC DETERMINÍSTICO SUAVE: 
                             // Solo forçamos o seek se o desvio for maior que 100ms.
-                            // Isso elimina o jitter (soquinho) causado por seeks constantes de hardware.
-                            const targetTime = Math.max(0, elapsed - currentItem.startSeconds);
+                            // Agora calculamos o targetTime proporcional à duração do vídeo/cena para respeitar o playbackRate.
+                            const videoSceneRatio = activeAsset.duration > 0 ? (activeAsset.duration / activeSceneDuration) : 1;
+                            const targetTime = Math.max(0, (elapsed - currentItem.startSeconds) * videoSceneRatio);
                             const drift = Math.abs(activeAsset.currentTime - targetTime);
                             
-                            if (drift > 0.1 || activeAsset.paused) {
+                            if (drift > 0.15 || activeAsset.paused) {
                                 activeAsset.currentTime = targetTime;
+                                activeAsset.playbackRate = videoSceneRatio; // v8.0.4: Reforçar após seek
                                 activeAsset.play().catch(() => {});
+                            } else {
+                                // Garantir que a velocidade permaneça mesmo sem drift
+                                if (activeAsset.playbackRate !== videoSceneRatio) {
+                                    activeAsset.playbackRate = videoSceneRatio;
+                                }
                             }
                         }
 
@@ -681,11 +721,13 @@ export const generateTimelineVideo = async (
                             const nextAsset = loadedAssets.get(activeIdx + 1);
                             if (nextAsset instanceof HTMLVideoElement) {
                                 const nextSceneDuration = nextItem.endSeconds - nextItem.startSeconds;
+                                const nextVideoRatio = nextAsset.duration > 0 ? (nextAsset.duration / nextSceneDuration) : 1;
+                                
                                 if (nextAsset.duration > 0 && nextSceneDuration > 0) {
-                                    nextAsset.playbackRate = nextAsset.duration / nextSceneDuration;
+                                    nextAsset.playbackRate = nextVideoRatio;
                                 }
-                                const nextTargetTime = Math.max(0, elapsed - nextItem.startSeconds);
-                                if (Math.abs(nextAsset.currentTime - nextTargetTime) > 0.016) {
+                                const nextTargetTime = Math.max(0, (elapsed - nextItem.startSeconds) * nextVideoRatio);
+                                if (Math.abs(nextAsset.currentTime - nextTargetTime) > 0.1) {
                                     nextAsset.currentTime = nextTargetTime;
                                 }
                                 if (nextAsset.paused) nextAsset.play().catch(() => {});
@@ -695,15 +737,20 @@ export const generateTimelineVideo = async (
                         ctx.fillStyle = "#000";
                         ctx.fillRect(0, 0, width, height);
 
-                        if (timeLeft < transitionDuration && nextItem) {
+                        const nextAsset = loadedAssets.get(activeIdx + 1);
+                        const isNextReady = nextAsset && (nextAsset instanceof HTMLImageElement || (nextAsset instanceof HTMLVideoElement && nextAsset.readyState >= 2));
+
+                        if (timeLeft < transitionDuration && nextItem && isNextReady) {
                             const fadeProgress = 1.0 - (timeLeft / transitionDuration);
-                            drawSingleSource(ctx, loadedAssets.get(activeIdx) || null, width, height, activeIdx, progress, (1.0 - fadeProgress) * activeLoopAlpha, effectMap.get(activeIdx), motionEffects);
+                            // v8.0.6: TÉCNICA OPAQUE UNDERLAY
+                            // Desenha a cena atual com 100% de alpha por baixo
+                            drawSingleSource(ctx, loadedAssets.get(activeIdx) || null, width, height, activeIdx, progress, 1.0 * activeLoopAlpha, effectMap.get(activeIdx), motionEffects, loadedPlaceholders.get(activeIdx));
+                            // Desenha a próxima cena com fade por cima (evita o "buraco preto" no meio do crossfade)
                             const nextSceneProgress = Math.max(0, (elapsed - nextItem.startSeconds) / Math.max(nextItem.endSeconds - nextItem.startSeconds, 0.01));
-                            drawSingleSource(ctx, loadedAssets.get(activeIdx + 1) || null, width, height, activeIdx + 1, nextSceneProgress, fadeProgress * nextLoopAlpha, effectMap.get(activeIdx + 1), motionEffects);
+                            drawSingleSource(ctx, nextAsset, width, height, activeIdx + 1, nextSceneProgress, fadeProgress * nextLoopAlpha, effectMap.get(activeIdx + 1), motionEffects, loadedPlaceholders.get(activeIdx + 1));
                         } else {
-                            // v7.9.2: Garantir que o efeito da cena atual seja passado
                             const currentEffect = effectMap.get(activeIdx);
-                            drawSingleSource(ctx, loadedAssets.get(activeIdx) || null, width, height, activeIdx, progress, 1.0 * activeLoopAlpha, currentEffect, motionEffects);
+                            drawSingleSource(ctx, loadedAssets.get(activeIdx) || null, width, height, activeIdx, progress, 1.0 * activeLoopAlpha, currentEffect, motionEffects, loadedPlaceholders.get(activeIdx));
                         }
 
                         if (subtitleStyle) {
@@ -723,10 +770,6 @@ export const generateTimelineVideo = async (
 
                     if (vhsVideo) {
                         if (vhsVideo.paused) vhsVideo.play().catch(() => {});
-                        const vhsTime = elapsed % (vhsVideo.duration || 10);
-                        if (Math.abs(vhsVideo.currentTime - vhsTime) > 1.5) {
-                            vhsVideo.currentTime = vhsTime;
-                        }
                         applyVHS(ctx, vhsVideo);
                     }
 
@@ -758,7 +801,7 @@ export const generateTimelineVideo = async (
 
             ctx.fillStyle = "#000";
             ctx.fillRect(0, 0, width, height);
-            drawSingleSource(ctx, firstAsset || null, width, height, 0, 0, 1.0, effectMap.get(0));
+            drawSingleSource(ctx, firstAsset || null, width, height, 0, 0, 1.0, effectMap.get(0), motionEffects, loadedPlaceholders.get(0));
 
             // 2. Start exact clock
             audioStartTime = audioContext.currentTime;

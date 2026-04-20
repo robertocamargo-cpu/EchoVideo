@@ -338,6 +338,13 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
                 const publicUrl = await uploadProjectFile(projectId!, file, fileType, file.name, (p) => updateGlobalProgress(p));
 
                 if (publicUrl) {
+                    // v7.9.9: Limpar erro ao importar manualmente
+                    setErrorMap(prev => {
+                        const newMap = { ...prev };
+                        delete newMap[targetIdx];
+                        return newMap;
+                    });
+
                     onUpdateItem(targetIdx, {
                         importedVideoUrl: isVideo ? publicUrl : '',
                         importedImageUrl: !isVideo ? publicUrl : '',
@@ -370,6 +377,13 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
             const isVideo = file.type.includes('video') || file.name.toLowerCase().endsWith('.mp4');
             const publicUrl = await uploadProjectFile(projectId, file, isVideo ? 'video' : 'image', file.name);
             if (publicUrl) {
+                // v7.9.9: Limpar erro ao subir manualmente
+                setErrorMap(prev => {
+                    const newMap = { ...prev };
+                    delete newMap[index];
+                    return newMap;
+                });
+
                 onUpdateItem(index, { 
                     imageUrl: isVideo ? '' : publicUrl, 
                     importedVideoUrl: isVideo ? publicUrl : '',
@@ -604,7 +618,8 @@ export const TranscriptionTable: React.FC<TranscriptionTableProps> = ({
         
         try {
             for (let i = 0; i < data.length; i++) {
-                const imgUrl = data[i].imageUrl || data[i].googleImageUrl || data[i].pollinationsImageUrl || data[i].importedImageUrl;
+                // v7.9.9: Prioridade estrita (Importado > IA)
+                const imgUrl = data[i].importedImageUrl || data[i].imageUrl || data[i].googleImageUrl || data[i].pollinationsImageUrl;
                 const videoUrl = data[i].importedVideoUrl;
                 
                 if (videoUrl) {
@@ -1029,7 +1044,7 @@ Return ONLY a valid JSON:
                     }
                 );
             } else {
-                blob = await generateTimelineVideo(audioFile, data, TransitionType.CUTAWAY, (p, msg) => { setVideoProgress(p); setVideoStatus(msg); }, settings.aspectRatio, sub, settings.motionEffects);
+                blob = await generateTimelineVideo(audioFile, data, settings.transitionType, (p, msg) => { setVideoProgress(p); setVideoStatus(msg); }, settings.aspectRatio, sub, settings.motionEffects);
             }
             
             if (renderTimerRef.current) clearInterval(renderTimerRef.current);
@@ -1449,11 +1464,15 @@ Return ONLY a valid JSON:
                                             <span className="text-blue-400 whitespace-nowrap bg-slate-950 px-2 py-1 rounded-full border border-slate-700/50 shrink-0 min-w-[2.5rem] text-center text-[11px]">{item.text.split(/\s+/).filter(Boolean).length}</span>
                                         </div>
                                         <div className={`bg-black rounded-md overflow-hidden relative shadow-inner ${settings.aspectRatio === '9:16' ? 'aspect-[9/16]' : 'aspect-video'}`}>
-                                            {item.imageUrl || item.importedVideoUrl ? (
-                                                <>
-                                                    {item.importedVideoUrl ? <video src={item.importedVideoUrl} className="w-full h-full object-cover" controls={false} muted autoPlay loop onClick={() => setViewingImageState({ imageUrl: item.importedVideoUrl!, promptData: getPromptData(index), filename: `cena_${index + 1}.mp4`, sourceIndex: index, sourceType: 'scene'})} /> : <img src={item.imageUrl} onClick={() => setViewingImageState({ imageUrl: item.imageUrl!, promptData: getPromptData(index), filename: `cena_${index + 1}.png`, sourceIndex: index, sourceType: 'scene' })} className="w-full h-full object-cover cursor-zoom-in" />}
-                                                </>
-                                            ) : <div className="w-full h-full flex items-center justify-center opacity-20"><ImageIcon size={48} /></div>}
+                                            {(() => {
+                                                const displayImg = item.importedImageUrl || item.imageUrl || item.googleImageUrl || item.pollinationsImageUrl;
+                                                const displayVid = item.importedVideoUrl;
+                                                
+                                                if (displayVid) return <video src={displayVid} className="w-full h-full object-cover" controls={false} muted autoPlay loop onClick={() => setViewingImageState({ imageUrl: displayVid, promptData: getPromptData(index), filename: `cena_${index + 1}.mp4`, sourceIndex: index, sourceType: 'scene'})} />;
+                                                if (displayImg) return <img src={displayImg} onClick={() => setViewingImageState({ imageUrl: displayImg, promptData: getPromptData(index), filename: `cena_${index + 1}.png`, sourceIndex: index, sourceType: 'scene' })} className="w-full h-full object-cover cursor-zoom-in" />;
+                                                
+                                                return <div className="w-full h-full flex items-center justify-center opacity-20"><ImageIcon size={48} /></div>;
+                                            })()}
                                             {(item.isGeneratingGoogle || item.isGeneratingPollinations || uploadingManual[index]) && (
                                                 <div className="absolute inset-0 bg-slate-950/95 flex flex-col items-center justify-center gap-2 z-20">
                                                     <Loader2 className="animate-spin text-brand-400" size={40} />

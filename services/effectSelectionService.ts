@@ -321,12 +321,15 @@ export const preselectEffectsForScenes = async (
         const scene = scenes[index];
         const previousEffect = effectHistory.length > 0 ? effectHistory[effectHistory.length - 1] : undefined;
         
-        // Candidatos que não estão no histórico recente (exclui os últimos 3 usados)
+        // Candidatos que não estão no histórico recente (exclui os últimos 5 usados conforme instructions.md)
         let candidates = availableEffects.filter(e => !effectHistory.some(h => h.id === e.id));
         
+        if (index === 0) console.log(`📋 [EffectService] Biblioteca: ${availableEffects.length} efeitos. Usando histórico de 5 cenas.`);
+
         // Se esgotarmos todos os candidatos únicos, relaxamos a restrição mas ainda evitamos o imediatamente anterior
         if (candidates.length === 0) {
             candidates = availableEffects.filter(e => e.id !== previousEffect?.id);
+            if (index % 5 === 0) console.log(`🔄 [EffectService] Resetando rotação na cena ${index}`);
         }
         
         // Se ainda assim não houver candidatos (só tem 1 efeito na lista total), usamos o que tem
@@ -336,7 +339,7 @@ export const preselectEffectsForScenes = async (
         
         effectMap.set(index, selectedEffect);
         
-        // Atualiza histórico limitado a 3 itens para garantir rotação agressiva
+        // Atualiza histórico limitado a 5 itens para garantir variedade agressiva
         effectHistory.push(selectedEffect);
         if (effectHistory.length > MAX_HISTORY) {
             effectHistory.shift();

@@ -131,6 +131,7 @@ export const getProjectById = async (id: string): Promise<Project | null> => {
                     characterIds: item.character_ids || [],
                     locationIds: item.location_ids || [],
                     propIds: item.prop_ids || [],
+                    srtSegments: item.srt_segments || [],
                     ...extraData
                 };
             }),
@@ -276,6 +277,7 @@ export const saveProject = async (
                     character_ids: translateIds(item.characterIds || []),
                     location_ids: translateIds(item.locationIds || []),
                     prop_ids: translateIds(item.propIds || []),
+                    srt_segments: item.srtSegments || [],
                 };
                 
                 // Firestore recusa valores 'undefined', substituindo por 'null'
@@ -571,12 +573,26 @@ export const getSubtitlePresets = async (): Promise<SubtitleStyleOption[]> => {
     let items = querySnapshot.docs.map(doc => {
         const item = doc.data();
         return {
-            id: item.id || doc.id, label: item.label, maxWordsPerLine: item.max_words_per_line, fontSize: item.font_size,
-            fontFamily: item.font_family, fontWeight: item.font_weight, textColor: item.text_color,
-            strokeColor: item.stroke_color, strokeWidth: item.stroke_width, shadowColor: item.shadow_color,
-            shadowBlur: item.shadow_blur, shadowOpacity: parseFloat(item.shadow_opacity),
-            shadowDistance: item.shadow_distance, shadowAngle: item.shadow_angle, padding: item.padding,
-            yPosition: item.y_position, isBold: item.is_bold, isItalic: item.is_italic, textCasing: item.text_casing,
+            id: item.id || doc.id,
+            label: item.label || 'Sem Nome',
+            maxWordsPerLine: Number(item.max_words_per_line ?? item.maxWordsPerLine ?? 4),
+            maxCharsPerLine: Number(item.max_chars_per_line ?? item.maxCharsPerLine ?? 42),
+            fontSize: Number(item.font_size ?? item.fontSize ?? 40),
+            fontFamily: item.font_family || item.fontFamily || 'Montserrat',
+            fontWeight: item.font_weight || item.fontWeight || '900',
+            textColor: item.text_color || item.textColor || '#FFFFFF',
+            strokeColor: item.stroke_color || item.strokeColor || '#000000',
+            strokeWidth: Number(item.stroke_width ?? item.strokeWidth ?? 7),
+            shadowColor: item.shadow_color || item.shadowColor || '#000000',
+            shadowBlur: Number(item.shadow_blur ?? item.shadowBlur ?? 0),
+            shadowOpacity: Number(item.shadow_opacity ?? item.shadowOpacity ?? 1.0),
+            shadowDistance: Number(item.shadow_distance ?? item.shadowDistance ?? 6),
+            shadowAngle: Number(item.shadow_angle ?? item.shadowAngle ?? 111),
+            padding: Number(item.padding ?? item.padding ?? 20),
+            yPosition: Number(item.y_position ?? item.yPosition ?? 60),
+            isBold: Boolean(item.is_bold ?? item.isBold ?? true),
+            isItalic: Boolean(item.is_italic ?? item.isItalic ?? false),
+            textCasing: item.text_casing || item.textCasing || 'uppercase',
             display_order: item.display_order || 0
         };
     });
@@ -600,15 +616,31 @@ export const saveSubtitlePresetsBatch = async (presets: SubtitleStyleOption[]): 
     const batch = writeBatch(db);
     presets.forEach((p, index) => {
         const docRef = doc(db, 'subtitle_presets', p.id);
-        batch.set(docRef, {
-            id: p.id, label: p.label, max_words_per_line: p.maxWordsPerLine, font_size: p.fontSize,
-            font_family: p.fontFamily, font_weight: p.fontWeight, text_color: p.textColor,
-            stroke_color: p.strokeColor, stroke_width: p.strokeWidth, shadow_color: p.shadowColor,
-            shadow_blur: p.shadowBlur, shadow_opacity: p.shadowOpacity, shadow_distance: p.shadowDistance,
-            shadow_angle: p.shadowAngle, padding: p.padding, y_position: p.yPosition,
-            is_bold: p.isBold, is_italic: p.isItalic, text_casing: p.textCasing,
-            display_order: index, is_active: true
-        });
+        const dataToSave = {
+            id: p.id,
+            label: p.label,
+            max_words_per_line: Number(p.maxWordsPerLine),
+            font_size: Number(p.fontSize),
+            font_family: p.fontFamily,
+            font_weight: p.fontWeight,
+            text_color: p.textColor,
+            stroke_color: p.strokeColor,
+            stroke_width: Number(p.strokeWidth),
+            shadow_color: p.shadowColor,
+            shadow_blur: Number(p.shadowBlur),
+            shadow_opacity: Number(p.shadowOpacity),
+            shadow_distance: Number(p.shadowDistance),
+            shadow_angle: Number(p.shadowAngle),
+            padding: Number(p.padding),
+            y_position: Number(p.yPosition),
+            is_bold: Boolean(p.isBold),
+            is_italic: Boolean(p.isItalic),
+            text_casing: p.textCasing,
+            display_order: index,
+            is_active: true,
+            updated_at: new Date().toISOString()
+        };
+        batch.set(docRef, dataToSave, { merge: true });
     });
     await batch.commit();
 };
